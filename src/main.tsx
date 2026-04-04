@@ -800,7 +800,18 @@ export async function main() {
   const hasPrintFlag = cliArgs.includes('-p') || cliArgs.includes('--print');
   const hasInitOnlyFlag = cliArgs.includes('--init-only');
   const hasSdkUrl = cliArgs.some(arg => arg.startsWith('--sdk-url'));
-  const isNonInteractive = hasPrintFlag || hasInitOnlyFlag || hasSdkUrl || !process.stdout.isTTY;
+  // On Windows, process.stdout.isTTY can be undefined even in interactive
+  // terminals (e.g. CMD/PowerShell npm .cmd shims). Fall back to stderr TTY
+  // and well-known Windows terminal env vars to avoid wrongly entering
+  // non-interactive mode.
+  const hasInteractiveTTY = process.stdout.isTTY
+    || (process.platform === 'win32' && (
+      process.stderr.isTTY
+      || !!process.env.WT_SESSION        // Windows Terminal
+      || !!process.env.SESSIONNAME        // CMD / RDP console
+      || !!process.env.ConEmuPID          // ConEmu
+    ));
+  const isNonInteractive = hasPrintFlag || hasInitOnlyFlag || hasSdkUrl || !hasInteractiveTTY;
 
   // Stop capturing early input for non-interactive modes
   if (isNonInteractive) {
@@ -2216,6 +2227,7 @@ async function run(): Promise<CommanderCommand> {
 
     // Show setup screens after commands are loaded
     if (!isNonInteractiveSession) {
+      logForDebugging('[STARTUP] Interactive mode — creating render context...');
       const ctx = getRenderContext(false);
       getFpsMetrics = ctx.getFpsMetrics;
       stats = ctx.stats;
@@ -2223,10 +2235,12 @@ async function run(): Promise<CommanderCommand> {
       if ("external" === 'ant') {
         installAsciicastRecorder();
       }
+      logForDebugging('[STARTUP] Importing ink.js and creating root...');
       const {
         createRoot
       } = await import('./ink.js');
       root = await createRoot(ctx.renderOptions);
+      logForDebugging('[STARTUP] Ink root created successfully');
 
       // Log startup time now, before any blocking dialog renders. Logging
       // from REPL's first render (the old location) included however long

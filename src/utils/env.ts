@@ -228,7 +228,7 @@ function detectTerminal(): string | null {
   }
 
   // Detect non-interactive environment
-  if (!process.stdout.isTTY) return 'non-interactive'
+  if (!process.stdout.isTTY && process.platform !== 'win32') return 'non-interactive'
 
   return null
 }

@@ -36,17 +36,13 @@ function getStdinOverride(): ReadStream | undefined {
     return undefined
   }
 
-  // No /dev/tty on Windows
-  if (process.platform === 'win32') {
-    cachedStdinOverride = undefined
-    return undefined
-  }
-
-  // Try to open /dev/tty as an alternative input source
+  // Try to open the console TTY device as an alternative input source.
+  // On Unix this is /dev/tty; on Windows it's CONIN$ (the console input buffer).
+  const ttyDevice = process.platform === 'win32' ? 'CONIN$' : '/dev/tty'
   try {
-    const ttyFd = openSync('/dev/tty', 'r')
+    const ttyFd = openSync(ttyDevice, 'r')
     const ttyStream = new ReadStream(ttyFd)
-    // Explicitly set isTTY to true since we know /dev/tty is a TTY.
+    // Explicitly set isTTY to true since we know this is a TTY device.
     // This is needed because some runtimes (like Bun's compiled binaries)
     // may not correctly detect isTTY on ReadStream created from a file descriptor.
     ttyStream.isTTY = true
