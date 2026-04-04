@@ -110,6 +110,10 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Print the startup screen before the Ink UI loads (immediate visual feedback)
+  const { printStartupScreen } = await import('../components/StartupScreen.js');
+  printStartupScreen();
+
   // For all other paths, load the startup profiler
   const {
     profileCheckpoint
