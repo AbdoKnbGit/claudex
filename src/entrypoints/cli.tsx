@@ -1,5 +1,74 @@
 import { feature } from 'bun:bundle';
 
+// ---------------------------------------------------------------------------
+// Windows TTY fix: on Windows, process.stdout/stderr/stdin may not be
+// recognized as TTY streams even when running in a real console (CMD,
+// PowerShell, Windows Terminal). This happens with npm .cmd shims and
+// bun-compiled binaries. We detect an interactive Windows console via
+// well-known env vars and either:
+//   (a) replace the standard streams with real tty.WriteStream/ReadStream, or
+//   (b) patch isTTY/columns/rows/setRawMode onto the existing streams.
+// This MUST run before any other code reads process.stdout.isTTY.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+if (
+  process.platform === 'win32' &&
+  !process.stdout.isTTY &&
+  !process.env.CI &&
+  (process.env.SESSIONNAME || process.env.WT_SESSION || process.env.ConEmuPID)
+) {
+  let fixed = false;
+  // Strategy A: create proper tty streams from the raw fds.
+  // Works on real Windows consoles where fd 0/1/2 are console handles.
+  try {
+    const tty = require('tty') as typeof import('tty');
+    const newStdout = new tty.WriteStream(1);
+    if (newStdout.isTTY) {
+      Object.defineProperty(process, 'stdout', { configurable: true, value: newStdout });
+      fixed = true;
+      try {
+        const newStderr = new tty.WriteStream(2);
+        if (newStderr.isTTY) {
+          Object.defineProperty(process, 'stderr', { configurable: true, value: newStderr });
+        }
+      } catch { /* stderr override is optional */ }
+      try {
+        const newStdin = new tty.ReadStream(0);
+        if (newStdin.isTTY) {
+          Object.defineProperty(process, 'stdin', { configurable: true, value: newStdin });
+        }
+      } catch { /* stdin override is optional */ }
+    }
+  } catch { /* fall through to strategy B */ }
+
+  // Strategy B: if stream replacement failed, patch properties directly.
+  // This is a last-resort fallback: Ink sees isTTY=true and will render,
+  // and we provide columns/rows and a setRawMode stub so it doesn't crash.
+  if (!fixed) {
+    const patchStream = (stream: NodeJS.WriteStream | NodeJS.ReadStream, defaultCols = 120, defaultRows = 30): void => {
+      if (!stream.isTTY) {
+        (stream as any).isTTY = true;
+      }
+      if ((stream as any).columns === undefined) {
+        (stream as any).columns = defaultCols;
+      }
+      if ((stream as any).rows === undefined) {
+        (stream as any).rows = defaultRows;
+      }
+    };
+    patchStream(process.stdout);
+    patchStream(process.stderr);
+    patchStream(process.stdin);
+    // stdin.setRawMode is required by Ink for keyboard input.
+    // Provide a stub that returns stdin (matching the real API signature)
+    // so Ink doesn't throw. On a real Windows console, raw mode is the
+    // default for non-line-buffered reads, so this is effectively a no-op.
+    if (!(process.stdin as any).setRawMode) {
+      (process.stdin as any).setRawMode = (_mode: boolean) => process.stdin;
+    }
+  }
+}
+// ---------------------------------------------------------------------------
+
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';

@@ -11,6 +11,9 @@ let cachedStdinOverride: ReadStream | undefined | null = null
  * Gets a ReadStream for /dev/tty when stdin is piped.
  * This allows interactive Ink rendering even when stdin is a pipe.
  * Result is cached for the lifetime of the process.
+ *
+ * On Windows, the TTY stream replacement in cli.tsx handles this case
+ * before we get here, so no /dev/tty equivalent is needed.
  */
 function getStdinOverride(): ReadStream | undefined {
   // Return cached result if already computed
@@ -36,13 +39,18 @@ function getStdinOverride(): ReadStream | undefined {
     return undefined
   }
 
-  // Try to open the console TTY device as an alternative input source.
-  // On Unix this is /dev/tty; on Windows it's CONIN$ (the console input buffer).
-  const ttyDevice = process.platform === 'win32' ? 'CONIN$' : '/dev/tty'
+  // No /dev/tty on Windows — the TTY stream replacement in cli.tsx
+  // handles Windows consoles before this code runs.
+  if (process.platform === 'win32') {
+    cachedStdinOverride = undefined
+    return undefined
+  }
+
+  // Try to open /dev/tty as an alternative input source
   try {
-    const ttyFd = openSync(ttyDevice, 'r')
+    const ttyFd = openSync('/dev/tty', 'r')
     const ttyStream = new ReadStream(ttyFd)
-    // Explicitly set isTTY to true since we know this is a TTY device.
+    // Explicitly set isTTY to true since we know /dev/tty is a TTY.
     // This is needed because some runtimes (like Bun's compiled binaries)
     // may not correctly detect isTTY on ReadStream created from a file descriptor.
     ttyStream.isTTY = true
