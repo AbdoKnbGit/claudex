@@ -7,6 +7,7 @@ import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from './debug.js'
+import { existsSync } from 'fs'
 import { isEnvDefinedFalsy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
@@ -33,13 +34,11 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     process.env.USE_BUILTIN_RIPGREP,
   )
 
-  // Try system ripgrep if user wants it
+  // Try system ripgrep if user explicitly wants it
   if (userWantsSystemRipgrep) {
     const { cmd: systemPath } = findExecutable('rg', [])
     if (systemPath !== 'rg') {
       // SECURITY: Use command name 'rg' instead of systemPath to prevent PATH hijacking
-      // If we used systemPath, a malicious ./rg.exe in current directory could be executed
-      // Using just 'rg' lets the OS resolve it safely with NoDefaultCurrentDirectoryInExePath protection
       return { mode: 'system', command: 'rg', args: [] }
     }
   }
@@ -55,13 +54,20 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
+  // Check if the vendored binary exists (present in dev/native builds, absent in npm installs)
   const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
   const command =
     process.platform === 'win32'
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
       : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
 
-  return { mode: 'builtin', command, args: [] }
+  if (existsSync(command)) {
+    return { mode: 'builtin', command, args: [] }
+  }
+
+  // Vendored binary not found (npm install without bundled vendor/) — fall back to system rg.
+  // SECURITY: Use bare 'rg' so the OS resolves via PATH safely.
+  return { mode: 'system', command: 'rg', args: [] }
 })
 
 export function ripgrepCommand(): {

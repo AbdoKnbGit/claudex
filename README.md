@@ -1,38 +1,18 @@
 # Claudex
 
-A multi-provider AI coding CLI. Use OpenAI, Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, OpenRouter — or keep Anthropic as default — all from a single tool with zero workflow changes.
+**The multi-provider AI coding CLI.** A fully integrated agentic coding system that brings the power of Claude Code's tool loop, MCP servers, hooks, skills, and interactive TUI to every major LLM provider — Anthropic, OpenAI, Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, and OpenRouter.
+
+Claudex is not a proxy or wrapper. It is a complete reimplementation of the Claude Code runtime with a provider-agnostic architecture: every provider goes through native adapters that translate the Anthropic tool-use protocol into each provider's native API format (OpenAI chat completions, Gemini generateContent, etc.), with full streaming, rate-limit handling, cache-control stripping, context-window management, and retry logic built in.
 
 ---
 
-## Features
-
-- **Multi-provider support** — switch between Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, and OpenRouter with one command or env var
-- **Drop-in compatible** — same commands, same MCP tools, same keybindings you already know
-- **Provider tiers** — automatically maps opus/sonnet/haiku slots to the best available model at each provider
-- **Persistent provider selection** — use `/provider` to set your active provider once; it persists across sessions
-- **OAuth + API key auth** — supports API key auth for all providers, OAuth for OpenAI and Google
-- **OpenAI-compatible shim** — Groq, DeepSeek, NVIDIA NIM, and OpenRouter all use the same adapter layer
-- **Gemini native adapter** — first-class Google Gemini support with native SSE streaming
-- **Ollama local models** — run fully offline with any model you have pulled locally
-- **Model overrides via env vars** — pin exact model IDs per provider without touching config files
-- **All built-in tools work** — file editing, bash execution, web search, MCP servers, skills, and hooks run unchanged regardless of provider
-
----
-
-## Requirements
-
-- **Node.js** `>=20.0.0`
-- **Bun** `>=1.1.0` (for building from source only)
-
----
-
-## Install
-
-### From npm (recommended)
+## Quick Install
 
 ```bash
-npm install -g claudex
+npm install -g @abdoknbgit/claudex
 ```
+
+That's it. The postinstall script downloads a platform-correct ripgrep binary automatically.
 
 ### From source
 
@@ -41,19 +21,39 @@ git clone https://github.com/AbdoKnbGit/claudex.git
 cd claudex
 bun install
 bun run build
-npm install -g .
+npm link
 ```
+
+### Requirements
+
+- **Node.js** >= 20.0.0
+- **Git** (with git-bash on Windows)
+- **Bun** >= 1.1.0 (building from source only)
 
 ---
 
-## Getting Started
-
-### 1. Set your API key
-
-Set the key for whichever provider you want to use:
+## Launch
 
 ```bash
-# Anthropic (default)
+# Interactive mode (full TUI)
+claudex
+
+# One-shot print mode
+claudex -p "explain this codebase"
+
+# Continue last conversation
+claudex -c
+
+# With a specific provider
+CLAUDE_CODE_USE_OPENAI=1 claudex
+```
+
+### First Run
+
+Set the API key for the provider you want:
+
+```bash
+# Anthropic (default — works out of the box with Claude.ai login)
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # OpenAI
@@ -62,7 +62,7 @@ export OPENAI_API_KEY=sk-...
 # Google Gemini
 export GEMINI_API_KEY=AIza...
 
-# Groq (free tier available)
+# Groq (free tier, no billing needed)
 export GROQ_API_KEY=gsk_...
 
 # DeepSeek
@@ -74,40 +74,90 @@ export OPENROUTER_API_KEY=sk-or-...
 # NVIDIA NIM
 export NIM_API_KEY=nvapi-...
 
-# Ollama — no key needed, just have Ollama running locally
+# Ollama — no key needed, just run `ollama serve`
 ```
 
-### 2. Launch
-
-```bash
-claudex
-```
-
-### 3. Switch provider (in-session)
+Then switch providers at any time with the in-session command:
 
 ```
 /provider
 ```
 
-Pick from the interactive list. Your selection persists across restarts.
-
-### 4. Switch provider via env var (one-shot)
-
-```bash
-CLAUDE_CODE_USE_OPENAI=1 claudex
-CLAUDE_CODE_USE_GEMINI=1 claudex
-CLAUDE_CODE_USE_GROQ=1 claudex
-CLAUDE_CODE_USE_DEEPSEEK=1 claudex
-CLAUDE_CODE_USE_OLLAMA=1 claudex
-CLAUDE_CODE_USE_OPENROUTER=1 claudex
-CLAUDE_CODE_USE_NIM=1 claudex
-```
+Your selection persists across sessions automatically.
 
 ---
 
-## Provider Tiers
+## Architecture
 
-Each provider maps `opus`, `sonnet`, and `haiku` to its best available models at three tiers: `free`, `pro`, and `plus`.
+```
+User Prompt
+    |
+    v
++-------------------+
+|   Agent Loop      |  Tool use, MCP, hooks, skills, permissions
+|   (main.tsx)      |  — provider-agnostic, works identically
++-------------------+  for every backend
+    |
+    v
++-------------------+
+|   Provider Shim   |  Duck-types the Anthropic SDK interface
+|   (providerShim)  |  so the agent loop sees one API shape
++-------------------+
+    |
+    +---> OpenAI Adapter -----> OpenAI, Groq, DeepSeek, NIM, Ollama, OpenRouter
+    |     (chat/completions)
+    +---> Gemini Adapter -----> Google Gemini
+    |     (generateContent)
+    +---> Anthropic SDK ------> Anthropic, Bedrock, Vertex, Foundry
+```
+
+Each adapter handles:
+- **Message format translation** — Anthropic content blocks to/from OpenAI messages or Gemini parts
+- **Tool call mapping** — Anthropic tool_use/tool_result to OpenAI function_call/tool or Gemini functionCall
+- **Cache control stripping** — removes Anthropic-specific `cache_control` fields before sending to third-party APIs
+- **Streaming** — native SSE parsing for all providers with proper backpressure
+- **Rate limit extraction** — reads X-RateLimit headers, respects Retry-After, exponential backoff with jitter
+- **Context window awareness** — tier-based model selection maps opus/sonnet/haiku to the best model at each provider
+
+---
+
+## Features
+
+### Multi-Provider Engine
+- **8 providers** — Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, OpenRouter
+- **Native adapters** — each provider uses its own API format, not a lowest-common-denominator passthrough
+- **Provider tiers** — free/pro/plus model selection per provider with env-var overrides
+- **OAuth + API key auth** — API keys for all providers, OAuth for OpenAI and Gemini
+- **Persistent selection** — `/provider` command saves your choice across sessions
+
+### Full Agent Tooling
+- **File editing** — Read, Edit, Write, Glob, Grep with permission controls
+- **Bash execution** — sandboxed shell commands with timeout and abort
+- **MCP servers** — full Model Context Protocol support for external tools
+- **Hooks** — PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification
+- **Skills** — slash commands: /commit, /review-pr, /simplify, /loop, and more
+- **Task management** — structured task tracking within sessions
+- **Web tools** — WebSearch, WebFetch for live data retrieval
+
+### Developer Experience
+- **Interactive TUI** — Ink-based React terminal UI with streaming output
+- **Vim mode** — modal editing in the prompt
+- **Keyboard shortcuts** — configurable keybindings
+- **Debug mode** — `claudex --debug` for full request/response tracing
+- **VS Code extension** — companion extension with Control Center, provider switching, project-aware launch
+
+### Resilience
+- **Retry with backoff** — up to 10 retries with exponential backoff + jitter for 429/5xx errors
+- **Retry-After respect** — honors provider rate-limit headers
+- **Context overflow recovery** — auto-reduces max_tokens when hitting context limits
+- **Streaming fallback** — NIM and Ollama fall back to non-streaming when needed
+- **Cross-platform** — Windows (git-bash), macOS, Linux with no hardcoded paths
+
+---
+
+## Provider Model Table
+
+Default model mappings at the **pro** tier:
 
 | Provider     | Haiku (fast)                  | Sonnet (balanced)             | Opus (best)                   |
 |--------------|-------------------------------|-------------------------------|-------------------------------|
@@ -116,43 +166,55 @@ Each provider maps `opus`, `sonnet`, and `haiku` to its best available models at
 | Gemini       | gemini-3.1-flash-lite         | gemini-3.1-pro-preview        | gemini-3.1-pro-preview        |
 | Groq         | llama-3.3-70b-versatile       | deepseek-r1-distill-llama-70b | deepseek-r1-distill-llama-70b |
 | DeepSeek     | deepseek-chat                 | deepseek-chat                 | deepseek-reasoner             |
-| OpenRouter   | openai/gpt-5.4-mini           | openai/gpt-5.4                | anthropic/claude-opus-4-6     |
+| OpenRouter   | openai/gpt-5.4-mini           | openai/gpt-5.4                | anthropic/claude-sonnet-4-5   |
 | NVIDIA NIM   | nvidia/llama-3.1-8b-instruct  | moonshotai/kimi-k2.5          | moonshotai/kimi-k2-thinking   |
-| Ollama       | *(your local model)*          | *(your local model)*          | *(your local model)*          |
+| Ollama       | llama3.2:latest               | llama3.1:latest               | llama3.3:latest               |
 
-Set a custom tier with:
-```bash
-export PROVIDER_TIER=free   # or pro, plus
-export OPENAI_TIER=plus     # provider-specific override
-```
+Override any slot:
 
-Override individual model slots:
 ```bash
-export OPENAI_MODEL_OPUS=gpt-5.4-pro
-export GEMINI_MODEL_HAIKU=gemini-3-flash-preview
+export PROVIDER_TIER=plus          # global tier
+export OPENAI_TIER=free            # provider-specific tier
+export OPENAI_MODEL_OPUS=o3        # pin a specific model
+export OLLAMA_MODEL_SONNET=codellama:latest
 ```
 
 ---
 
-## Best Practices
+## VS Code Extension
 
-**Choose the right provider for the task:**
-- Use Anthropic for the most reliable agentic coding sessions
-- Use Groq for ultra-fast iteration on simple tasks (free tier, no key cost)
-- Use DeepSeek or Ollama when you need full local/offline control
-- Use OpenRouter when you want to compare models or need fallback routing
+The `claudex-vscode/` directory contains a companion VS Code extension:
 
-**Keep API keys in your shell profile, not in project files:**
+- **Control Center** — webview panel showing provider state, project info, and launch actions
+- **Provider switching** — change providers from the VS Code command palette
+- **Project-aware launch** — starts claudex in the right directory with the right context
+- **Status bar** — shows active provider and session state
+
+Install from the extension directory:
+
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
-export OPENAI_API_KEY=sk-...
+cd claudex-vscode
+npx @vscode/vsce package --no-dependencies
+code --install-extension claudex-vscode-*.vsix
 ```
 
-**Use `/provider` for persistent switching** instead of env vars when you want one provider for all sessions.
+---
 
-**Model pinning for reproducibility:** if your workflow depends on a specific model version, pin it via env var (`OPENAI_MODEL_OPUS`, `GEMINI_MODEL_SONNET`, etc.) so updates to default model IDs don't change your behavior.
+## Configuration
 
-**Ollama setup:** make sure Ollama is running (`ollama serve`) and you have at least one model pulled (`ollama pull llama3.3`) before launching with `CLAUDE_CODE_USE_OLLAMA=1`.
+Claudex reads configuration from `~/.claude/settings.json` (global) and `.claude/settings.json` (project-level), following the same format as Claude Code.
+
+Key settings:
+
+```jsonc
+{
+  "model": "opus",           // Default model tier
+  "effortLevel": "high",     // low | medium | high | max
+  "activeProvider": "openai" // Persistent provider selection
+}
+```
+
+Provider keys are stored in `~/.claude/.credentials.json` (managed by `/login`) or via environment variables.
 
 ---
 

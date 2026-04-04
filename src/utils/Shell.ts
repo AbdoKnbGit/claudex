@@ -4,6 +4,7 @@ import { type FileHandle, mkdir, open, realpath } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { isAbsolute, resolve } from 'path'
 import { join as posixJoin } from 'path/posix'
+import { tmpdir } from 'os'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
   getOriginalCwd,
@@ -202,7 +203,7 @@ export async function exec(
 
   // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
   const sandboxTmpDir = posixJoin(
-    process.env.CLAUDE_CODE_TMPDIR || '/tmp',
+    process.env.CLAUDE_CODE_TMPDIR || tmpdir(),
     getClaudeTempDirName(),
   )
 

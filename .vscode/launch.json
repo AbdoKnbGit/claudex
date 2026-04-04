@@ -1,0 +1,51 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Claudex CLI (interactive)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "args": ["dist/cli.mjs"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Claudex CLI (print mode)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "args": ["dist/cli.mjs", "-p", "${input:prompt}"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Claudex CLI (debug)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "args": ["dist/cli.mjs", "--debug"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Build (bun)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "bun",
+      "args": ["run", "build.ts"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "prompt",
+      "type": "promptString",
+      "description": "Enter your prompt for claudex"
+    }
+  ]
+}

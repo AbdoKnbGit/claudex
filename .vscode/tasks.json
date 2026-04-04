@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build",
+      "type": "shell",
+      "command": "bun run build",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build & Link",
+      "type": "shell",
+      "command": "bun run build && npm link",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test VS Code Extension",
+      "type": "shell",
+      "command": "cd claudex-vscode && npm test",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

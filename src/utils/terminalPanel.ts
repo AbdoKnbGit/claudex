@@ -81,7 +81,7 @@ class TerminalPanel {
   }
 
   private createSession(): boolean {
-    const shell = process.env.SHELL || '/bin/bash'
+    const shell = process.env.SHELL || (process.platform === 'win32' ? process.env.COMSPEC || 'cmd.exe' : '/bin/bash')
     const cwd = pwd()
     const socket = getTerminalPanelSocket()
 
@@ -180,7 +180,7 @@ class TerminalPanel {
 
   /** Fallback when tmux is not available — runs a non-persistent shell. */
   private runShellDirect(): void {
-    const shell = process.env.SHELL || '/bin/bash'
+    const shell = process.env.SHELL || (process.platform === 'win32' ? process.env.COMSPEC || 'cmd.exe' : '/bin/bash')
     const cwd = pwd()
     spawnSync(shell, ['-i', '-l'], {
       stdio: 'inherit',

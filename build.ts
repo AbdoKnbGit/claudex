@@ -43,7 +43,34 @@ export const FILE_COUNT_LIMIT = 100;
 export const OUTPUTS_SUBDIR = 'outputs';
 export const buildComputerUseTools = () => [];
 export const isCoordinatorMode = () => false;
-export class SandboxManager { constructor() {} start() {} stop() {} isEnabled() { return false; } getViolations() { return []; } }
+export class SandboxManager {
+  constructor() {}
+  start() {}
+  stop() {}
+  isEnabled() { return false; }
+  getViolations() { return []; }
+  static isSupportedPlatform() { return false; }
+  static checkDependencies() { return { supported: false }; }
+  static wrapWithSandbox(command) { return command; }
+  static async initialize() {}
+  static updateConfig() {}
+  static reset() {}
+  static getFsReadConfig() { return {}; }
+  static getFsWriteConfig() { return {}; }
+  static getNetworkRestrictionConfig() { return {}; }
+  static getIgnoreViolations() { return false; }
+  static getAllowUnixSockets() { return true; }
+  static getAllowLocalBinding() { return true; }
+  static getEnableWeakerNestedSandbox() { return false; }
+  static getProxyPort() { return 0; }
+  static getSocksProxyPort() { return 0; }
+  static getLinuxHttpSocketPath() { return ''; }
+  static getLinuxSocksSocketPath() { return ''; }
+  static async waitForNetworkInitialization() {}
+  static getSandboxViolationStore() { return new SandboxViolationStore(); }
+  static annotateStderrWithSandboxFailures(stderr) { return stderr; }
+  static cleanupAfterCommand() {}
+}
 export class SandboxViolationStore { constructor() {} getViolations() { return []; } clear() {} }
 export const SandboxRuntimeConfigSchema = { parse: (v) => v, safeParse: (v) => ({ success: true, data: v }) };
 export const runChromeNativeHost = () => {};
@@ -76,7 +103,10 @@ const result = await Bun.build({
     // Build-time MACRO constants
     'MACRO.VERSION': JSON.stringify(pkg.version),
     'MACRO.PACKAGE_URL': JSON.stringify(pkg.name),
+    'MACRO.NATIVE_PACKAGE_URL': JSON.stringify(pkg.name),
     'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
+    'MACRO.FEEDBACK_CHANNEL': JSON.stringify('https://github.com/AbdoKnbGit/claudex/issues'),
+    'MACRO.ISSUES_EXPLAINER': JSON.stringify('report the issue at https://github.com/AbdoKnbGit/claudex/issues'),
     'process.env.USER_TYPE': JSON.stringify('external'),
   },
 

@@ -472,7 +472,7 @@ export async function openInChrome(url: string): Promise<boolean> {
  * Get the socket directory path (Unix only)
  */
 export function getSocketDir(): string {
-  return `/tmp/claude-mcp-browser-bridge-${getUsername()}`
+  return join(tmpdir(), `claude-mcp-browser-bridge-${getUsername()}`)
 }
 
 /**
