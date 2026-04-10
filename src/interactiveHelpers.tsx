@@ -1,19 +1,25 @@
 import { feature } from 'bun:bundle';
 import { appendFileSync } from 'fs';
 import React from 'react';
+
+const trace = (m: string) => {
+  if (!process.env.CLAUDEX_BOOT_LOG) return;
+  try {
+    appendFileSync(process.env.CLAUDEX_BOOT_LOG, `[${new Date().toISOString()}] [interactiveHelpers] ${m}\n`);
+  } catch {}
+};
 import { logEvent } from 'src/services/analytics/index.js';
 import { gracefulShutdown, gracefulShutdownSync } from 'src/utils/gracefulShutdown.js';
 import { type ChannelEntry, getAllowedChannels, setAllowedChannels, setHasDevChannels, setSessionTrustAccepted, setStatsStore } from './bootstrap/state.js';
 import type { Command } from './commands.js';
-import { createStatsStore, type StatsStore } from './context/stats.js';
 import { getSystemContext } from './context.js';
+import { createStatsStore, type StatsStore } from './context/stats.js';
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js';
-import { isSynchronizedOutputSupported } from './ink/terminal.js';
 import type { RenderOptions, Root, TextProps } from './ink.js';
+import { isSynchronizedOutputSupported } from './ink/terminal.js';
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js';
 import { startDeferredPrefetches } from './main.js';
 import { checkGate_CACHED_OR_BLOCKING, initializeGrowthBook, resetGrowthBook } from './services/analytics/growthbook.js';
-import { isQualifiedForGrove } from './services/api/grove.js';
 import { handleMcpjsonServerApprovals } from './services/mcpServerApproval.js';
 import { AppStateProvider } from './state/AppState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
@@ -35,6 +41,49 @@ export function completeOnboarding(): void {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: MACRO.VERSION
   }));
+}
+
+/**
+ * Guard called at the top of showSetupScreens().
+ * If the process is not attached to a real interactive terminal the
+ * Onboarding / TrustDialog promise never resolves because there is no
+ * keyboard to drive it — the process hangs silently. This function checks
+ * every reliable cross-platform signal and exits with a readable error
+ * instead of hanging.
+ */
+function assertTerminalWritable(): void {
+  if (process.stdout.destroyed || !process.stdout.writable) {
+    process.stderr.write(
+      'claudex: stdout is not writable.\n' +
+      'Run claudex in a real terminal, or use -p/--print for headless mode.\n',
+    )
+    // eslint-disable-next-line custom-rules/no-process-exit
+    process.exit(1)
+  }
+
+  const looksLikeTerminal =
+    !!process.stdout.isTTY ||
+    !!process.stderr.isTTY ||
+    // Windows
+    (process.platform === 'win32' && (
+      !!process.env.WT_SESSION ||
+      !!process.env.SESSIONNAME ||
+      !!process.env.ConEmuPID
+    )) ||
+    // macOS / Linux
+    !!process.env.TERM_PROGRAM ||
+    !!process.env.COLORTERM ||
+    (!!process.env.TERM && process.env.TERM !== 'dumb');
+
+  if (!looksLikeTerminal) {
+    process.stderr.write(
+      'claudex: no interactive terminal detected.\n' +
+      'Use -p/--print for non-interactive/scripted use,\n' +
+      'or run claudex inside a real terminal session.\n',
+    )
+    // eslint-disable-next-line custom-rules/no-process-exit
+    process.exit(1)
+  }
 }
 export function showDialog<T = void>(root: Root, renderer: (done: (result: T) => void) => React.ReactNode): Promise<T> {
   return new Promise<T>(resolve => {
@@ -102,11 +151,17 @@ export async function renderAndRun(root: Root, element: React.ReactNode): Promis
   await gracefulShutdown(0);
 }
 export async function showSetupScreens(root: Root, permissionMode: PermissionMode, allowDangerouslySkipPermissions: boolean, commands?: Command[], claudeInChrome?: boolean, devChannels?: ChannelEntry[]): Promise<boolean> {
+  trace('showSetupScreens entered');
+  // Fail fast with a readable error instead of hanging invisibly.
+  assertTerminalWritable();
+  trace('assertTerminalWritable passed');
+
   if ("production" === 'test' || isEnvTruthy(false) || process.env.IS_DEMO // Skip onboarding in demo mode
   ) {
     return false;
   }
   const config = getGlobalConfig();
+  trace(`config: theme=${config.theme}, hasCompletedOnboarding=${config.hasCompletedOnboarding}`);
   let onboardingShown = false;
   if (!config.theme || !config.hasCompletedOnboarding // always show onboarding at least once
   ) {
@@ -132,6 +187,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     // Fast-path: skip TrustDialog import+render when CWD is already trusted.
     // If it returns true, the TrustDialog would auto-resolve regardless of
     // security features, so we can skip the dynamic import and render cycle.
+    trace(`checkHasTrustDialogAccepted = ${checkHasTrustDialogAccepted()}`);
     if (!checkHasTrustDialogAccepted()) {
       const {
         TrustDialog
@@ -156,11 +212,15 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     const {
       errors: allErrors
     } = getSettingsWithAllErrors();
+    trace(`settingsErrors = ${allErrors.length}`);
     if (allErrors.length === 0) {
+      trace('before handleMcpjsonServerApprovals');
       await handleMcpjsonServerApprovals(root);
+      trace('after handleMcpjsonServerApprovals');
     }
 
     // Check for claude.md includes that need approval
+    trace('before shouldShowClaudeMdExternalIncludesWarning');
     if (await shouldShowClaudeMdExternalIncludesWarning()) {
       const externalIncludes = getExternalClaudeMdIncludes(await getMemoryFiles(true));
       const {
@@ -188,18 +248,9 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   // Defer to next tick so the OTel dynamic import resolves after first render
   // instead of during the pre-render microtask queue.
   setImmediate(() => initializeTelemetryAfterTrust());
-  if (await isQualifiedForGrove()) {
-    const {
-      GroveDialog
-    } = await import('src/components/grove/Grove.js');
-    const decision = await showSetupDialog<string>(root, done => <GroveDialog showIfAlreadyViewed={false} location={onboardingShown ? 'onboarding' : 'policy_update_modal'} onDone={done} />);
-    if (decision === 'escape') {
-      logEvent('tengu_grove_policy_exited', {});
-      gracefulShutdownSync(0);
-      return false;
-    }
-  }
+  trace('skipping grove check (disabled in Claudex)');
 
+  trace('after grove check');
   // Check for custom API key
   // On homespace, ANTHROPIC_API_KEY is preserved in process.env for child
   // processes but ignored by Claude Code itself (see auth.ts).
@@ -294,6 +345,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     } = await import('./components/ClaudeInChromeOnboarding.js');
     await showSetupDialog(root, done => <ClaudeInChromeOnboarding onDone={done} />);
   }
+  trace('showSetupScreens completed — returning');
   return onboardingShown;
 }
 export function getRenderContext(exitOnCtrlC: boolean): {

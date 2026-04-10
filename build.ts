@@ -5,8 +5,8 @@
  * single distributable JS file that runs on Node.js >=20.
  */
 
-import { readFileSync, writeFileSync, existsSync, lstatSync, mkdirSync } from 'fs';
-import { resolve, isAbsolute, join } from 'path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { isAbsolute, join, resolve } from 'path';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'));
 

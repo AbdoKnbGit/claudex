@@ -6,32 +6,31 @@
 //    key) in parallel — isRemoteManagedSettingsEligible() otherwise reads them
 //    sequentially via sync spawn inside applySafeConfigEnvironmentVariables()
 //    (~65ms on every macOS startup)
-import { profileCheckpoint, profileReport } from './utils/startupProfiler.js';
-
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
-profileCheckpoint('main_tsx_entry');
-import { startMdmRawRead } from './utils/settings/mdm/rawRead.js';
-
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
-startMdmRawRead();
-import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from './utils/secureStorage/keychainPrefetch.js';
-
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
-startKeychainPrefetch();
-import { feature } from 'bun:bundle';
 import { Command as CommanderCommand, InvalidArgumentError, Option } from '@commander-js/extra-typings';
+import { feature } from 'bun:bundle';
 import chalk from 'chalk';
-import { readFileSync } from 'fs';
+import { appendFileSync, readFileSync } from 'fs';
 import mapValues from 'lodash-es/mapValues.js';
 import pickBy from 'lodash-es/pickBy.js';
 import uniqBy from 'lodash-es/uniqBy.js';
-import React from 'react';
+import { relative, resolve } from 'path';
+import { isAnalyticsDisabled } from 'src/services/analytics/config.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
+import { initializeAnalyticsGates } from 'src/services/analytics/sink.js';
+import { getOriginalCwd, setAdditionalDirectoriesForClaudeMd, setIsRemoteMode, setMainLoopModelOverride, setMainThreadAgentType, setTeleportedSessionInfo } from './bootstrap/state.js';
+import { filterCommandsForRemoteMode, getCommands } from './commands.js';
 import { getOauthConfig } from './constants/oauth.js';
 import { getRemoteSessionUrl } from './constants/product.js';
 import { getSystemContext, getUserContext } from './context.js';
+import type { StatsStore } from './context/stats.js';
+import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
 import { init, initializeTelemetryAfterTrust } from './entrypoints/init.js';
 import { addToHistory } from './history.js';
 import type { Root } from './ink.js';
+import { SHOW_CURSOR } from './ink/termio/dec.js';
+import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSetupScreens } from './interactiveHelpers.js';
+import { initBuiltinPlugins } from './plugins/bundled/index.js';
 import { launchRepl } from './replLauncher.js';
 import { hasGrowthBookEnvOverride, initializeGrowthBook, refreshGrowthBookAfterAuthChange } from './services/analytics/growthbook.js';
 import { fetchBootstrapData } from './services/api/bootstrap.js';
@@ -42,8 +41,8 @@ import type { McpSdkServerConfig, McpServerConfig, ScopedMcpServerConfig } from 
 import { isPolicyAllowed, loadPolicyLimits, refreshPolicyLimits, waitForPolicyLimitsToLoad } from './services/policyLimits/index.js';
 import { loadRemoteManagedSettings, refreshRemoteManagedSettings } from './services/remoteManagedSettings/index.js';
 import type { ToolInputJSONSchema } from './Tool.js';
-import { createSyntheticOutputTool, isSyntheticOutputToolEnabled } from './tools/SyntheticOutputTool/SyntheticOutputTool.js';
 import { getTools } from './tools.js';
+import { createSyntheticOutputTool, isSyntheticOutputToolEnabled } from './tools/SyntheticOutputTool/SyntheticOutputTool.js';
 import { canUserConfigureAdvisor, getInitialAdvisorSetting, isAdvisorEnabled, isValidAdvisorModel, modelSupportsAdvisor } from './utils/advisor.js';
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js';
 import { count, uniq } from './utils/array.js';
@@ -57,13 +56,34 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage } from './utils/messages.js';
 import { getPlatform } from './utils/platform.js';
 import { getBaseRenderOptions } from './utils/renderOptions.js';
+import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from './utils/secureStorage/keychainPrefetch.js';
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js';
 import { settingsChangeDetector } from './utils/settings/changeDetector.js';
+import { startMdmRawRead } from './utils/settings/mdm/rawRead.js';
 import { skillChangeDetector } from './utils/skills/skillChangeDetector.js';
 import { jsonParse, writeFileSync_DEPRECATED } from './utils/slowOperations.js';
+import { profileCheckpoint, profileReport } from './utils/startupProfiler.js';
 import { computeInitialTeamContext } from './utils/swarm/reconnection.js';
 import { initializeWarningHandler } from './utils/warningHandler.js';
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js';
+
+const trace = (m: string) => {
+  if (!process.env.CLAUDEX_BOOT_LOG) return;
+  try {
+    appendFileSync(process.env.CLAUDEX_BOOT_LOG, `[${new Date().toISOString()}] [main.tsx] ${m}\n`);
+  } catch {}
+};
+
+trace('Module evaluation started');
+
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+profileCheckpoint('main_tsx_entry');
+
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+startMdmRawRead();
+
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+startKeychainPrefetch();
 
 // Lazy require to avoid circular dependency: teammate.ts -> AppState.tsx -> ... -> main.tsx
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -79,18 +99,6 @@ const coordinatorModeModule = feature('COORDINATOR_MODE') ? require('./coordinat
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assistantModule = feature('KAIROS') ? require('./assistant/index.js') as typeof import('./assistant/index.js') : null;
 const kairosGate = feature('KAIROS') ? require('./assistant/gate.js') as typeof import('./assistant/gate.js') : null;
-import { relative, resolve } from 'path';
-import { isAnalyticsDisabled } from 'src/services/analytics/config.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
-import { initializeAnalyticsGates } from 'src/services/analytics/sink.js';
-import { getOriginalCwd, setAdditionalDirectoriesForClaudeMd, setIsRemoteMode, setMainLoopModelOverride, setMainThreadAgentType, setTeleportedSessionInfo } from './bootstrap/state.js';
-import { filterCommandsForRemoteMode, getCommands } from './commands.js';
-import type { StatsStore } from './context/stats.js';
-import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
-import { SHOW_CURSOR } from './ink/termio/dec.js';
-import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSetupScreens } from './interactiveHelpers.js';
-import { initBuiltinPlugins } from './plugins/bundled/index.js';
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
@@ -161,9 +169,9 @@ import { gracefulShutdown, gracefulShutdownSync } from 'src/utils/gracefulShutdo
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js';
-import { setCwd } from 'src/utils/Shell.js';
 import { type ProcessedResume, processResumedConversation } from 'src/utils/sessionRestore.js';
 import { parseSettingSourcesFlag } from 'src/utils/settings/constants.js';
+import { setCwd } from 'src/utils/Shell.js';
 import { plural } from 'src/utils/stringUtils.js';
 import { type ChannelEntry, getInitialMainLoopModel, getIsNonInteractiveSession, getSdkBetas, getSessionId, getUserMsgOptIn, setAllowedChannels, setAllowedSettingSources, setChromeFlagOverride, setClientType, setCwdState, setDirectConnectServerUrl, setFlagSettingsPath, setInitialMainLoopModel, setInlinePlugins, setIsInteractive, setKairosActive, setOriginalCwd, setQuestionPreviewFormat, setSdkBetas, setSessionBypassPermissionsMode, setSessionPersistenceDisabled, setSessionSource, setUserMsgOptIn, switchSession } from './bootstrap/state.js';
 
@@ -199,8 +207,8 @@ import { filterExistingPaths, getKnownPathsForRepo } from './utils/githubRepoPat
 import { clearPluginCache, loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js';
 import { migrateChangelogFromConfig } from './utils/releaseNotes.js';
 import { SandboxManager } from './utils/sandbox/sandbox-adapter.js';
-import { fetchSession, prepareApiRequest } from './utils/teleport/api.js';
 import { checkOutTeleportedSessionBranch, processMessagesForTeleportResume, teleportToRemoteWithErrorHandling, validateGitState, validateSessionRepository } from './utils/teleport.js';
+import { fetchSession, prepareApiRequest } from './utils/teleport/api.js';
 import { shouldEnableThinkingByDefault, type ThinkingConfig } from './utils/thinking.js';
 import { initUser, resetUserCache } from './utils/user.js';
 import { getTmuxInstallInstructions, isTmuxAvailable, parsePRReference } from './utils/worktree.js';
@@ -800,18 +808,24 @@ export async function main() {
   const hasPrintFlag = cliArgs.includes('-p') || cliArgs.includes('--print');
   const hasInitOnlyFlag = cliArgs.includes('--init-only');
   const hasSdkUrl = cliArgs.some(arg => arg.startsWith('--sdk-url'));
-  // On Windows, process.stdout.isTTY can be undefined even in interactive
-  // terminals (e.g. CMD/PowerShell npm .cmd shims). Fall back to stderr TTY
-  // and well-known Windows terminal env vars to avoid wrongly entering
-  // non-interactive mode.
-  const hasInteractiveTTY = process.stdout.isTTY
-    || (process.platform === 'win32' && (
-      process.stderr.isTTY
-      || !!process.env.WT_SESSION        // Windows Terminal
-      || !!process.env.SESSIONNAME        // CMD / RDP console
-      || !!process.env.ConEmuPID          // ConEmu
-    ));
+  trace('Detecting TTY...');
+  const hasInteractiveTTY =
+    !!process.stdout.isTTY ||
+    !!process.stderr.isTTY ||
+    // Windows fallbacks
+    (process.platform === 'win32' && (
+      !!process.env.WT_SESSION ||
+      !!process.env.SESSIONNAME ||
+      !!process.env.ConEmuPID
+    )) ||
+    // macOS / Linux / tmux
+    !!process.env.TERM_PROGRAM ||
+    !!process.env.COLORTERM ||
+    (!!process.env.TERM && process.env.TERM !== 'dumb');
+  trace(`hasInteractiveTTY = ${hasInteractiveTTY}`);
+
   const isNonInteractive = hasPrintFlag || hasInitOnlyFlag || hasSdkUrl || !hasInteractiveTTY;
+  trace(`isNonInteractive = ${isNonInteractive}`);
 
   // Stop capturing early input for non-interactive modes
   if (isNonInteractive) {
@@ -822,8 +836,9 @@ export async function main() {
   const isInteractive = !isNonInteractive;
   setIsInteractive(isInteractive);
 
-  // Initialize entrypoint based on mode - needs to be set before any event is logged
+  trace('Calling initializeEntrypoint...');
   initializeEntrypoint(isNonInteractive);
+  trace('initializeEntrypoint complete.');
 
   // Determine client type
   const clientType = (() => {
@@ -859,10 +874,14 @@ export async function main() {
   }
   profileCheckpoint('main_client_type_determined');
 
+  trace('Calling eagerLoadSettings...');
   // Parse and load settings flags early, before init()
   eagerLoadSettings();
+  trace('eagerLoadSettings complete.');
   profileCheckpoint('main_before_run');
+  trace('Calling run()...');
   await run();
+  trace('run() complete.');
   profileCheckpoint('main_after_run');
 }
 async function getInputPrompt(prompt: string, inputFormat: 'text' | 'stream-json'): Promise<string | AsyncIterable<string>> {
@@ -1015,6 +1034,7 @@ async function run(): Promise<CommanderCommand> {
   // top-level option. Single-value + collect accumulator means each
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+    trace('action_handler_start');
     profileCheckpoint('action_handler_start');
 
     // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
@@ -1912,6 +1932,7 @@ async function run(): Promise<CommanderCommand> {
     }
 
     // IMPORTANT: setup() must be called before any other code that depends on the cwd or worktree setup
+    trace('action_before_setup');
     profileCheckpoint('action_before_setup');
     logForDebugging('[STARTUP] Running setup()...');
     const setupStart = Date.now();
@@ -1943,6 +1964,7 @@ async function run(): Promise<CommanderCommand> {
     commandsPromise?.catch(() => {});
     agentDefsPromise?.catch(() => {});
     await setupPromise;
+    trace('setup() completed');
     logForDebugging(`[STARTUP] setup() completed in ${Date.now() - setupStart}ms`);
     profileCheckpoint('action_after_setup');
 
@@ -2227,19 +2249,24 @@ async function run(): Promise<CommanderCommand> {
 
     // Show setup screens after commands are loaded
     if (!isNonInteractiveSession) {
+      trace('Interactive mode — creating render context...');
       logForDebugging('[STARTUP] Interactive mode — creating render context...');
       const ctx = getRenderContext(false);
+      trace('getRenderContext() done');
       getFpsMetrics = ctx.getFpsMetrics;
       stats = ctx.stats;
       // Install asciicast recorder before Ink mounts (ant-only, opt-in via CLAUDE_CODE_TERMINAL_RECORDING=1)
       if ("external" === 'ant') {
         installAsciicastRecorder();
       }
+      trace('Importing ink.js...');
       logForDebugging('[STARTUP] Importing ink.js and creating root...');
       const {
         createRoot
       } = await import('./ink.js');
+      trace('createRoot imported. Calling createRoot()...');
       root = await createRoot(ctx.renderOptions);
+      trace('Ink root created successfully');
       logForDebugging('[STARTUP] Ink root created successfully');
 
       // Log startup time now, before any blocking dialog renders. Logging
@@ -2250,9 +2277,11 @@ async function run(): Promise<CommanderCommand> {
         event: 'startup' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         durationMs: Math.round(process.uptime() * 1000)
       });
+      trace('Calling showSetupScreens()...');
       logForDebugging('[STARTUP] Running showSetupScreens()...');
       const setupScreensStart = Date.now();
       const onboardingShown = await showSetupScreens(root, permissionMode, allowDangerouslySkipPermissions, commands, enableClaudeInChrome, devChannels);
+      trace('showSetupScreens() completed');
       logForDebugging(`[STARTUP] showSetupScreens() completed in ${Date.now() - setupScreensStart}ms`);
 
       // Now that trust is established and GrowthBook has auth headers,

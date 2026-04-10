@@ -7,17 +7,17 @@ import { FocusManager } from './focus.js'
 import Output from './output.js'
 import reconciler from './reconciler.js'
 import renderNodeToOutput, {
-  resetLayoutShifted,
+    resetLayoutShifted,
 } from './render-node-to-output.js'
 import {
-  CellWidth,
-  CharPool,
-  cellAtIndex,
-  createScreen,
-  HyperlinkPool,
-  type Screen,
-  StylePool,
-  setCellStyleId,
+    CellWidth,
+    CharPool,
+    HyperlinkPool,
+    StylePool,
+    cellAtIndex,
+    createScreen,
+    setCellStyleId,
+    type Screen,
 } from './screen.js'
 
 /** Position of a match within a rendered message, relative to the message's
@@ -82,9 +82,9 @@ export function renderToScreen(
   }
 
   const t0 = performance.now()
-  // @ts-expect-error updateContainerSync exists but not in @types
+  // @ts-expect-error updateContainerSync exists in react-reconciler 0.31 but not in @types
   reconciler.updateContainerSync(el, container, null, noop)
-  // @ts-expect-error flushSyncWork exists but not in @types
+  // @ts-expect-error flushSyncWork exists in react-reconciler 0.31 but not in @types
   reconciler.flushSyncWork()
   const t1 = performance.now()
 
@@ -117,9 +117,9 @@ export function renderToScreen(
   const t3 = performance.now()
 
   // Unmount so next call gets a fresh tree. Leaves root/container/pools.
-  // @ts-expect-error updateContainerSync exists but not in @types
+  // @ts-expect-error updateContainerSync exists in react-reconciler 0.31 but not in @types
   reconciler.updateContainerSync(null, container, null, noop)
-  // @ts-expect-error flushSyncWork exists but not in @types
+  // @ts-expect-error flushSyncWork exists in react-reconciler 0.31 but not in @types
   reconciler.flushSyncWork()
 
   timing.reconcile += t1 - t0
