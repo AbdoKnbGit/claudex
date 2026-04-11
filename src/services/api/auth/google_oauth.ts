@@ -44,8 +44,9 @@ const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const REDIRECT_PATH = '/oauth2callback'
 
-// cloud-platform covers generative-language API; email/profile for user info
+// generative-language for AI Studio API, cloud-platform for Vertex AI
 const SCOPES = [
+  'https://www.googleapis.com/auth/generative-language',
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',

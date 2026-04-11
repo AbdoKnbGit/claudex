@@ -109,13 +109,8 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
         if (method === 'oauth') {
           setState({ step: 'oauth_pending' })
           startProviderOAuth(provider)
-            .then(({ accessToken, refreshToken }) => {
-              // Store OAuth tokens as JSON in the key store
-              saveProviderKey(`${provider}_oauth`, JSON.stringify({
-                accessToken,
-                refreshToken,
-                savedAt: new Date().toISOString(),
-              }))
+            .then(() => {
+              // Tokens are already saved by the OAuth flow with proper expiry
               setState({ step: 'success' })
               setTimeout(() => onDone(true), 1000)
             })

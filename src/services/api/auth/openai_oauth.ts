@@ -30,6 +30,8 @@ const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const OPENAI_AUTH_URL = 'https://auth.openai.com/authorize'
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 const REDIRECT_PATH = '/auth/callback'
+// Codex CLI's registered port — OpenAI validates redirect URIs exactly
+const DEFAULT_PORT = 1455
 
 const SCOPES = 'openid profile email offline_access'
 
@@ -72,8 +74,8 @@ export async function startOpenAIOAuthFlow(): Promise<{
   const codeChallenge = generateCodeChallenge(codeVerifier)
   const state = randomBytes(16).toString('hex')
 
-  // Find a free port for the callback server
-  const port = await findFreePort()
+  // Must use port 1455 — matches Codex CLI's registered redirect URI
+  const port = await tryPort(DEFAULT_PORT)
   const redirectUri = `http://localhost:${port}${REDIRECT_PATH}`
 
   // Build authorization URL
@@ -190,17 +192,25 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
 
 // ─── Internal helpers ──────────────────────────────────────────────
 
-function findFreePort(): Promise<number> {
+/**
+ * Try to bind to the given port. Returns the port if available.
+ * Throws if the port is in use — OpenAI requires port 1455 specifically.
+ */
+function tryPort(port: number): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer()
-    server.listen(0, () => {
-      const addr = server.address()
-      if (addr && typeof addr === 'object') {
-        const port = addr.port
-        server.close(() => resolve(port))
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        reject(new Error(
+          `Port ${port} is in use. Close the application using it and try again.\n` +
+          `OpenAI OAuth requires this specific port for the redirect callback.`,
+        ))
       } else {
-        reject(new Error('Could not determine port'))
+        reject(err)
       }
+    })
+    server.listen(port, () => {
+      server.close(() => resolve(port))
     })
   })
 }

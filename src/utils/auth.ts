@@ -1754,19 +1754,24 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
 
 /**
  * Determines which auth method is active for a provider.
- * Priority: API key (env/stored) → OAuth token (if supported) → none
+ * Priority: OAuth token (if supported & stored) → API key → none
+ *
+ * OAuth takes priority because it uses the user's account subscription
+ * (e.g. Gemini Pro, ChatGPT Plus), while API keys typically give
+ * free-tier access with strict rate limits.
  */
 export function getProviderAuthMethod(provider: APIProvider): ProviderAuthMethod {
-  // Check API key first (always preferred)
-  const key = _getApiKeyDirect(provider)
-  if (key) return 'api_key'
-
-  // Check OAuth for providers that support it
+  // Check OAuth first for providers that support it
+  // OAuth = user's paid subscription; API key = often free tier
   const supported = PROVIDER_AUTH_SUPPORT[provider]
   if (supported?.includes('oauth')) {
     const oauthToken = _loadStoredOAuthToken(provider)
     if (oauthToken) return 'oauth'
   }
+
+  // Fall back to API key
+  const key = _getApiKeyDirect(provider)
+  if (key) return 'api_key'
 
   return 'none'
 }
