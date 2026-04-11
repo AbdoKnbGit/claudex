@@ -580,6 +580,16 @@ export type GlobalConfig = {
   // CURRENT_MIGRATION_VERSION, runMigrations() skips all sync migrations
   // (avoiding 11× saveGlobalConfig lock+re-read on every startup).
   migrationVersion?: number
+
+  // /surf phase router — user-picked provider+model per work phase. Set by
+  // the /surf wizard on first run and updated by re-running /surf config.
+  // Persisted so picks survive restarts. Keyed by phase (planning/building/
+  // reviewing/background); value holds provider id + model id that the
+  // phase detector will switch into when that phase fires.
+  surfPhaseTargets?: Record<
+    'planning' | 'building' | 'reviewing' | 'background',
+    { provider: string; model: string }
+  >
 }
 
 /**
@@ -669,6 +679,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'prStatusFooterEnabled',
   'remoteControlAtStartup',
   'remoteDialogSeen',
+  'surfPhaseTargets',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]

@@ -104,6 +104,32 @@ export class OpenAIProvider extends BaseProvider {
     return /^o1(-|$)/.test(model)
   }
 
+  /**
+   * OpenAI reasoning models (o1/o3/o4/gpt-5 family) accept a
+   * `reasoning_effort` parameter instead of the Anthropic-style thinking
+   * budget. Subclasses with different reasoning surfaces can override.
+   */
+  protected modelSupportsReasoningEffort(model: string): boolean {
+    return /^(o[1-9](-|$)|o[1-9][0-9]?(-mini|-pro)?|gpt-[5-9])/i.test(model)
+  }
+
+  /**
+   * Map an Anthropic-style thinking param to an OpenAI reasoning_effort
+   * label. Budgets are coarsely bucketed: <4K → low, <16K → medium, rest → high.
+   * Adaptive or disabled → medium / undefined.
+   */
+  protected thinkingToReasoningEffort(
+    thinking: ProviderRequestParams['thinking'],
+  ): 'low' | 'medium' | 'high' | undefined {
+    if (!thinking) return undefined
+    if (thinking.type === 'disabled') return undefined
+    if (thinking.type === 'adaptive') return 'medium'
+    const budget = thinking.budget_tokens
+    if (budget < 4096) return 'low'
+    if (budget < 16384) return 'medium'
+    return 'high'
+  }
+
   // ─── Payload optimization ───────────────────────────────────────
 
   /**
@@ -183,6 +209,13 @@ export class OpenAIProvider extends BaseProvider {
     if (optimized.temperature !== undefined) body.temperature = optimized.temperature
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
+    // Translate Anthropic-style thinking → OpenAI reasoning_effort
+    // (only for o-series/gpt-5 reasoning models; other models ignore it).
+    if (this.modelSupportsReasoningEffort(model)) {
+      const effort = this.thinkingToReasoningEffort(optimized.thinking)
+      if (effort) body.reasoning_effort = effort
+    }
+
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: this._headers(),
@@ -226,6 +259,11 @@ export class OpenAIProvider extends BaseProvider {
     }
     if (optimized.temperature !== undefined) body.temperature = optimized.temperature
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
+
+    if (this.modelSupportsReasoningEffort(model)) {
+      const effort = this.thinkingToReasoningEffort(optimized.thinking)
+      if (effort) body.reasoning_effort = effort
+    }
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',

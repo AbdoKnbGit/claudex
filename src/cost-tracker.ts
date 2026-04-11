@@ -46,6 +46,11 @@ import { formatDuration, formatNumber } from './utils/format.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
 import { getCanonicalName } from './utils/model/model.js'
 import { calculateUSDCost } from './utils/modelCost.js'
+import {
+  getPendingTurnPhase,
+  isSurfEnabled,
+  recordSurfUsage,
+} from './utils/surf/state.js'
 export {
   getTotalCostUSD as getTotalCost,
   getTotalDuration,
@@ -282,6 +287,22 @@ export function addToTotalSessionCost(
 ): number {
   const modelUsage = addToTotalModelUsage(cost, usage, model)
   addToTotalCostState(cost, modelUsage, model)
+
+  // Surf per-phase token accounting. Fires on every API response the
+  // main loop records — including advisor recursion below, which is
+  // fine because recordSurfUsage is additive (turns are counted once,
+  // from applyPhase.ts, so advisor recursion doesn't inflate that).
+  if (isSurfEnabled()) {
+    const pendingPhase = getPendingTurnPhase()
+    if (pendingPhase) {
+      recordSurfUsage(pendingPhase, {
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+      })
+    }
+  }
 
   const attrs =
     isFastModeEnabled() && usage.speed === 'fast'

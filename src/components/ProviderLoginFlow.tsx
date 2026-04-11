@@ -11,6 +11,7 @@ import { Box, Text, useInput } from '../ink.js'
 import type { APIProvider } from '../utils/model/providers.js'
 import { PROVIDER_DISPLAY_NAMES } from '../utils/model/providers.js'
 import {
+  deleteProviderKey,
   saveProviderKey,
   validateKeyFormat,
 } from '../services/api/auth/api_key_manager.js'
@@ -110,7 +111,10 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           setState({ step: 'oauth_pending' })
           startProviderOAuth(provider)
             .then(() => {
-              // Tokens are already saved by the OAuth flow with proper expiry
+              // Tokens are already saved by the OAuth flow with proper expiry.
+              // Signing in via OAuth deactivates any stored API key for this
+              // provider — one credential at a time, per provider.
+              deleteProviderKey(provider)
               setState({ step: 'success' })
               setTimeout(() => onDone(true), 1000)
             })
@@ -146,8 +150,10 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
 
     setState({ step: 'validating' })
 
-    // Store the key
+    // Store the key. Saving an API key deactivates any stored OAuth
+    // token for this provider — one credential at a time, per provider.
     saveProviderKey(provider, key)
+    deleteProviderKey(`${provider}_oauth`)
 
     // Also set as environment variable for the current session
     const envVar = meta?.envVar

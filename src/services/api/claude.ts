@@ -23,6 +23,7 @@ import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isThirdPartyProvider,
 } from 'src/utils/model/providers.js'
 import {
   getAttributionHeader,
@@ -1627,6 +1628,25 @@ async function* queryModel(
           type: 'enabled',
         } satisfies BetaMessageStreamParams['thinking']
       }
+    } else if (hasThinking && isThirdPartyProvider(getAPIProvider())) {
+      // Third-party providers: always forward an `enabled` thinking param
+      // when the user has /thinking on. Each provider adapter translates
+      // this into its native reasoning flag (OpenAI reasoning_effort,
+      // Gemini thinkingConfig, NIM nvext.budget_tokens, OpenRouter
+      // reasoning, Ollama enable_thinking). Providers whose current model
+      // doesn't support thinking silently ignore the param.
+      let thinkingBudget = 8192
+      if (
+        thinkingConfig.type === 'enabled' &&
+        thinkingConfig.budgetTokens !== undefined
+      ) {
+        thinkingBudget = thinkingConfig.budgetTokens
+      }
+      thinkingBudget = Math.min(maxOutputTokens - 1, thinkingBudget)
+      thinking = {
+        budget_tokens: thinkingBudget,
+        type: 'enabled',
+      } satisfies BetaMessageStreamParams['thinking']
     }
 
     // Get API context management strategies if enabled

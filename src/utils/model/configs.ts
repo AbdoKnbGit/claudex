@@ -84,7 +84,7 @@ function isValidTier(t: string): t is ProviderTier {
 //   free  → gemini-3-flash-preview (free in AI Studio, fast, tools)
 //   pro   → gemini-3.1-pro-preview (latest, 1M context, reasoning-first)
 //   plus  → gemini-3.1-pro-preview (same — best available)
-//   Haiku → gemini-3.1-flash-lite (cost-efficient, high-volume)
+//   Haiku → gemini-3.1-flash-lite-preview (cost-efficient, high-volume)
 //
 // OpenRouter (April 2026):
 //   free  → qwen/qwen3-235b-a22b:free (strongest free MoE model)
@@ -143,17 +143,17 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
       free: {
         opus:   'gemini-3-flash-preview',
         sonnet: 'gemini-3-flash-preview',
-        haiku:  'gemini-3-flash-preview',
+        haiku:  'gemini-3.1-flash-lite-preview',
       },
       pro: {
         opus:   process.env.GEMINI_MODEL_OPUS   ?? 'gemini-3.1-pro-preview',
-        sonnet: process.env.GEMINI_MODEL_SONNET ?? 'gemini-3.1-pro-preview',
-        haiku:  process.env.GEMINI_MODEL_HAIKU  ?? 'gemini-3.1-flash-lite',
+        sonnet: process.env.GEMINI_MODEL_SONNET ?? 'gemini-2.5-pro',
+        haiku:  process.env.GEMINI_MODEL_HAIKU  ?? 'gemini-3.1-flash-lite-preview',
       },
       plus: {
         opus:   process.env.GEMINI_MODEL_OPUS   ?? 'gemini-3.1-pro-preview',
         sonnet: process.env.GEMINI_MODEL_SONNET ?? 'gemini-3.1-pro-preview',
-        haiku:  process.env.GEMINI_MODEL_HAIKU  ?? 'gemini-3.1-flash-lite',
+        haiku:  process.env.GEMINI_MODEL_HAIKU  ?? 'gemini-2.5-flash-lite',
       },
     },
   },

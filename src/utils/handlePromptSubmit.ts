@@ -30,6 +30,12 @@ import type { ProcessUserInputContext } from './processUserInput/processUserInpu
 import { processUserInput } from './processUserInput/processUserInput.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
+import { createSystemMessage } from './messages.js'
+import { buildSurfCacheBanner, runSurfPhaseHook } from './surf/applyPhase.js'
+import {
+  extractLastUserText,
+  extractRecentToolNames,
+} from './surf/extract.js'
 import { runWithWorkload } from './workloadContext.js'
 
 function exit(): void {
@@ -73,6 +79,12 @@ type BaseExecutionParams = {
   setAppState: (updater: (prev: AppState) => AppState) => void
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
   canUseTool?: CanUseToolFn
+  /**
+   * Append messages to the REPL transcript. Used by the surf phase router
+   * to inject a one-line banner when the active model switches. Optional
+   * so headless paths (print.ts, tests) can skip passing it.
+   */
+  setMessages?: (updater: (prev: Message[]) => Message[]) => void
 }
 
 /**
@@ -105,7 +117,6 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
     text: string
     priority: 'low' | 'medium' | 'high' | 'immediate'
   }) => void
-  setMessages?: (updater: (prev: Message[]) => Message[]) => void
   streamMode?: SpinnerMode
   hasInterruptibleToolInProgress?: boolean
   uuid?: UUID
@@ -167,6 +178,7 @@ export async function handlePromptSubmit(
       resetHistory,
       canUseTool,
       onInputChange,
+      setMessages: params.setMessages,
     })
     return
   }
@@ -383,6 +395,7 @@ export async function handlePromptSubmit(
     resetHistory,
     canUseTool,
     onInputChange,
+    setMessages: params.setMessages,
   })
 }
 
@@ -410,6 +423,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     resetHistory,
     canUseTool,
     queuedCommands,
+    setMessages,
   } = params
 
   // Note: paste references are already processed before calling this function
@@ -557,18 +571,60 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
             ? primaryCmd.value
             : undefined
         const shouldCallBeforeQuery = primaryMode === 'prompt'
+
+        // Surf phase router — auto-switch the main-loop model based on the
+        // detected work phase (planning / building / reviewing / background).
+        // Only fires when a skill-level model override isn't already taking
+        // priority: skills are explicit user intent and always win.
+        let effectiveMainLoopModel = model
+          ? resolveSkillModelOverride(model, mainLoopModel)
+          : mainLoopModel
+        let surfResult: ReturnType<typeof runSurfPhaseHook> = null
+        if (!model) {
+          const ctx = makeContext()
+          surfResult = runSurfPhaseHook({
+            permissionMode: ctx.getAppState().toolPermissionContext.mode,
+            recentToolNames: extractRecentToolNames(messages),
+            lastUserMessage: extractLastUserText(newMessages),
+            messageCount: messages.length + newMessages.length,
+          })
+          if (surfResult) {
+            effectiveMainLoopModel = surfResult.modelToApply
+            // Only print the banner when the phase actually changed — every
+            // turn would be noise. runSurfPhaseHook still updated module
+            // state + bootstrap override so the model routes correctly.
+            if (surfResult.changed && setMessages) {
+              setMessages(prev => [
+                ...prev,
+                createSystemMessage(surfResult!.bannerLine, 'info'),
+              ])
+            }
+          }
+        }
+
         await onQuery(
           newMessages,
           abortController,
           shouldQuery,
           allowedTools ?? [],
-          model
-            ? resolveSkillModelOverride(model, mainLoopModel)
-            : mainLoopModel,
+          effectiveMainLoopModel,
           shouldCallBeforeQuery ? onBeforeQuery : undefined,
           primaryInput,
           effort,
         )
+
+        // Post-turn cache hit rate banner — only when surf actually ran
+        // this turn (no skill override, config in place). Reads the
+        // per-turn delta captured by recordSurfUsage during onQuery.
+        if (surfResult && setMessages) {
+          const line = buildSurfCacheBanner(surfResult.newPhase)
+          if (line) {
+            setMessages(prev => [
+              ...prev,
+              createSystemMessage(line, 'info'),
+            ])
+          }
+        }
       } else {
         // Local slash commands that skip messages (e.g., /model, /theme).
         // Release the guard BEFORE clearing toolJSX to prevent spinner flash —

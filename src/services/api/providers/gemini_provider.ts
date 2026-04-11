@@ -33,7 +33,46 @@ import {
   unwrapCodeAssistResponse,
   wrapForCodeAssist,
 } from './gemini_code_assist.js'
+import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
+
+// Models reachable through the Code Assist proxy when signed in via
+// OAuth (cloud-platform scope). Hardcoded because Code Assist does not
+// expose a listModels endpoint, and v1beta/models rejects cloud-platform
+// tokens as restricted_client.
+//
+// The canonical source for this list is Google's own gemini-cli:
+// google-gemini/gemini-cli/packages/core/src/config/models.ts
+// Listed here in priority order (top = strongest reasoning).
+const GEMINI_OAUTH_CURATED_MODELS: ModelInfo[] = [
+  { id: 'gemini-3.1-pro-preview',              name: 'Gemini 3.1 Pro (preview)' },
+  { id: 'gemini-3-pro-preview',                name: 'Gemini 3 Pro (preview)' },
+  { id: 'gemini-3.1-pro-preview-customtools',  name: 'Gemini 3.1 Pro · custom tools (preview)' },
+  { id: 'gemini-3-flash-preview',              name: 'Gemini 3 Flash (preview)' },
+  { id: 'gemini-3.1-flash-lite-preview',       name: 'Gemini 3.1 Flash Lite (preview)' },
+  { id: 'gemini-2.5-pro',                      name: 'Gemini 2.5 Pro' },
+  { id: 'gemini-2.5-flash',                    name: 'Gemini 2.5 Flash' },
+  { id: 'gemini-2.5-flash-lite',               name: 'Gemini 2.5 Flash Lite' },
+]
+
+/**
+ * Generative models that live on v1beta/models but are NOT chat-completion
+ * capable — image/audio/TTS/video/embedding. The API-key path will surface
+ * them with a descriptive suffix so users can tell at a glance they are not
+ * candidates for general chat turns. OAuth users never see them because
+ * Code Assist does not proxy these endpoints.
+ */
+function _enrichGeminiModelName(id: string, displayName: string): string {
+  const lower = id.toLowerCase()
+  if (lower.includes('-tts')) return `${displayName} · TTS`
+  if (lower.includes('-image')) return `${displayName} · image gen`
+  if (lower.includes('-live') || lower.includes('-native-audio')) return `${displayName} · realtime audio`
+  if (lower.startsWith('veo-')) return `${displayName} · video gen`
+  if (lower.startsWith('lyria-')) return `${displayName} · music gen`
+  if (lower.includes('embedding')) return `${displayName} · embeddings`
+  if (lower.includes('robotics')) return `${displayName} · robotics`
+  return displayName
+}
 
 export class GeminiProvider extends BaseProvider {
   readonly name = 'gemini'
@@ -78,7 +117,8 @@ export class GeminiProvider extends BaseProvider {
       return buildProviderStreamResult(anthropicEvents)
     }
 
-    // API key path → direct v1beta endpoint.
+    // API key path → try to use context caching, then call v1beta.
+    const cacheName = await this._applyContextCache(model, body)
     const url = `${this.baseUrl}/models/${model}:streamGenerateContent?alt=sse`
     const response = await fetch(url, {
       method: 'POST',
@@ -88,6 +128,11 @@ export class GeminiProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      // Cached content expired on the server side — drop it and retry inline.
+      if (cacheName && this._isCacheExpiredError(response.status, errText)) {
+        invalidateCache(cacheName)
+        return this.stream(params)
+      }
       throw this._formatGeminiError(response.status, errText)
     }
 
@@ -126,7 +171,8 @@ export class GeminiProvider extends BaseProvider {
       return geminiMessageToAnthropic(data, model)
     }
 
-    // API key path → direct v1beta endpoint.
+    // API key path → try to use context caching, then call v1beta.
+    const cacheName = await this._applyContextCache(model, body)
     const url = `${this.baseUrl}/models/${model}:generateContent`
     const response = await fetch(url, {
       method: 'POST',
@@ -136,6 +182,10 @@ export class GeminiProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      if (cacheName && this._isCacheExpiredError(response.status, errText)) {
+        invalidateCache(cacheName)
+        return this.create(params)
+      }
       throw this._formatGeminiError(response.status, errText)
     }
 
@@ -143,16 +193,61 @@ export class GeminiProvider extends BaseProvider {
     return geminiMessageToAnthropic(data, model)
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    const url = this.oauthToken
-      ? `${this.baseUrl}/models`
-      : `${this.baseUrl}/models?key=${this.apiKey}`
-
-    const response = await fetch(url, {
-      headers: this.oauthToken
-        ? { 'Authorization': `Bearer ${this.oauthToken}` }
-        : {},
+  /**
+   * Attempt to attach a `cachedContents/...` reference to the outgoing
+   * request body. Mutates `body` in place: on a cache hit, clears
+   * `systemInstruction` and `tools` and sets `cachedContent`. Returns
+   * the cache name so the caller can invalidate it on 404/expired.
+   *
+   * API-key path only. OAuth (Code Assist) is skipped because the
+   * proxy's cachedContents endpoint is not verified.
+   */
+  private async _applyContextCache(
+    model: string,
+    body: ReturnType<typeof anthropicToGeminiRequest>,
+  ): Promise<string | null> {
+    if (!this.apiKey) return null
+    const cacheName = await getOrCreateCache({
+      model,
+      baseUrl: this.baseUrl,
+      apiKey: this.apiKey,
+      systemInstruction: body.systemInstruction,
+      tools: body.tools,
     })
+    if (!cacheName) return null
+    // cachedContent replaces systemInstruction + tools — Gemini rejects
+    // requests that carry both. Strip them from the outgoing body.
+    delete body.systemInstruction
+    delete body.tools
+    body.cachedContent = cacheName
+    return cacheName
+  }
+
+  /**
+   * Detect the Gemini error shape that means "the cachedContent name
+   * you referenced no longer exists" — typically a 404 or a 400 with
+   * "CachedContent" in the message. On a match we drop the cache entry
+   * and retry inline.
+   */
+  private _isCacheExpiredError(status: number, body: string): boolean {
+    if (status === 404) return true
+    if (status === 400 && /cached.?content/i.test(body)) return true
+    return false
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    // OAuth path: the Gemini CLI OAuth client is scoped to cloud-platform
+    // only, which generativelanguage.googleapis.com/v1beta/models rejects
+    // (403 restricted_client). Code Assist doesn't expose a listModels
+    // endpoint either, so we return a curated list of the models that are
+    // actually reachable through the Code Assist proxy.
+    if (this.oauthToken) {
+      return GEMINI_OAUTH_CURATED_MODELS
+    }
+
+    // API key path — v1beta/models is fine here.
+    const url = `${this.baseUrl}/models?key=${this.apiKey}`
+    const response = await fetch(url)
 
     if (!response.ok) return []
     const data = (await response.json()) as {
@@ -160,10 +255,13 @@ export class GeminiProvider extends BaseProvider {
     }
     return (data.models ?? [])
       .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
-      .map(m => ({
-        id: m.name.replace('models/', ''),
-        name: m.displayName,
-      }))
+      .map(m => {
+        const id = m.name.replace('models/', '')
+        return {
+          id,
+          name: _enrichGeminiModelName(id, m.displayName || id),
+        }
+      })
   }
 
   resolveModel(claudeModel: string): string {

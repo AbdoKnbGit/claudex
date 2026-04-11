@@ -29,6 +29,21 @@ export class OpenRouterProvider extends OpenAIProvider {
   }
 
   /**
+   * OpenRouter exposes a unified `reasoning` field that every upstream
+   * provider (Anthropic, OpenAI, Google, DeepSeek, etc.) respects via
+   * their native reasoning surface. We always map the /thinking toggle
+   * through this, rather than overriding reasoning_effort, so every
+   * thinking-capable model routed via OpenRouter behaves consistently.
+   */
+  protected modelSupportsReasoningEffort(_model: string): boolean {
+    // We return true so the base OpenAIProvider branch runs and
+    // `reasoning_effort` is set. OpenRouter accepts both
+    // `reasoning_effort` and `reasoning: { effort }`; models that don't
+    // reason quietly ignore the flag.
+    return true
+  }
+
+  /**
    * OpenRouter has its own model list endpoint with richer metadata
    * including pricing, context length, and provider info.
    */

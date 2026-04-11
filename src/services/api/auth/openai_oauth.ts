@@ -6,11 +6,14 @@
  *
  * Flow:
  *   1. Generate PKCE code_verifier + code_challenge (S256)
- *   2. Open browser to OpenAI consent screen
- *   3. Spin up local HTTP server for the redirect callback
- *   4. Exchange authorization code for access + refresh tokens
- *   5. Store tokens via api_key_manager
- *   6. Auto-refresh when expired
+ *   2. Start local HTTP server on 127.0.0.1:1455 for the redirect callback
+ *   3. Open browser to OpenAI consent screen
+ *   4. Exchange authorization code → id_token + access_token + refresh_token
+ *   5. Token-exchange the id_token → API-capable access token
+ *      (matches Codex's obtain_api_key() — the first access token is only
+ *       valid for auth service calls, not the OpenAI API)
+ *   6. Redirect browser to /success, store tokens, done
+ *   7. Auto-refresh when expired
  *
  * No env vars required — works out of the box.
  * The user signs in with their ChatGPT / OpenAI account.
@@ -32,19 +35,23 @@ const ORIGINATOR = 'codex_cli_rs'
 
 // IMPORTANT: must be /oauth/authorize (not /authorize) — the shorter path
 // returns a blank / broken page in the browser.
-const OPENAI_AUTH_URL = 'https://auth.openai.com/oauth/authorize'
-const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token'
+const OPENAI_ISSUER = 'https://auth.openai.com'
+const OPENAI_AUTH_URL = `${OPENAI_ISSUER}/oauth/authorize`
+const OPENAI_TOKEN_URL = `${OPENAI_ISSUER}/oauth/token`
 const REDIRECT_PATH = '/auth/callback'
+const SUCCESS_PATH = '/success'
 // Codex CLI's registered port — OpenAI validates redirect URIs exactly
 const DEFAULT_PORT = 1455
 
 // Must match the Codex CLI scope list exactly — these are the scopes
 // registered for app_EMoamEEZ73f0CkXaXp7hrann. Missing api.connectors.*
 // causes a "scope not allowed" error.
-const SCOPES = 'openid profile email offline_access api.connectors.read api.connectors.invoke'
+const SCOPES =
+  'openid profile email offline_access api.connectors.read api.connectors.invoke'
 
 interface OpenAIOAuthTokens {
   access_token: string
+  id_token?: string
   refresh_token?: string
   expires_in: number
   token_type: string
@@ -52,9 +59,9 @@ interface OpenAIOAuthTokens {
 }
 
 interface StoredOpenAITokens {
-  accessToken: string
+  accessToken: string // API-capable token (from token exchange)
   refreshToken: string
-  expiresAt: number  // Unix timestamp ms
+  expiresAt: number // Unix timestamp ms
 }
 
 // ─── PKCE Helpers ──────────────────────────────────────────────────
@@ -82,11 +89,18 @@ export async function startOpenAIOAuthFlow(): Promise<{
   const codeChallenge = generateCodeChallenge(codeVerifier)
   const state = randomBytes(16).toString('hex')
 
-  // Must use port 1455 — matches Codex CLI's registered redirect URI
-  const port = await tryPort(DEFAULT_PORT)
+  // Must use port 1455 — matches Codex CLI's registered redirect URI.
+  // OpenAI validates the redirect URI exactly, so we cannot fall back
+  // to a random free port.
+  const port = DEFAULT_PORT
   const redirectUri = `http://localhost:${port}${REDIRECT_PATH}`
 
-  // Build authorization URL
+  // Start the callback server BEFORE opening the browser so the redirect
+  // always has something to talk to. If the port is in use we bail before
+  // the user wastes time in their browser.
+  const callbackReady = startCallbackServer(port, state)
+
+  // Build authorization URL.
   // The extra id_token_add_organizations + codex_cli_simplified_flow params
   // are required by OpenAI's Codex OAuth client — omitting them triggers a
   // blank response page in the browser.
@@ -102,6 +116,10 @@ export async function startOpenAIOAuthFlow(): Promise<{
   authUrl.searchParams.set('originator', ORIGINATOR)
   authUrl.searchParams.set('state', state)
 
+  // Wait until the server is actually listening before opening the browser.
+  // If the port is in use we throw here and never pop a browser window.
+  const { authCodePromise } = await callbackReady
+
   const authUrlString = authUrl.toString()
   const opened = await openBrowser(authUrlString)
   if (!opened) {
@@ -110,40 +128,71 @@ export async function startOpenAIOAuthFlow(): Promise<{
     )
   }
 
-  // Start local server and wait for callback
-  const authCode = await waitForAuthCode(port, state)
+  // Wait for the callback.
+  const authCode = await authCodePromise
 
-  // Exchange code for tokens (PKCE — no client_secret needed)
-  const tokenResponse = await fetch(OPENAI_TOKEN_URL, {
+  // Step 1 — exchange authorization code for id_token + access_token + refresh_token.
+  const firstExchange = await fetch(OPENAI_TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
+      grant_type: 'authorization_code',
       code: authCode,
       client_id: CLIENT_ID,
       redirect_uri: redirectUri,
-      grant_type: 'authorization_code',
       code_verifier: codeVerifier,
     }),
   })
 
-  if (!tokenResponse.ok) {
-    const errText = await tokenResponse.text()
+  if (!firstExchange.ok) {
+    const errText = await firstExchange.text()
     throw new Error(`OpenAI token exchange failed: ${errText}`)
   }
 
-  const tokens = (await tokenResponse.json()) as OpenAIOAuthTokens
+  const firstTokens = (await firstExchange.json()) as OpenAIOAuthTokens
+
+  // Step 2 — token-exchange the id_token for an API-key access token.
+  // Matches Codex's `obtain_api_key()`. The first-exchange access_token
+  // is only valid for the auth service; API calls need the token we get
+  // from this second exchange.
+  let apiAccessToken = firstTokens.access_token
+  if (firstTokens.id_token) {
+    try {
+      const exchange = await fetch(OPENAI_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+          client_id: CLIENT_ID,
+          requested_token: 'openai-api-key',
+          subject_token: firstTokens.id_token,
+          subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+          scope: 'openid profile email',
+        }),
+      })
+      if (exchange.ok) {
+        const exchanged = (await exchange.json()) as OpenAIOAuthTokens
+        if (exchanged.access_token) {
+          apiAccessToken = exchanged.access_token
+        }
+      }
+    } catch {
+      // If the second exchange fails, fall back to the first-exchange
+      // access token — some endpoints may still accept it.
+    }
+  }
 
   // Store tokens
   const stored: StoredOpenAITokens = {
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token ?? '',
-    expiresAt: Date.now() + tokens.expires_in * 1000,
+    accessToken: apiAccessToken,
+    refreshToken: firstTokens.refresh_token ?? '',
+    expiresAt: Date.now() + firstTokens.expires_in * 1000,
   }
   saveProviderKey('openai_oauth', JSON.stringify(stored))
 
   return {
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token ?? '',
+    accessToken: apiAccessToken,
+    refreshToken: firstTokens.refresh_token ?? '',
   }
 }
 
@@ -168,15 +217,43 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<string> 
 
   const tokens = (await response.json()) as OpenAIOAuthTokens
 
+  // If the refresh response contains an id_token, do the second exchange
+  // again so the stored token is always API-capable.
+  let apiAccessToken = tokens.access_token
+  if (tokens.id_token) {
+    try {
+      const exchange = await fetch(OPENAI_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+          client_id: CLIENT_ID,
+          requested_token: 'openai-api-key',
+          subject_token: tokens.id_token,
+          subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+          scope: 'openid profile email',
+        }),
+      })
+      if (exchange.ok) {
+        const exchanged = (await exchange.json()) as OpenAIOAuthTokens
+        if (exchanged.access_token) {
+          apiAccessToken = exchanged.access_token
+        }
+      }
+    } catch {
+      // Fall back to the refresh-response access token.
+    }
+  }
+
   // Update stored tokens
   const stored: StoredOpenAITokens = {
-    accessToken: tokens.access_token,
+    accessToken: apiAccessToken,
     refreshToken: tokens.refresh_token ?? refreshToken,
     expiresAt: Date.now() + tokens.expires_in * 1000,
   }
   saveProviderKey('openai_oauth', JSON.stringify(stored))
 
-  return tokens.access_token
+  return apiAccessToken
 }
 
 /**
@@ -195,7 +272,7 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
       if (tokens.refreshToken) {
         return await refreshOpenAIToken(tokens.refreshToken)
       }
-      return null  // No refresh token, need full re-auth
+      return null // No refresh token, need full re-auth
     }
 
     return tokens.accessToken
@@ -207,37 +284,42 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
 // ─── Internal helpers ──────────────────────────────────────────────
 
 /**
- * Try to bind to the given port. Returns the port if available.
- * Throws if the port is in use — OpenAI requires port 1455 specifically.
+ * Start the local callback server and return a promise for the auth code.
+ *
+ * Resolves once the server is actually listening (so the caller can open
+ * the browser safely). The returned `authCodePromise` resolves when the
+ * browser hits /auth/callback, or rejects on timeout / error / mismatched
+ * state / port-in-use.
+ *
+ * We bind explicitly to 127.0.0.1 — on modern Windows Node defaults to
+ * IPv6 `::` which leaves `localhost` (resolved to 127.0.0.1 via hosts)
+ * with nothing listening, producing a "connection refused" / spinner that
+ * the OpenAI auth page reports as "Operation timed out".
  */
-function tryPort(port: number): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        reject(new Error(
-          `Port ${port} is in use. Close the application using it and try again.\n` +
-          `OpenAI OAuth requires this specific port for the redirect callback.`,
-        ))
-      } else {
-        reject(err)
-      }
+function startCallbackServer(
+  port: number,
+  expectedState: string,
+): Promise<{ authCodePromise: Promise<string> }> {
+  return new Promise((resolveReady, rejectReady) => {
+    let resolveCode: (code: string) => void = () => {}
+    let rejectCode: (err: Error) => void = () => {}
+    const authCodePromise = new Promise<string>((res, rej) => {
+      resolveCode = res
+      rejectCode = rej
     })
-    server.listen(port, () => {
-      server.close(() => resolve(port))
-    })
-  })
-}
 
-function waitForAuthCode(port: number, expectedState: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      server.close()
-      reject(new Error('OAuth callback timed out after 5 minutes'))
-    }, 5 * 60 * 1000)
+    const timeout = setTimeout(
+      () => {
+        try {
+          server.close()
+        } catch {}
+        rejectCode(new Error('OAuth callback timed out after 5 minutes'))
+      },
+      5 * 60 * 1000,
+    )
 
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '', `http://localhost:${port}`)
+      const url = new URL(req.url ?? '', `http://127.0.0.1:${port}`)
 
       if (url.pathname === REDIRECT_PATH) {
         const code = url.searchParams.get('code')
@@ -245,41 +327,162 @@ function waitForAuthCode(port: number, expectedState: string): Promise<string> {
         const state = url.searchParams.get('state')
 
         if (error) {
-          res.writeHead(400, { 'Content-Type': 'text/html' })
-          res.end(`<h1>Authentication Failed</h1><p>${error}</p>`)
+          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
+          res.end(renderErrorPage(`OpenAI returned: ${error}`))
           clearTimeout(timeout)
-          server.close()
-          reject(new Error(`OpenAI OAuth error: ${error}`))
+          setTimeout(() => {
+            try {
+              server.close()
+            } catch {}
+          }, 1000)
+          rejectCode(new Error(`OpenAI OAuth error: ${error}`))
           return
         }
 
         if (state !== expectedState) {
-          res.writeHead(400, { 'Content-Type': 'text/html' })
-          res.end('<h1>Authentication Failed</h1><p>Invalid state.</p>')
+          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
+          res.end(renderErrorPage('Invalid state parameter.'))
           clearTimeout(timeout)
-          server.close()
-          reject(new Error('OpenAI OAuth error: invalid state parameter'))
+          setTimeout(() => {
+            try {
+              server.close()
+            } catch {}
+          }, 1000)
+          rejectCode(new Error('OpenAI OAuth error: invalid state parameter'))
           return
         }
 
         if (code) {
-          res.writeHead(200, { 'Content-Type': 'text/html' })
-          res.end(
-            '<h1>Signed in!</h1>' +
-            '<p>You can close this window and return to Claudex.</p>' +
-            '<script>window.close()</script>',
-          )
+          // 302 → /success so the browser lands on a clean confirmation
+          // page instead of the inline HTML we'd otherwise return.
+          res.writeHead(302, { Location: SUCCESS_PATH })
+          res.end()
           clearTimeout(timeout)
-          server.close()
-          resolve(code)
+          // Keep the server alive long enough to serve /success before
+          // closing — otherwise the browser sees "connection refused".
+          setTimeout(() => {
+            try {
+              server.close()
+            } catch {}
+          }, 2000)
+          resolveCode(code)
           return
         }
+      }
+
+      if (url.pathname === SUCCESS_PATH) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(renderSuccessPage())
+        return
       }
 
       res.writeHead(404)
       res.end()
     })
 
-    server.listen(port)
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timeout)
+      if (err.code === 'EADDRINUSE') {
+        const msg =
+          `Port ${port} is in use. Close whatever is bound to it ` +
+          `(maybe the real Codex CLI?) and try /login again. ` +
+          `OpenAI OAuth requires this exact port for the redirect.`
+        rejectReady(new Error(msg))
+        rejectCode(new Error(msg))
+      } else {
+        rejectReady(err)
+        rejectCode(err)
+      }
+    })
+
+    // Bind to 127.0.0.1 explicitly so `localhost` always reaches us.
+    server.listen(port, '127.0.0.1', () => {
+      resolveReady({ authCodePromise })
+    })
+  })
+}
+
+function renderSuccessPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Signed in - Claudex</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: #e2e8f0;
+    }
+    .card {
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 16px;
+      padding: 48px 64px;
+      text-align: center;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      max-width: 420px;
+    }
+    h1 { margin: 0 0 12px; font-size: 26px; font-weight: 600; color: #f8fafc; }
+    p { margin: 0; color: #94a3b8; font-size: 15px; line-height: 1.5; }
+    .check {
+      width: 56px; height: 56px; margin: 0 auto 24px;
+      border-radius: 50%;
+      background: #10b981;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px; color: white; font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="check">&#10003;</div>
+    <h1>Signed in</h1>
+    <p>You can close this window and return to Claudex.</p>
+  </main>
+  <script>setTimeout(function(){ try { window.close() } catch (_) {} }, 1500);</script>
+</body>
+</html>`
+}
+
+function renderErrorPage(msg: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Authentication failed - Claudex</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      padding: 40px; background: #1e293b; color: #fee2e2;
+      min-height: 100vh; margin: 0;
+    }
+    h1 { color: #fca5a5; margin-bottom: 16px; }
+    code { background: #0f172a; padding: 2px 6px; border-radius: 4px; color: #e2e8f0; }
+    p { line-height: 1.6; max-width: 540px; }
+  </style>
+</head>
+<body>
+  <h1>Authentication failed</h1>
+  <p>${escapeHtml(msg)}</p>
+  <p>Return to Claudex and run <code>/login</code> to try again.</p>
+</body>
+</html>`
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, c => {
+    const map: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }
+    return map[c] ?? c
   })
 }

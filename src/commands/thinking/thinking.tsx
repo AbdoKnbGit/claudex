@@ -92,16 +92,34 @@ function ApplyThinkingAndClose({
   const setAppState = useSetAppState()
   const model = useMainLoopModel()
 
-  React.useEffect(() => {
-    setAppState(prev => ({ ...prev, thinkingEnabled: newEnabled }))
+  // Capture latest refs so the effect deps can stay empty — prevents
+  // re-fires when the parent re-renders with a new `onDone` closure.
+  const onDoneRef = React.useRef(onDone)
+  const modelRef = React.useRef(model)
+  const setAppStateRef = React.useRef(setAppState)
+  const newEnabledRef = React.useRef(newEnabled)
+  onDoneRef.current = onDone
+  modelRef.current = model
+  setAppStateRef.current = setAppState
+  newEnabledRef.current = newEnabled
 
-    const supportsIt = currentModelSupportsThinking(model)
-    const stateLabel = newEnabled ? chalk.green('ON') : chalk.red('OFF')
-    const modelLabel = chalk.bold(model || 'unknown')
+  const hasFiredRef = React.useRef(false)
+
+  React.useEffect(() => {
+    if (hasFiredRef.current) return
+    hasFiredRef.current = true
+
+    const enabled = newEnabledRef.current
+    const currentModel = modelRef.current
+    setAppStateRef.current(prev => ({ ...prev, thinkingEnabled: enabled }))
+
+    const supportsIt = currentModelSupportsThinking(currentModel)
+    const stateLabel = enabled ? chalk.green('ON') : chalk.red('OFF')
+    const modelLabel = chalk.bold(currentModel || 'unknown')
 
     const lines = [`Thinking mode: ${stateLabel}`]
 
-    if (newEnabled && !supportsIt) {
+    if (enabled && !supportsIt) {
       lines.push(
         chalk.yellow(
           `Note: ${modelLabel} does not support thinking. Requests will be sent normally.`,
@@ -115,7 +133,7 @@ function ApplyThinkingAndClose({
           ),
         )
       }
-    } else if (newEnabled && supportsIt) {
+    } else if (enabled && supportsIt) {
       lines.push(
         chalk.dim(
           `${modelLabel} supports thinking — the model will reason step-by-step.`,
@@ -123,8 +141,8 @@ function ApplyThinkingAndClose({
       )
     }
 
-    onDone(lines.join('\n'))
-  }, [setAppState, newEnabled, model, onDone])
+    onDoneRef.current(lines.join('\n'))
+  }, [])
 
   return null
 }
@@ -136,16 +154,34 @@ function ShowCurrentThinking({
 }) {
   const thinkingEnabled = useAppState((s: any) => s.thinkingEnabled)
   const model = useMainLoopModel()
-  const supportsIt = currentModelSupportsThinking(model)
 
-  const stateLabel = thinkingEnabled ? chalk.green('ON') : chalk.red('OFF')
-  const supportLabel = supportsIt
-    ? chalk.green('supported')
-    : chalk.yellow('not supported')
+  const onDoneRef = React.useRef(onDone)
+  onDoneRef.current = onDone
+  const thinkingEnabledRef = React.useRef(thinkingEnabled)
+  thinkingEnabledRef.current = thinkingEnabled
+  const modelRef = React.useRef(model)
+  modelRef.current = model
 
-  onDone(
-    `Thinking: ${stateLabel} | Current model (${chalk.bold(model)}): ${supportLabel}`,
-  )
+  const hasFiredRef = React.useRef(false)
+
+  React.useEffect(() => {
+    if (hasFiredRef.current) return
+    hasFiredRef.current = true
+
+    const currentModel = modelRef.current
+    const supportsIt = currentModelSupportsThinking(currentModel)
+    const stateLabel = thinkingEnabledRef.current
+      ? chalk.green('ON')
+      : chalk.red('OFF')
+    const supportLabel = supportsIt
+      ? chalk.green('supported')
+      : chalk.yellow('not supported')
+
+    onDoneRef.current(
+      `Thinking: ${stateLabel} | Current model (${chalk.bold(currentModel)}): ${supportLabel}`,
+    )
+  }, [])
+
   return null
 }
 
@@ -165,6 +201,28 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   return <ThinkingToggler args={trimmedArgs} onDone={onDone} />
 }
 
+function InvalidArgsNotice({
+  args,
+  onDone,
+}: {
+  args: string
+  onDone: (result?: string, options?: { display?: 'system' }) => void
+}) {
+  const onDoneRef = React.useRef(onDone)
+  onDoneRef.current = onDone
+  const hasFiredRef = React.useRef(false)
+
+  React.useEffect(() => {
+    if (hasFiredRef.current) return
+    hasFiredRef.current = true
+    onDoneRef.current(
+      `Unknown argument "${args}". Use ${chalk.cyan('/thinking on')}, ${chalk.cyan('/thinking off')}, or ${chalk.cyan('/thinking')} to toggle.`,
+    )
+  }, [])
+
+  return null
+}
+
 function ThinkingToggler({
   args,
   onDone,
@@ -176,10 +234,7 @@ function ThinkingToggler({
 
   const newEnabled = parseTargetState(args, currentEnabled)
   if (newEnabled === null) {
-    onDone(
-      `Unknown argument "${args}". Use ${chalk.cyan('/thinking on')}, ${chalk.cyan('/thinking off')}, or ${chalk.cyan('/thinking')} to toggle.`,
-    )
-    return null
+    return <InvalidArgsNotice args={args} onDone={onDone} />
   }
 
   return <ApplyThinkingAndClose newEnabled={newEnabled} onDone={onDone} />

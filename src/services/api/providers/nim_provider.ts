@@ -40,8 +40,10 @@ const THINKING_MODELS = [
 
 export class NimProvider extends OpenAIProvider {
   readonly name = 'nim'
-  private enableThinking: boolean
-  private thinkingBudget: number
+  /** Env-var fallback for users who want thinking on without the /thinking toggle */
+  private envEnableThinking: boolean
+  /** Default budget used when no explicit request budget is supplied */
+  private defaultThinkingBudget: number
 
   constructor(config: ProviderConfig) {
     super({
@@ -61,8 +63,13 @@ export class NimProvider extends OpenAIProvider {
       this.optimizePayload = false
     }
 
-    this.enableThinking = process.env.NIM_ENABLE_THINKING === 'true'
-    this.thinkingBudget = parseInt(process.env.NIM_THINKING_BUDGET ?? '8192', 10)
+    // Kept as a fallback: if the user has NIM_ENABLE_THINKING=true in their
+    // env, thinking is forced on for kimi-k2-thinking even without /thinking.
+    this.envEnableThinking = process.env.NIM_ENABLE_THINKING === 'true'
+    this.defaultThinkingBudget = parseInt(
+      process.env.NIM_THINKING_BUDGET ?? '8192',
+      10,
+    )
   }
 
   /**
@@ -122,9 +129,25 @@ export class NimProvider extends OpenAIProvider {
     if (optimized.temperature !== undefined) body.temperature = optimized.temperature
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
-    // Inject NIM thinking extension
-    if (this.enableThinking) {
-      body.nvext = { budget_tokens: this.thinkingBudget }
+    // Resolve thinking budget. Precedence:
+    //   1. params.thinking.budget_tokens (from /thinking toggle via claude.ts)
+    //   2. NIM_ENABLE_THINKING env var (uses NIM_THINKING_BUDGET)
+    // If thinking is explicitly 'disabled' on params, skip entirely even
+    // if the env var is set — the user just turned it off via /thinking.
+    const reqThinking = optimized.thinking
+    let budget: number | undefined
+    if (reqThinking && reqThinking.type === 'enabled') {
+      budget = reqThinking.budget_tokens
+    } else if (reqThinking && reqThinking.type === 'adaptive') {
+      budget = this.defaultThinkingBudget
+    } else if (
+      (!reqThinking || reqThinking.type !== 'disabled') &&
+      this.envEnableThinking
+    ) {
+      budget = this.defaultThinkingBudget
+    }
+    if (budget !== undefined) {
+      body.nvext = { budget_tokens: budget }
     }
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {

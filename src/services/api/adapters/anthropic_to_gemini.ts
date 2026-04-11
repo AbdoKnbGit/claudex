@@ -26,7 +26,18 @@ export interface GeminiRequest {
     maxOutputTokens?: number
     temperature?: number
     stopSequences?: string[]
+    thinkingConfig?: {
+      thinkingBudget?: number
+      includeThoughts?: boolean
+    }
   }
+  /**
+   * Reference to a previously created `cachedContents/...` resource. When
+   * set, `systemInstruction` and `tools` MUST be omitted — the cache
+   * carries them. Used by the cache manager to reduce per-turn token cost
+   * on repeated system prompts.
+   */
+  cachedContent?: string
 }
 
 export interface GeminiContent {
@@ -142,6 +153,17 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
     maxOutputTokens: params.max_tokens,
     ...(params.temperature !== undefined && { temperature: params.temperature }),
     ...(params.stop_sequences && { stopSequences: params.stop_sequences }),
+  }
+
+  // Map Anthropic-style thinking → Gemini thinkingConfig. Only Gemini 2.5+
+  // "thinking" models honor this; older models ignore it. -1 is dynamic.
+  if (params.thinking && params.thinking.type !== 'disabled') {
+    const budget =
+      params.thinking.type === 'enabled' ? params.thinking.budget_tokens : -1
+    request.generationConfig.thinkingConfig = {
+      thinkingBudget: budget,
+      includeThoughts: true,
+    }
   }
 
   return request

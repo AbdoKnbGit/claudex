@@ -32,6 +32,13 @@ export interface GeminiStreamChunk {
     promptTokenCount?: number
     candidatesTokenCount?: number
     totalTokenCount?: number
+    /**
+     * Subset of `promptTokenCount` that was served from a cached content
+     * reference. Present when the request included `cachedContent: "..."`
+     * and Gemini 2.5+ cache was hit. We fold this into Anthropic's
+     * `cache_read_input_tokens` for accounting parity.
+     */
+    cachedContentTokenCount?: number
   }
   modelVersion?: string
 }
@@ -51,6 +58,7 @@ export interface GeminiGenerateContentResponse {
     promptTokenCount?: number
     candidatesTokenCount?: number
     totalTokenCount?: number
+    cachedContentTokenCount?: number
   }
 }
 
@@ -84,6 +92,7 @@ export function geminiMessageToAnthropic(
     : content.some(c => c.type === 'tool_use') ? 'tool_use'
     : 'end_turn'
 
+  const cachedTokens = response.usageMetadata?.cachedContentTokenCount
   return {
     id: `msg_gemini_${Date.now()}`,
     type: 'message',
@@ -95,6 +104,17 @@ export function geminiMessageToAnthropic(
     usage: {
       input_tokens: response.usageMetadata?.promptTokenCount ?? 0,
       output_tokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+      // Gemini's `cachedContentTokenCount` is the subset of prompt tokens
+      // served from a `cachedContents/...` reference — maps cleanly onto
+      // Anthropic's cache_read accounting. cache_creation is always 0
+      // from our side because cache creation happens in a separate
+      // request, not as a side effect of generateContent.
+      ...(cachedTokens !== undefined && cachedTokens > 0
+        ? {
+            cache_read_input_tokens: cachedTokens,
+            cache_creation_input_tokens: 0,
+          }
+        : {}),
     },
   }
 }
@@ -109,6 +129,7 @@ export async function* geminiStreamToAnthropicEvents(
   let blockIndex = 0
   let inputTokens = 0
   let outputTokens = 0
+  let cacheReadTokens = 0
 
   // Track open blocks for proper closing
   let textBlockOpen = false
@@ -119,6 +140,9 @@ export async function* geminiStreamToAnthropicEvents(
     if (chunk.usageMetadata) {
       inputTokens = chunk.usageMetadata.promptTokenCount ?? inputTokens
       outputTokens = chunk.usageMetadata.candidatesTokenCount ?? outputTokens
+      if (chunk.usageMetadata.cachedContentTokenCount !== undefined) {
+        cacheReadTokens = chunk.usageMetadata.cachedContentTokenCount
+      }
     }
 
     const candidate = chunk.candidates?.[0]
@@ -144,7 +168,16 @@ export async function* geminiStreamToAnthropicEvents(
           model,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            ...(cacheReadTokens > 0
+              ? {
+                  cache_read_input_tokens: cacheReadTokens,
+                  cache_creation_input_tokens: 0,
+                }
+              : {}),
+          },
         },
       }
     }

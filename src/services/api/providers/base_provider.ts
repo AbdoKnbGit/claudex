@@ -36,7 +36,18 @@ export interface AnthropicMessage {
   model: string
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | null
   stop_sequence: string | null
-  usage: { input_tokens: number; output_tokens: number }
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    /**
+     * Optional cache accounting fields. Third-party providers that
+     * support prompt caching (currently Gemini 2.5+ via cachedContents)
+     * populate these so ClaudeX's existing cost tracker treats them
+     * like Anthropic cache hits.
+     */
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
 }
 
 export interface AnthropicStreamEvent {
@@ -109,6 +120,17 @@ export interface ProviderRequestParams {
   temperature?: number
   stop_sequences?: string[]
   stream?: boolean
+  /**
+   * Anthropic-format thinking param. Individual providers translate this
+   * into their native reasoning/thinking flag (OpenAI `reasoning_effort`,
+   * Gemini `thinkingConfig`, NIM `nvext.budget_tokens`, OpenRouter
+   * `reasoning`, Ollama `enable_thinking`, etc.). When absent, no thinking
+   * is requested.
+   */
+  thinking?:
+    | { type: 'enabled'; budget_tokens: number }
+    | { type: 'adaptive' }
+    | { type: 'disabled' }
 }
 
 export interface SystemBlock {

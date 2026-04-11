@@ -113,16 +113,25 @@ export class OllamaProvider extends OpenAIProvider {
     const messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
     const tools = optimized.tools ? anthropicToolsToOpenAI(optimized.tools) : undefined
 
+    // Per-request thinking toggle — prefer the explicit params.thinking
+    // field (set by claude.ts from AppState.thinkingEnabled). Fall back to
+    // the shared bridge for legacy call sites that don't pass it.
+    const thinkingFromParams =
+      optimized.thinking === undefined
+        ? undefined
+        : optimized.thinking.type !== 'disabled'
+    const enableThinking =
+      thinkingFromParams ?? getOllamaThinkingEnabled()
+
     const body: Record<string, unknown> = {
       model,
       messages,
       max_tokens: optimized.max_tokens,
       stream: true,
       stream_options: { include_usage: true },
-      // Per-request thinking toggle — Ollama cloud thinking models honour
-      // this field, and we only send it for models in the allowlist so we
-      // never risk breaking non-thinking providers.
-      enable_thinking: getOllamaThinkingEnabled(),
+      // Ollama cloud thinking models honour this field; we only send it
+      // for models in the allowlist so non-thinking providers never break.
+      enable_thinking: enableThinking,
     }
     if (tools && tools.length > 0) {
       body.tools = tools
