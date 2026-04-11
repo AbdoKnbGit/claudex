@@ -209,6 +209,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Pre-Ink RGB gradient logo. Prints directly to stdout so the user gets
+  // immediate feedback before the heavier imports load. Internally gated for
+  // non-TTY / NO_COLOR / -p so scripted and CI runs stay silent.
+  const { printStartupScreen } = await import('../components/StartupScreen.js');
+  printStartupScreen();
+
   // For all other paths, load the startup profiler
   const {
     profileCheckpoint

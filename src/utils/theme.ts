@@ -438,80 +438,80 @@ const lightDaltonizedTheme: Theme = {
  * from users' custom terminal ANSI color definitions
  */
 const darkTheme: Theme = {
-  autoAccept: 'rgb(175,135,255)', // Electric violet
-  bashBorder: 'rgb(253,93,177)', // Bright pink
-  claude: 'rgb(140,210,140)', // Claudex bright green for dark
-  claudeShimmer: 'rgb(170,235,170)', // Lighter green shimmer
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(150,185,230)', // Beanie blue for spinner
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(180,210,250)', // Lighter beanie blue shimmer
-  permission: 'rgb(150,185,230)', // Beanie blue
-  permissionShimmer: 'rgb(180,210,250)', // Lighter beanie blue shimmer
-  planMode: 'rgb(72,150,140)', // Muted sage green
-  ide: 'rgb(150,185,230)', // Beanie blue
-  promptBorder: 'rgb(136,136,136)', // Medium gray
-  promptBorderShimmer: 'rgb(166,166,166)', // Lighter gray for shimmer
+  autoAccept: 'rgb(190,130,255)', // Electric violet (saturated)
+  bashBorder: 'rgb(255,95,205)', // Hot magenta neon
+  claude: 'rgb(120,255,220)', // Electric cyan-mint (Claudex signature)
+  claudeShimmer: 'rgb(170,255,235)', // Brighter electric cyan shimmer
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(140,180,255)', // Electric cobalt for spinner hat
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(185,215,255)', // Bright electric blue shimmer
+  permission: 'rgb(190,140,255)', // Electric violet
+  permissionShimmer: 'rgb(220,180,255)', // Bright violet shimmer
+  planMode: 'rgb(100,220,215)', // Electric teal
+  ide: 'rgb(130,200,255)', // Bright electric blue
+  promptBorder: 'rgb(120,130,180)', // Cool blue-gray
+  promptBorderShimmer: 'rgb(170,180,230)', // Lighter cool blue
   text: 'rgb(255,255,255)', // White
   inverseText: 'rgb(0,0,0)', // Black
-  inactive: 'rgb(153,153,153)', // Light gray
-  inactiveShimmer: 'rgb(193,193,193)', // Lighter gray for shimmer effect
-  subtle: 'rgb(80,80,80)', // Dark gray
-  suggestion: 'rgb(150,185,230)', // Beanie blue
-  remember: 'rgb(150,185,230)', // Beanie blue
-  background: 'rgb(120,190,140)', // Claudex green
-  success: 'rgb(78,186,101)', // Bright green
-  error: 'rgb(255,107,128)', // Bright red
-  warning: 'rgb(255,193,7)', // Bright amber
-  merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(255,223,57)', // Lighter amber for shimmer
-  diffAdded: 'rgb(34,92,43)', // Dark green
-  diffRemoved: 'rgb(122,41,54)', // Dark red
-  diffAddedDimmed: 'rgb(71,88,74)', // Very dark green
-  diffRemovedDimmed: 'rgb(105,72,77)', // Very dark red
-  diffAddedWord: 'rgb(56,166,96)', // Medium green
-  diffRemovedWord: 'rgb(179,89,107)', // Softer red (less intense than bright red)
-  // Agent colors
-  red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
-  green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
+  inactive: 'rgb(150,155,175)', // Cool gray
+  inactiveShimmer: 'rgb(190,195,215)', // Lighter cool gray
+  subtle: 'rgb(75,78,95)', // Dark blue-gray
+  suggestion: 'rgb(130,220,255)', // Electric sky blue
+  remember: 'rgb(200,150,255)', // Electric lavender
+  background: 'rgb(120,220,200)', // Neon mint
+  success: 'rgb(80,240,160)', // Neon green
+  error: 'rgb(255,80,140)', // Hot pink
+  warning: 'rgb(255,200,60)', // Neon amber
+  merged: 'rgb(190,130,255)', // Electric violet (matches autoAccept)
+  warningShimmer: 'rgb(255,225,110)', // Bright neon amber shimmer
+  diffAdded: 'rgb(28,72,58)', // Deep teal-green
+  diffRemoved: 'rgb(100,32,60)', // Deep magenta
+  diffAddedDimmed: 'rgb(55,80,72)', // Dim teal
+  diffRemovedDimmed: 'rgb(92,60,75)', // Dim magenta
+  diffAddedWord: 'rgb(60,200,140)', // Bright teal-green
+  diffRemovedWord: 'rgb(220,90,140)', // Bright magenta
+  // Agent colors (neon variants)
+  red_FOR_SUBAGENTS_ONLY: 'rgb(255,70,100)', // Neon red
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(80,140,255)', // Neon blue
+  green_FOR_SUBAGENTS_ONLY: 'rgb(80,240,140)', // Neon green
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(255,220,60)', // Neon yellow
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(190,100,255)', // Neon purple
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(255,140,50)', // Neon orange
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(255,90,190)', // Neon pink
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(50,220,230)', // Neon cyan
   // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
+  professionalBlue: 'rgb(120,170,230)',
   // Chrome colors
-  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
+  chromeYellow: 'rgb(255,210,60)', // Neon chrome yellow
   // TUI V2 colors
-  clawd_body: 'rgb(140,210,140)', // Claudex ghost green
-  clawd_background: 'rgb(40,40,50)', // Dark purple-gray for ghost eyes
-  userMessageBackground: 'rgb(48, 52, 48)', // Dark with green tint
-  userMessageBackgroundHover: 'rgb(62, 66, 62)',
-  messageActionsBackground: 'rgb(40, 48, 44)', // Dark green-gray
-  selectionBg: 'rgb(35, 70, 50)', // Dark green selection
-  bashMessageBackgroundColor: 'rgb(52, 56, 52)',
+  clawd_body: 'rgb(120,235,210)', // Electric cyan-mint ghost
+  clawd_background: 'rgb(30,30,50)', // Deep midnight blue-black eyes
+  userMessageBackground: 'rgb(40, 45, 62)', // Deep cool blue
+  userMessageBackgroundHover: 'rgb(55, 62, 82)',
+  messageActionsBackground: 'rgb(40, 46, 62)', // Deep cool blue
+  selectionBg: 'rgb(45, 62, 95)', // Electric blue selection
+  bashMessageBackgroundColor: 'rgb(50, 48, 64)', // Deep purple-gray
 
-  memoryBackgroundColor: 'rgb(45, 58, 50)',
-  rate_limit_fill: 'rgb(150,185,230)', // Beanie blue
-  rate_limit_empty: 'rgb(68,78,98)', // Dark beanie blue
-  fastMode: 'rgb(150,185,230)', // Beanie blue for dark bg
-  fastModeShimmer: 'rgb(180,210,250)', // Lighter beanie blue shimmer
-  briefLabelYou: 'rgb(150,185,230)', // Beanie blue
-  briefLabelClaude: 'rgb(140,210,140)', // Claudex green
-  rainbow_red: 'rgb(235,95,87)',
-  rainbow_orange: 'rgb(245,139,87)',
-  rainbow_yellow: 'rgb(250,195,95)',
-  rainbow_green: 'rgb(145,200,130)',
-  rainbow_blue: 'rgb(130,170,220)',
-  rainbow_indigo: 'rgb(155,130,200)',
-  rainbow_violet: 'rgb(200,130,180)',
-  rainbow_red_shimmer: 'rgb(250,155,147)',
-  rainbow_orange_shimmer: 'rgb(255,185,137)',
-  rainbow_yellow_shimmer: 'rgb(255,225,155)',
-  rainbow_green_shimmer: 'rgb(185,230,180)',
-  rainbow_blue_shimmer: 'rgb(180,205,240)',
-  rainbow_indigo_shimmer: 'rgb(195,180,230)',
-  rainbow_violet_shimmer: 'rgb(230,180,210)',
+  memoryBackgroundColor: 'rgb(52, 42, 68)', // Deep violet
+  rate_limit_fill: 'rgb(130,220,255)', // Electric sky blue
+  rate_limit_empty: 'rgb(58,68,98)', // Deep cool blue
+  fastMode: 'rgb(255,140,200)', // Hot pink (fast = zap!)
+  fastModeShimmer: 'rgb(255,180,225)', // Bright hot pink shimmer
+  briefLabelYou: 'rgb(130,200,255)', // Electric sky blue
+  briefLabelClaude: 'rgb(120,235,210)', // Electric cyan-mint
+  rainbow_red: 'rgb(255,85,130)',
+  rainbow_orange: 'rgb(255,145,80)',
+  rainbow_yellow: 'rgb(255,215,90)',
+  rainbow_green: 'rgb(95,240,150)',
+  rainbow_blue: 'rgb(100,200,255)',
+  rainbow_indigo: 'rgb(150,120,255)',
+  rainbow_violet: 'rgb(220,110,220)',
+  rainbow_red_shimmer: 'rgb(255,155,180)',
+  rainbow_orange_shimmer: 'rgb(255,190,140)',
+  rainbow_yellow_shimmer: 'rgb(255,235,150)',
+  rainbow_green_shimmer: 'rgb(165,250,195)',
+  rainbow_blue_shimmer: 'rgb(170,225,255)',
+  rainbow_indigo_shimmer: 'rgb(200,180,255)',
+  rainbow_violet_shimmer: 'rgb(240,180,240)',
 }
 
 /**

@@ -24,16 +24,24 @@ import { openBrowser } from '../../../utils/browser.js'
 // ─── Bundled OAuth credentials (from openai/codex CLI) ───────────────
 // Source: https://github.com/openai/codex — public PKCE client, no secret
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+// Originator identifier — must be sent so OpenAI recognizes us as a
+// Codex-compatible client. Matches codex-rs default.
+const ORIGINATOR = 'codex_cli_rs'
 
 // ─── OAuth endpoints ──────────────────────────────────────────────────
 
-const OPENAI_AUTH_URL = 'https://auth.openai.com/authorize'
+// IMPORTANT: must be /oauth/authorize (not /authorize) — the shorter path
+// returns a blank / broken page in the browser.
+const OPENAI_AUTH_URL = 'https://auth.openai.com/oauth/authorize'
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 const REDIRECT_PATH = '/auth/callback'
 // Codex CLI's registered port — OpenAI validates redirect URIs exactly
 const DEFAULT_PORT = 1455
 
-const SCOPES = 'openid profile email offline_access'
+// Must match the Codex CLI scope list exactly — these are the scopes
+// registered for app_EMoamEEZ73f0CkXaXp7hrann. Missing api.connectors.*
+// causes a "scope not allowed" error.
+const SCOPES = 'openid profile email offline_access api.connectors.read api.connectors.invoke'
 
 interface OpenAIOAuthTokens {
   access_token: string
@@ -79,14 +87,20 @@ export async function startOpenAIOAuthFlow(): Promise<{
   const redirectUri = `http://localhost:${port}${REDIRECT_PATH}`
 
   // Build authorization URL
+  // The extra id_token_add_organizations + codex_cli_simplified_flow params
+  // are required by OpenAI's Codex OAuth client — omitting them triggers a
+  // blank response page in the browser.
   const authUrl = new URL(OPENAI_AUTH_URL)
+  authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('client_id', CLIENT_ID)
   authUrl.searchParams.set('redirect_uri', redirectUri)
-  authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('scope', SCOPES)
-  authUrl.searchParams.set('state', state)
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
+  authUrl.searchParams.set('id_token_add_organizations', 'true')
+  authUrl.searchParams.set('codex_cli_simplified_flow', 'true')
+  authUrl.searchParams.set('originator', ORIGINATOR)
+  authUrl.searchParams.set('state', state)
 
   const authUrlString = authUrl.toString()
   const opened = await openBrowser(authUrlString)

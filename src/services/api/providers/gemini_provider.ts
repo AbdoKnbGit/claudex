@@ -26,6 +26,13 @@ import {
   parseGeminiSSE,
   type GeminiGenerateContentResponse,
 } from '../adapters/gemini_to_anthropic.js'
+import {
+  CODE_ASSIST_BASE,
+  ensureCodeAssistReady,
+  parseCodeAssistSSE,
+  unwrapCodeAssistResponse,
+  wrapForCodeAssist,
+} from './gemini_code_assist.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
 
 export class GeminiProvider extends BaseProvider {
@@ -45,6 +52,33 @@ export class GeminiProvider extends BaseProvider {
     const model = this.resolveModel(params.model)
     const body = anthropicToGeminiRequest(params)
 
+    // OAuth path → route through Code Assist (cloud-platform scope only).
+    if (this.oauthToken) {
+      const projectId = await ensureCodeAssistReady(this.oauthToken)
+      const wrapped = wrapForCodeAssist(model, projectId, body as Record<string, unknown>)
+
+      const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this._headers(),
+        body: JSON.stringify(wrapped),
+      })
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '')
+        throw this._formatGeminiError(response.status, errText)
+      }
+
+      if (!response.body) {
+        throw new Error('Gemini Code Assist returned no response body for streaming request')
+      }
+
+      const geminiChunks = parseCodeAssistSSE(response.body)
+      const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
+      return buildProviderStreamResult(anthropicEvents)
+    }
+
+    // API key path → direct v1beta endpoint.
     const url = `${this.baseUrl}/models/${model}:streamGenerateContent?alt=sse`
     const response = await fetch(url, {
       method: 'POST',
@@ -70,6 +104,29 @@ export class GeminiProvider extends BaseProvider {
     const model = this.resolveModel(params.model)
     const body = anthropicToGeminiRequest(params)
 
+    // OAuth path → route through Code Assist.
+    if (this.oauthToken) {
+      const projectId = await ensureCodeAssistReady(this.oauthToken)
+      const wrapped = wrapForCodeAssist(model, projectId, body as Record<string, unknown>)
+
+      const url = `${CODE_ASSIST_BASE}:generateContent`
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this._headers(),
+        body: JSON.stringify(wrapped),
+      })
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '')
+        throw this._formatGeminiError(response.status, errText)
+      }
+
+      const caData = await response.json()
+      const data = unwrapCodeAssistResponse(caData)
+      return geminiMessageToAnthropic(data, model)
+    }
+
+    // API key path → direct v1beta endpoint.
     const url = `${this.baseUrl}/models/${model}:generateContent`
     const response = await fetch(url, {
       method: 'POST',

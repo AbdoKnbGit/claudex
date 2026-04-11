@@ -93,35 +93,6 @@ Controls whether the model reasons step-by-step before answering. Works safely a
 
 **Models with thinking support:** Claude 4+ (Anthropic), DeepSeek Reasoner, Kimi K2 Thinking (NIM), DeepSeek R1 distill models (Groq)
 
-### `/login` - Authenticate with a provider
-
-Configures API keys or starts an OAuth browser flow for providers that support it (OpenAI, Gemini). For API-key-only providers, prompts for the key and stores it securely.
-
-### `/effort` - Set reasoning effort level
-
-Controls how much effort the model puts into its response: `low`, `medium`, `high`, `max`, or `auto`.
-
-### `/compact` - Compact conversation context
-
-Summarizes the conversation to reduce token usage when approaching context limits.
-
-### Other commands
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show all available commands |
-| `/model <id>` | Set a specific model directly |
-| `/fast` | Toggle fast mode |
-| `/config` | View/edit settings |
-| `/commit` | Generate a git commit from staged changes |
-| `/review-pr` | Review the current PR |
-| `/diff` | Show git diff |
-| `/mcp` | Manage MCP servers |
-| `/hooks` | Manage hooks |
-| `/memory` | Manage persistent memory |
-| `/context` | Add files/directories to context |
-| `/vim` | Toggle vim mode |
-
 ---
 
 ## Features

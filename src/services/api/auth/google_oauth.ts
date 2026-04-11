@@ -44,9 +44,12 @@ const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const REDIRECT_PATH = '/oauth2callback'
 
-// generative-language for AI Studio API, cloud-platform for Vertex AI
+// MUST match the Gemini CLI's registered scopes exactly — the bundled
+// client ID is only authorized for these three. Adding anything else
+// (e.g. generative-language) triggers: "Erreur 403 restricted_client —
+// Champ d'application non enregistré". Code Assist routes Gemini API
+// requests through the cloud-platform scope internally.
 const SCOPES = [
-  'https://www.googleapis.com/auth/generative-language',
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',

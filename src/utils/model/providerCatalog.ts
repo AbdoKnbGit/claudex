@@ -3,6 +3,11 @@ import { resolveProviderAuth } from '../../services/api/auth/provider_auth.js'
 import { getProvider } from '../../services/api/providers/providerShim.js'
 import { validateProviderAuth } from '../auth.js'
 import {
+  getOllamaCatalog,
+  type OllamaCatalog,
+  type OllamaModelInfo,
+} from './ollamaCatalog.js'
+import {
   SELECTABLE_PROVIDERS,
   type APIProvider,
   PROVIDER_DISPLAY_NAMES,
@@ -77,6 +82,108 @@ export async function loadProviderModels(
 
   const models = await getProvider(provider).listModels()
   return sortProviderModels(models)
+}
+
+/**
+ * A sectioned section of models to render inside the picker. Sections are
+ * header-labelled groups with optional capability badges on each row. Non-
+ * Ollama providers render a single "All models" section.
+ */
+export interface ProviderModelSection {
+  id: string
+  title: string
+  accent?: 'cloud' | 'local' | 'toolless'
+  models: SectionedModelInfo[]
+}
+
+export interface SectionedModelInfo extends ModelInfo {
+  /** Optional tags to render beside the model name (tools, thinking, etc). */
+  tags?: readonly ModelTag[]
+  /** True when the model requires an extra pull/auth step before use. */
+  needsPull?: boolean
+}
+
+export type ModelTag =
+  | 'cloud'
+  | 'local'
+  | 'tools'
+  | 'no-tools'
+  | 'thinking'
+  | 'pulled'
+  | 'missing'
+
+/**
+ * Load a provider's models split into sections. For Ollama this means
+ * {Cloud, Local, No-tool-support}. For every other provider it's a single
+ * "All models" bucket — existing callers keep working untouched via
+ * loadProviderModels() above.
+ */
+export async function loadProviderModelSections(
+  provider: BrowsableModelProvider,
+): Promise<ProviderModelSection[]> {
+  if (provider === 'ollama') {
+    const catalog = await getOllamaCatalog()
+    return buildOllamaSections(catalog)
+  }
+
+  const models = await loadProviderModels(provider)
+  return [
+    {
+      id: 'all',
+      title: `${getProviderBrowseLabel(provider)} models`,
+      models: models.map(m => ({ ...m })),
+    },
+  ]
+}
+
+function buildOllamaSections(catalog: OllamaCatalog): ProviderModelSection[] {
+  const sections: ProviderModelSection[] = []
+
+  if (catalog.cloud.length > 0) {
+    sections.push({
+      id: 'cloud',
+      title: 'Cloud models',
+      accent: 'cloud',
+      models: catalog.cloud.map(toSectionedModel),
+    })
+  }
+
+  if (catalog.local.length > 0) {
+    sections.push({
+      id: 'local',
+      title: 'Local models',
+      accent: 'local',
+      models: catalog.local.map(toSectionedModel),
+    })
+  }
+
+  if (catalog.toolless.length > 0) {
+    sections.push({
+      id: 'toolless',
+      title: 'Local models without tool support',
+      accent: 'toolless',
+      models: catalog.toolless.map(toSectionedModel),
+    })
+  }
+
+  return sections
+}
+
+function toSectionedModel(model: OllamaModelInfo): SectionedModelInfo {
+  const tags: ModelTag[] = []
+  tags.push(model.category === 'cloud' ? 'cloud' : 'local')
+  tags.push(model.supportsTools ? 'tools' : 'no-tools')
+  if (model.supportsThinking) tags.push('thinking')
+  if (model.category === 'cloud') {
+    tags.push(model.pulled ? 'pulled' : 'missing')
+  }
+
+  return {
+    id: model.id,
+    name: model.name,
+    tags,
+    needsPull: model.category === 'cloud' && !model.pulled,
+  }
 }
 
 export function filterProviderModels(

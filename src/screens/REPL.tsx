@@ -4,6 +4,7 @@ import { feature } from 'bun:bundle';
 import { spawnSync } from 'child_process';
 import { snapshotOutputTokensForTurn, getCurrentTurnTokenBudget, getTurnOutputTokens, getBudgetContinuationCount, getTotalInputTokens } from '../bootstrap/state.js';
 import { parseTokenBudget } from '../utils/tokenBudget.js';
+import { setOllamaThinkingEnabled } from '../utils/model/ollamaCatalog.js';
 import { count } from '../utils/array.js';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -617,6 +618,14 @@ export function REPL({
   const [mainThreadAgentDefinition, setMainThreadAgentDefinition] = useState(initialMainThreadAgentDefinition);
   const toolPermissionContext = useAppState(s => s.toolPermissionContext);
   const verbose = useAppState(s => s.verbose);
+  // Mirror thinkingEnabled into the Ollama provider bridge so cloud thinking
+  // models (glm-5.1:cloud, kimi-k2-thinking:cloud, etc.) get the correct
+  // `enable_thinking` parameter on every request without having to thread
+  // React state through the provider layer.
+  const thinkingEnabledState = useAppState(s => s.thinkingEnabled);
+  useEffect(() => {
+    setOllamaThinkingEnabled(thinkingEnabledState !== false);
+  }, [thinkingEnabledState]);
   const mcp = useAppState(s => s.mcp);
   const plugins = useAppState(s => s.plugins);
   const agentDefinitions = useAppState(s => s.agentDefinitions);

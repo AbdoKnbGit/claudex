@@ -2924,6 +2924,28 @@ export type StreamingThinking = {
   streamingEndedAt?: number
 }
 
+// ─── Thinking stream throttling ────────────────────────────────────
+// Bug #3: cloud thinking models (glm-5.1:cloud etc.) stream reasoning
+// tokens at a very high rate. Without throttling, every thinking_delta
+// fires setStreamingThinking → Messages re-renders → useSyncExternalStore
+// in downstream hooks gets force-rerendered on every tick, which can
+// exceed React's "Maximum update depth" limit.
+//
+// Fix (per amelioration.txt): accumulate thinking content in a module
+// ref and throttle state commits to at most one per MIN_THINKING_COMMIT_MS.
+// We still ship a final commit on content_block_stop so the UI always
+// reflects the complete thinking block.
+const MIN_THINKING_COMMIT_MS = 120
+const _thinkingBuffer: { content: string; lastCommitAt: number } = {
+  content: '',
+  lastCommitAt: 0,
+}
+
+function _resetThinkingBuffer(): void {
+  _thinkingBuffer.content = ''
+  _thinkingBuffer.lastCommitAt = 0
+}
+
 /**
  * Handles messages from a stream, updating response length for deltas and appending completed messages
  */
@@ -2960,17 +2982,32 @@ export function handleMessageFromStream(
     if (message.type === 'tool_use_summary') {
       return
     }
-    // Capture complete thinking blocks for real-time display in transcript mode
+    // Capture complete thinking blocks for real-time display in transcript mode.
+    // Only fire onStreamingThinking if the thinking text actually changed —
+    // without this check, repeated assistant messages with identical thinking
+    // (common when a model produces thinking + text) would re-fire state
+    // updates and re-trigger the useEffect([streamingThinking]) cascade.
     if (message.type === 'assistant') {
       const thinkingBlock = message.message.content.find(
         block => block.type === 'thinking',
       )
       if (thinkingBlock && thinkingBlock.type === 'thinking') {
-        onStreamingThinking?.(() => ({
-          thinking: thinkingBlock.thinking,
-          isStreaming: false,
-          streamingEndedAt: Date.now(),
-        }))
+        const finalThinking = thinkingBlock.thinking
+        onStreamingThinking?.(current => {
+          if (
+            current &&
+            current.thinking === finalThinking &&
+            !current.isStreaming
+          ) {
+            return current
+          }
+          return {
+            thinking: finalThinking,
+            isStreaming: false,
+            streamingEndedAt: Date.now(),
+          }
+        })
+        _resetThinkingBuffer()
       }
     }
     // Clear streaming text NOW so the render can switch displayedMessages
@@ -3012,6 +3049,14 @@ export function handleMessageFromStream(
         case 'thinking':
         case 'redacted_thinking':
           onSetStreamMode('thinking')
+          // New thinking block — reset the accumulator buffer. A fresh
+          // block will start with empty content and accumulate via
+          // thinking_delta until content_block_stop.
+          _resetThinkingBuffer()
+          onStreamingThinking?.(() => ({
+            thinking: '',
+            isStreaming: true,
+          }))
           return
         case 'text':
           onSetStreamMode('responding')
@@ -3072,9 +3117,26 @@ export function handleMessageFromStream(
           })
           return
         }
-        case 'thinking_delta':
-          onUpdateLength(message.event.delta.thinking)
+        case 'thinking_delta': {
+          const deltaThinking = message.event.delta.thinking
+          onUpdateLength(deltaThinking)
+          // Accumulate into the module buffer, then commit to state at
+          // most once per MIN_THINKING_COMMIT_MS. This keeps the UI
+          // responsive without firing a re-render per token, which on
+          // fast cloud thinking models (glm-5.1:cloud, kimi-k2-thinking)
+          // exceeded React's maximum update depth.
+          _thinkingBuffer.content += deltaThinking
+          const now = Date.now()
+          if (now - _thinkingBuffer.lastCommitAt >= MIN_THINKING_COMMIT_MS) {
+            _thinkingBuffer.lastCommitAt = now
+            const snapshot = _thinkingBuffer.content
+            onStreamingThinking?.(() => ({
+              thinking: snapshot,
+              isStreaming: true,
+            }))
+          }
           return
+        }
         case 'signature_delta':
           // Signatures are cryptographic authentication strings, not model
           // output. Excluding them from onUpdateLength prevents them from

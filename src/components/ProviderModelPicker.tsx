@@ -1,14 +1,15 @@
 import * as React from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
-import type { ModelInfo } from '../services/api/providers/base_provider.js'
 import { validateProviderAuth } from '../utils/auth.js'
 import {
   BROWSABLE_MODEL_PROVIDERS,
-  filterProviderModels,
   getProviderBrowseLabel,
-  loadProviderModels,
+  loadProviderModelSections,
   type BrowsableModelProvider,
+  type ModelTag,
+  type ProviderModelSection,
+  type SectionedModelInfo,
 } from '../utils/model/providerCatalog.js'
 
 type Props = {
@@ -19,7 +20,96 @@ type Props = {
 
 type Step = 'provider' | 'models'
 
-const MAX_VISIBLE_MODELS = 14
+const MAX_VISIBLE_MODELS = 16
+
+/** Flattened list entry used for keyboard navigation across sections. */
+type FlatRow =
+  | { kind: 'header'; sectionId: string; title: string; accent?: ProviderModelSection['accent']; count: number }
+  | { kind: 'model'; sectionId: string; model: SectionedModelInfo }
+
+/** Single source of truth for how tags render. */
+const TAG_STYLE: Record<ModelTag, { label: string; color: string }> = {
+  cloud:    { label: 'cloud',    color: 'magenta' },
+  local:    { label: 'local',    color: 'cyan' },
+  tools:    { label: 'tools',    color: 'green' },
+  'no-tools': { label: 'no tools', color: 'yellow' },
+  thinking: { label: 'thinking', color: 'blue' },
+  pulled:   { label: 'ready',    color: 'green' },
+  missing:  { label: 'pull',     color: 'yellow' },
+}
+
+const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string> = {
+  cloud: 'magenta',
+  local: 'cyan',
+  toolless: 'yellow',
+}
+
+function filterSections(
+  sections: readonly ProviderModelSection[],
+  query: string,
+): ProviderModelSection[] {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return [...sections]
+
+  return sections
+    .map(section => ({
+      ...section,
+      models: section.models.filter(model => {
+        const haystack = `${model.id} ${model.name ?? ''}`.toLowerCase()
+        return haystack.includes(normalized)
+      }),
+    }))
+    .filter(section => section.models.length > 0)
+}
+
+function flattenSections(sections: readonly ProviderModelSection[]): FlatRow[] {
+  const rows: FlatRow[] = []
+  for (const section of sections) {
+    rows.push({
+      kind: 'header',
+      sectionId: section.id,
+      title: section.title,
+      accent: section.accent,
+      count: section.models.length,
+    })
+    for (const model of section.models) {
+      rows.push({ kind: 'model', sectionId: section.id, model })
+    }
+  }
+  return rows
+}
+
+function totalModelCount(sections: readonly ProviderModelSection[]): number {
+  return sections.reduce((sum, s) => sum + s.models.length, 0)
+}
+
+function firstModelIndex(rows: readonly FlatRow[]): number {
+  return rows.findIndex(r => r.kind === 'model')
+}
+
+function clampToModel(
+  rows: readonly FlatRow[],
+  desired: number,
+  direction: 1 | -1,
+): number {
+  if (rows.length === 0) return 0
+  let i = desired
+  while (i >= 0 && i < rows.length && rows[i]!.kind !== 'model') {
+    i += direction
+  }
+  if (i < 0 || i >= rows.length) {
+    // Wrap: pick first/last model
+    return direction === 1 ? firstModelIndex(rows) : lastModelIndex(rows)
+  }
+  return i
+}
+
+function lastModelIndex(rows: readonly FlatRow[]): number {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i]!.kind === 'model') return i
+  }
+  return 0
+}
 
 export function ProviderModelPicker({
   initialProvider,
@@ -30,11 +120,11 @@ export function ProviderModelPicker({
   const [selectedProviderIndex, setSelectedProviderIndex] = useState(() =>
     Math.max(0, BROWSABLE_MODEL_PROVIDERS.indexOf(initialProvider)),
   )
-  const [selectedModelIndex, setSelectedModelIndex] = useState(0)
+  const [selectedRowIndex, setSelectedRowIndex] = useState(0)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [models, setModels] = useState<ModelInfo[]>([])
+  const [sections, setSections] = useState<ProviderModelSection[]>([])
 
   const selectedProvider =
     BROWSABLE_MODEL_PROVIDERS[selectedProviderIndex] ?? initialProvider
@@ -47,29 +137,24 @@ export function ProviderModelPicker({
     let cancelled = false
     setLoading(true)
     setLoadError(null)
-    setModels([])
-    setSelectedModelIndex(0)
+    setSections([])
+    setSelectedRowIndex(0)
 
-    void loadProviderModels(selectedProvider)
-      .then(loadedModels => {
-        if (cancelled) {
-          return
-        }
+    void loadProviderModelSections(selectedProvider)
+      .then(loadedSections => {
+        if (cancelled) return
 
-        if (loadedModels.length === 0) {
+        if (totalModelCount(loadedSections) === 0) {
           setLoadError(
             `No models were returned by ${getProviderBrowseLabel(selectedProvider)}.`,
           )
           return
         }
 
-        setModels(loadedModels)
+        setSections(loadedSections)
       })
       .catch(error => {
-        if (cancelled) {
-          return
-        }
-
+        if (cancelled) return
         setLoadError(error instanceof Error ? error.message : String(error))
       })
       .finally(() => {
@@ -83,30 +168,36 @@ export function ProviderModelPicker({
     }
   }, [selectedProvider, step])
 
-  const filteredModels = useMemo(
-    () => filterProviderModels(models, query),
-    [models, query],
+  const filteredSections = useMemo(
+    () => filterSections(sections, query),
+    [sections, query],
   )
 
+  const flatRows = useMemo(() => flattenSections(filteredSections), [filteredSections])
+
+  // Keep the cursor pointed at a real model row after filters change.
   useEffect(() => {
-    if (selectedModelIndex >= filteredModels.length) {
-      setSelectedModelIndex(Math.max(0, filteredModels.length - 1))
+    if (flatRows.length === 0) {
+      setSelectedRowIndex(0)
+      return
     }
-  }, [filteredModels.length, selectedModelIndex])
+    if (selectedRowIndex >= flatRows.length || flatRows[selectedRowIndex]?.kind !== 'model') {
+      const firstModel = firstModelIndex(flatRows)
+      setSelectedRowIndex(firstModel >= 0 ? firstModel : 0)
+    }
+  }, [flatRows, selectedRowIndex])
 
   const scrollOffset = useMemo(() => {
     const halfWindow = Math.floor(MAX_VISIBLE_MODELS / 2)
-    const start = Math.max(0, selectedModelIndex - halfWindow)
+    const start = Math.max(0, selectedRowIndex - halfWindow)
     return Math.min(
       start,
-      Math.max(0, filteredModels.length - MAX_VISIBLE_MODELS),
+      Math.max(0, flatRows.length - MAX_VISIBLE_MODELS),
     )
-  }, [filteredModels.length, selectedModelIndex])
+  }, [flatRows.length, selectedRowIndex])
 
-  const visibleModels = filteredModels.slice(
-    scrollOffset,
-    scrollOffset + MAX_VISIBLE_MODELS,
-  )
+  const visibleRows = flatRows.slice(scrollOffset, scrollOffset + MAX_VISIBLE_MODELS)
+  const totalMatches = flatRows.filter(r => r.kind === 'model').length
 
   useInput((input, key) => {
     if (key.escape) {
@@ -148,42 +239,52 @@ export function ProviderModelPicker({
     }
 
     if (key.return) {
-      const selectedModel = filteredModels[selectedModelIndex]
-      if (selectedModel) {
-        onSelect(selectedProvider, selectedModel.id)
+      const row = flatRows[selectedRowIndex]
+      if (row?.kind === 'model') {
+        onSelect(selectedProvider, row.model.id)
       }
       return
     }
 
     if (key.upArrow) {
-      setSelectedModelIndex(index =>
-        index > 0 ? index - 1 : Math.max(0, filteredModels.length - 1),
-      )
+      setSelectedRowIndex(index => {
+        if (flatRows.length === 0) return 0
+        let next = index - 1
+        if (next < 0) next = flatRows.length - 1
+        return clampToModel(flatRows, next, -1)
+      })
       return
     }
 
     if (key.downArrow) {
-      setSelectedModelIndex(index =>
-        index < filteredModels.length - 1 ? index + 1 : 0,
-      )
+      setSelectedRowIndex(index => {
+        if (flatRows.length === 0) return 0
+        let next = index + 1
+        if (next >= flatRows.length) next = 0
+        return clampToModel(flatRows, next, 1)
+      })
       return
     }
 
     if (key.pageUp) {
-      setSelectedModelIndex(index => Math.max(0, index - 10))
+      setSelectedRowIndex(index => {
+        if (flatRows.length === 0) return 0
+        return clampToModel(flatRows, Math.max(0, index - 10), -1)
+      })
       return
     }
 
     if (key.pageDown) {
-      setSelectedModelIndex(index =>
-        Math.min(filteredModels.length - 1, index + 10),
-      )
+      setSelectedRowIndex(index => {
+        if (flatRows.length === 0) return 0
+        return clampToModel(flatRows, Math.min(flatRows.length - 1, index + 10), 1)
+      })
       return
     }
 
     if (key.backspace || key.delete) {
       setQuery(currentQuery => currentQuery.slice(0, -1))
-      setSelectedModelIndex(0)
+      setSelectedRowIndex(firstModelIndex(flatRows))
       return
     }
 
@@ -193,7 +294,7 @@ export function ProviderModelPicker({
 
     if (input && input.length === 1 && input >= ' ') {
       setQuery(currentQuery => currentQuery + input)
-      setSelectedModelIndex(0)
+      setSelectedRowIndex(firstModelIndex(flatRows))
     }
   })
 
@@ -246,14 +347,16 @@ export function ProviderModelPicker({
     )
   }
 
+  const totalRegistered = sections.reduce((sum, s) => sum + s.models.length, 0)
+
   return (
     <Box flexDirection="column" paddingLeft={1}>
       <Box marginBottom={1}>
         <Text bold color="claude">
           {getProviderBrowseLabel(selectedProvider)}
         </Text>
-        {!loading && models.length > 0 && (
-          <Text dimColor> ({models.length} models)</Text>
+        {!loading && totalRegistered > 0 && (
+          <Text dimColor> ({totalRegistered} models)</Text>
         )}
       </Box>
 
@@ -264,7 +367,7 @@ export function ProviderModelPicker({
         {!loading && !loadError && (
           <Text dimColor>
             {' '}
-            ({filteredModels.length} match{filteredModels.length === 1 ? '' : 'es'})
+            ({totalMatches} match{totalMatches === 1 ? '' : 'es'})
           </Text>
         )}
       </Box>
@@ -289,19 +392,33 @@ export function ProviderModelPicker({
 
       {!loading && !loadError && (
         <Box marginTop={1} flexDirection="column">
-          {filteredModels.length === 0 ? (
+          {flatRows.length === 0 ? (
             <Text dimColor>No models match "{query}".</Text>
           ) : (
-            visibleModels.map((model, index) => {
+            visibleRows.map((row, index) => {
               const actualIndex = scrollOffset + index
-              const isSelected = actualIndex === selectedModelIndex
+
+              if (row.kind === 'header') {
+                const accentColor = row.accent ? SECTION_ACCENT[row.accent] : 'claude'
+                return (
+                  <Box key={`header-${row.sectionId}`} marginTop={actualIndex === 0 ? 0 : 1}>
+                    <Text bold color={accentColor}>
+                      {`▎ ${row.title}`}
+                    </Text>
+                    <Text dimColor> ({row.count})</Text>
+                  </Box>
+                )
+              }
+
+              const isSelected = actualIndex === selectedRowIndex
+              const { model } = row
               const label =
                 model.name && model.name !== model.id
                   ? `${model.id} - ${model.name}`
                   : model.id
 
               return (
-                <Box key={model.id}>
+                <Box key={`model-${row.sectionId}-${model.id}`}>
                   <Text
                     bold={isSelected}
                     color={isSelected ? 'claude' : undefined}
@@ -310,18 +427,30 @@ export function ProviderModelPicker({
                     {isSelected ? '> ' : '  '}
                     {label}
                   </Text>
+                  {model.tags && model.tags.length > 0 && (
+                    <>
+                      {model.tags.map(tag => {
+                        const style = TAG_STYLE[tag]
+                        return (
+                          <Text key={tag} color={style.color}>
+                            {' '}[{style.label}]
+                          </Text>
+                        )
+                      })}
+                    </>
+                  )}
                 </Box>
               )
             })
           )}
 
-          {filteredModels.length > MAX_VISIBLE_MODELS && (
+          {flatRows.length > MAX_VISIBLE_MODELS && (
             <Box marginTop={1}>
               <Text dimColor>
-                {scrollOffset > 0 ? '...' : '   '}
+                {scrollOffset > 0 ? '▲' : ' '}
                 {' '}
-                {scrollOffset + MAX_VISIBLE_MODELS < filteredModels.length
-                  ? '(scroll for more)'
+                {scrollOffset + MAX_VISIBLE_MODELS < flatRows.length
+                  ? '▼ (scroll for more)'
                   : ''}
               </Text>
             </Box>
@@ -331,7 +460,7 @@ export function ProviderModelPicker({
 
       <Box marginTop={1}>
         <Text dimColor>
-          Type to filter | Up/Down to navigate | Enter to select | Esc to go back
+          Type to filter | ↑/↓ navigate | Enter select | Esc back
         </Text>
       </Box>
     </Box>

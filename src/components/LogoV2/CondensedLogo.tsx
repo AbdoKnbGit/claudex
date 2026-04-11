@@ -88,7 +88,19 @@ export function CondensedLogo() {
   }
   let t5;
   if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t5 = <Text bold={true}>Claudex</Text>;
+    // Rainbow-tinted "Claudex" wordmark — one colour per letter so the
+    // condensed logo carries the same RGB signature as the startup screen.
+    t5 = (
+      <Text bold={true}>
+        <Text color="rainbow_red">C</Text>
+        <Text color="rainbow_orange">l</Text>
+        <Text color="rainbow_yellow">a</Text>
+        <Text color="rainbow_green">u</Text>
+        <Text color="rainbow_blue">d</Text>
+        <Text color="rainbow_indigo">e</Text>
+        <Text color="rainbow_violet">x</Text>
+      </Text>
+    );
     $[8] = t5;
   } else {
     t5 = $[8];

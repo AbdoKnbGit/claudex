@@ -9,36 +9,38 @@ type Frame = {
   offset: number
 }
 
-/** Hold a pose for n frames (60ms each). */
+/** Hold a pose for n frames (FRAME_MS each). */
 function hold(pose: ClawdPose, offset: number, frames: number): Frame[] {
   return Array.from({ length: frames }, () => ({ pose, offset }))
 }
 
-// Ghost animations
-// Jump: crouch (offset 1), spring up with arms-up. Twice.
+// Ghost animations — smoother/longer frames for a more polished feel.
+// Jump: crouch, spring up with arms-up. Twice.
 const GHOST_JUMP: readonly Frame[] = [
-  ...hold('default', 1, 2),     // crouch
-  ...hold('arms-up', 0, 3),     // spring!
-  ...hold('default', 0, 1),
-  ...hold('default', 1, 2),     // crouch again
-  ...hold('arms-up', 0, 3),     // spring!
-  ...hold('default', 0, 1),
+  ...hold('default', 1, 3),     // crouch (linger)
+  ...hold('arms-up', 0, 4),     // spring!
+  ...hold('default', 0, 2),
+  ...hold('default', 1, 3),     // crouch again
+  ...hold('arms-up', 0, 4),     // spring!
+  ...hold('default', 0, 2),
 ]
 
-// Look around: glance right, then left, then back
+// Look around: smoothly glance right, pause, then left, pause, then back
 const GHOST_LOOK: readonly Frame[] = [
-  ...hold('look-right', 0, 5),
-  ...hold('look-left', 0, 5),
-  ...hold('default', 0, 1),
+  ...hold('default', 0, 2),
+  ...hold('look-right', 0, 6),
+  ...hold('default', 0, 2),
+  ...hold('look-left', 0, 6),
+  ...hold('default', 0, 2),
 ]
 
 // Ghost float: gentle bobbing motion (unique to ghost mascot)
 const GHOST_FLOAT: readonly Frame[] = [
+  ...hold('default', 0, 4),
+  ...hold('default', 1, 3),     // dip down slightly
+  ...hold('default', 0, 4),
+  ...hold('arms-up', 0, 3),     // bob up with arms
   ...hold('default', 0, 3),
-  ...hold('default', 1, 2),     // dip down slightly
-  ...hold('default', 0, 3),
-  ...hold('arms-up', 0, 2),     // bob up with arms
-  ...hold('default', 0, 2),
 ]
 
 const CLICK_ANIMATIONS: readonly (readonly Frame[])[] = [
@@ -48,11 +50,18 @@ const CLICK_ANIMATIONS: readonly (readonly Frame[])[] = [
 ]
 
 const IDLE: Frame = { pose: 'default', offset: 0 }
-const FRAME_MS = 60
-const CLAWD_HEIGHT = 3
+const FRAME_MS = 70
+// Idle bob: every IDLE_BOB_MS, alternate between offset 0 and 1 so the ghost
+// gently hovers when nothing else is happening. Long enough that it feels
+// alive without being distracting.
+const IDLE_BOB_MS = 1400
+// Height accommodates the 5-row kawaii ghost plus one cell of headroom
+// for the bob animation so the row above never clips.
+const CLAWD_HEIGHT = 6
 
 /**
- * Claudex ghost with click-triggered animations (jump, look-around, float).
+ * Claudex ghost with click-triggered animations (jump, look-around, float)
+ * plus a subtle idle hover when at rest.
  * Container height is fixed at CLAWD_HEIGHT so surrounding layout never shifts.
  */
 export function AnimatedClawd(): React.ReactNode {
@@ -76,9 +85,12 @@ function useClawdAnimation(): {
     () => getInitialSettings().prefersReducedMotion ?? false,
   )
   const [frameIndex, setFrameIndex] = useState(-1)
+  const [idleTick, setIdleTick] = useState(0)
   const animationRef = useRef<readonly Frame[]>(GHOST_JUMP)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const idleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Click-driven animation loop
   useEffect(() => {
     if (frameIndex < 0 || reducedMotion) return
     const frames = animationRef.current
@@ -95,6 +107,17 @@ function useClawdAnimation(): {
     }
   }, [frameIndex, reducedMotion])
 
+  // Idle hover — gentle bob when no click animation is running
+  useEffect(() => {
+    if (reducedMotion || frameIndex >= 0) return
+    idleTimerRef.current = setInterval(() => {
+      setIdleTick((t) => (t + 1) % 2)
+    }, IDLE_BOB_MS)
+    return () => {
+      if (idleTimerRef.current) clearInterval(idleTimerRef.current)
+    }
+  }, [frameIndex, reducedMotion])
+
   const onClick = () => {
     if (reducedMotion || frameIndex >= 0) return
     // Pick a random animation
@@ -104,7 +127,9 @@ function useClawdAnimation(): {
   }
 
   if (frameIndex < 0 || frameIndex >= animationRef.current.length) {
-    return { ...IDLE, onClick }
+    // Idle hover: alternate offset 0 / 1 every IDLE_BOB_MS
+    const bounceOffset = reducedMotion ? 0 : idleTick === 0 ? 0 : 1
+    return { pose: IDLE.pose, bounceOffset, onClick }
   }
   const frame = animationRef.current[frameIndex]!
   return { pose: frame.pose, bounceOffset: frame.offset, onClick }

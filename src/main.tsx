@@ -125,6 +125,7 @@ import { logError } from './utils/log.js';
 import { getModelDeprecationWarning } from './utils/model/deprecation.js';
 import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from './utils/model/model.js';
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
+import { ensureCloudModelsPrimed } from './utils/model/ollamaCatalog.js';
 import { PERMISSION_MODES } from './utils/permissions/PermissionMode.js';
 import { checkAndDisableBypassPermissions, getAutoModeEnabledStateIfCached, initializeToolPermissionContext, initialPermissionModeFromCLI, isDefaultPermissionModeAuto, parseToolListFromCLI, removeDangerousPermissions, stripDangerousPermissionsForAutoMode, verifyAutoModeGateAccess } from './utils/permissions/permissionSetup.js';
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js';
@@ -425,6 +426,12 @@ export function startDeferredPrefetches(): void {
   void initializeAnalyticsGates();
   void prefetchOfficialMcpUrls();
   void refreshModelCapabilities();
+
+  // First-launch: pre-pull approved Ollama cloud models so the /models picker
+  // shows them as ready to use. Idempotent — records completion in GlobalConfig
+  // and short-circuits on subsequent launches. Swallows errors (no Ollama
+  // install, network hiccups, etc.) so a missing daemon never breaks startup.
+  void ensureCloudModelsPrimed();
 
   // File change detectors deferred from init() to unblock first render
   void settingsChangeDetector.initialize();
