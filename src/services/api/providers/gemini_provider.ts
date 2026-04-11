@@ -54,7 +54,7 @@ export class GeminiProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw new Error(`Gemini API error ${response.status}: ${errText}`)
+      throw this._formatGeminiError(response.status, errText)
     }
 
     if (!response.body) {
@@ -79,7 +79,7 @@ export class GeminiProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw new Error(`Gemini API error ${response.status}: ${errText}`)
+      throw this._formatGeminiError(response.status, errText)
     }
 
     const data = (await response.json()) as GeminiGenerateContentResponse
@@ -116,6 +116,41 @@ export class GeminiProvider extends BaseProvider {
     if (claudeModel.includes('opus'))  return models.opus
     if (claudeModel.includes('haiku')) return models.haiku
     return models.sonnet
+  }
+
+  private _formatGeminiError(status: number, body: string): Error {
+    let errorDetail = ''
+    try {
+      const parsed = JSON.parse(body)
+      errorDetail = parsed?.error?.message ?? ''
+    } catch {
+      errorDetail = body
+    }
+
+    if (status === 400 && errorDetail.includes('Unknown name')) {
+      return new Error(
+        `Gemini API error: Invalid tool schema fields.\n` +
+        `The tool parameter schemas contain fields not supported by Gemini.\n` +
+        `This is a bug — please report it. Details: ${errorDetail.slice(0, 300)}`,
+      )
+    }
+
+    if (status === 401 || status === 403) {
+      return new Error(
+        `Gemini API error: Authentication failed.\n` +
+        `Your API key or OAuth token may be invalid. Run /login to reconfigure.`,
+      )
+    }
+
+    if (status === 429) {
+      return new Error(
+        `Gemini API error: Rate limit or quota exceeded.\n` +
+        `${errorDetail}\n` +
+        `Wait a moment and retry, or check your quota at console.cloud.google.com.`,
+      )
+    }
+
+    return new Error(`Gemini API error ${status}: ${body}`)
   }
 
   private _headers(): Record<string, string> {

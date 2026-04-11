@@ -24,6 +24,7 @@
 import { createServer } from 'http'
 import { randomBytes, createHash } from 'crypto'
 import { saveProviderKey, loadProviderKey } from './api_key_manager.js'
+import { openBrowser } from '../../../utils/browser.js'
 
 // ─── Configuration ─────────────────────────────────────────────────
 
@@ -68,17 +69,26 @@ export async function startOpenAIOAuthFlow(): Promise<{
   accessToken: string
   refreshToken: string
 }> {
-  const clientId = process.env.OPENAI_CLIENT_ID
+  const clientId =
+    process.env.OPENAI_CLIENT_ID ?? loadProviderKey('openai_client_id')
   if (!clientId) {
     throw new Error(
-      'OPENAI_CLIENT_ID environment variable is required for OpenAI OAuth.\n' +
-      'Register an app at: https://platform.openai.com/settings/apps\n' +
-      'Select "Web Application" as the application type.',
+      'OPENAI_CLIENT_ID environment variable is required for OpenAI OAuth.\n\n' +
+      'To set up OAuth:\n' +
+      '  1. Go to https://platform.openai.com/settings/apps\n' +
+      '  2. Register a new app (select "Web Application")\n' +
+      '  3. Set the redirect URI to http://localhost (any port)\n' +
+      '  4. Set OPENAI_CLIENT_ID=<your-client-id> in your environment\n\n' +
+      'Alternatively, use an API key instead (simpler):\n' +
+      '  1. Go to https://platform.openai.com/api-keys\n' +
+      '  2. Create a new API key\n' +
+      '  3. Set OPENAI_API_KEY=<your-key> in your environment',
     )
   }
 
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = generateCodeChallenge(codeVerifier)
+  const state = randomBytes(16).toString('hex')
 
   // Find a free port for the callback server
   const port = await findFreePort()
@@ -90,14 +100,20 @@ export async function startOpenAIOAuthFlow(): Promise<{
   authUrl.searchParams.set('redirect_uri', redirectUri)
   authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('scope', SCOPES)
+  authUrl.searchParams.set('state', state)
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
 
-  // Print auth URL for user
-  console.log(`\nOpen this URL in your browser to authenticate with OpenAI:\n${authUrl.toString()}\n`)
+  const authUrlString = authUrl.toString()
+  const opened = await openBrowser(authUrlString)
+  if (!opened) {
+    console.log(
+      `\nOpen this URL in your browser to authenticate with OpenAI:\n${authUrlString}\n`,
+    )
+  }
 
   // Start local server and wait for callback
-  const authCode = await waitForAuthCode(port)
+  const authCode = await waitForAuthCode(port, state)
 
   // Exchange code for tokens
   const tokenResponse = await fetch(OPENAI_TOKEN_URL, {
@@ -137,7 +153,8 @@ export async function startOpenAIOAuthFlow(): Promise<{
  * Refresh an expired OpenAI OAuth access token.
  */
 export async function refreshOpenAIToken(refreshToken: string): Promise<string> {
-  const clientId = process.env.OPENAI_CLIENT_ID
+  const clientId =
+    process.env.OPENAI_CLIENT_ID ?? loadProviderKey('openai_client_id')
   if (!clientId) throw new Error('OPENAI_CLIENT_ID required for token refresh')
 
   const response = await fetch(OPENAI_TOKEN_URL, {
@@ -210,7 +227,7 @@ function findFreePort(): Promise<number> {
   })
 }
 
-function waitForAuthCode(port: number): Promise<string> {
+function waitForAuthCode(port: number, expectedState: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       server.close()
@@ -223,6 +240,7 @@ function waitForAuthCode(port: number): Promise<string> {
       if (url.pathname === REDIRECT_PATH) {
         const code = url.searchParams.get('code')
         const error = url.searchParams.get('error')
+        const state = url.searchParams.get('state')
 
         if (error) {
           res.writeHead(400, { 'Content-Type': 'text/html' })
@@ -230,6 +248,15 @@ function waitForAuthCode(port: number): Promise<string> {
           clearTimeout(timeout)
           server.close()
           reject(new Error(`OpenAI OAuth error: ${error}`))
+          return
+        }
+
+        if (state !== expectedState) {
+          res.writeHead(400, { 'Content-Type': 'text/html' })
+          res.end('<h1>Authentication Failed</h1><p>Invalid OAuth state.</p>')
+          clearTimeout(timeout)
+          server.close()
+          reject(new Error('OpenAI OAuth error: invalid state parameter'))
           return
         }
 

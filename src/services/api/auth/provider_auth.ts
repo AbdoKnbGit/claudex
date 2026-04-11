@@ -66,7 +66,7 @@ export async function resolveProviderAuth(provider: APIProvider): Promise<{
 
   throw new Error(
     `No valid credentials for ${provider}. ` +
-    `Set ${_envVarName(provider)} or run \`claude auth ${provider}\` for OAuth.`,
+    `Set ${_envVarName(provider)} or run \`/login\` to configure it.`,
   )
 }
 
@@ -126,7 +126,7 @@ export async function refreshProviderOAuth(provider: APIProvider): Promise<strin
 
   const tokens = JSON.parse(stored) as { refreshToken?: string }
   if (!tokens.refreshToken) {
-    throw new Error(`No refresh token stored for ${provider}. Re-authenticate with \`claude auth ${provider}\`.`)
+    throw new Error(`No refresh token stored for ${provider}. Re-authenticate with \`/login\`.`)
   }
 
   switch (provider) {

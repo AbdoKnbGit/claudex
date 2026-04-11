@@ -46,6 +46,63 @@ export interface GeminiFunctionDeclaration {
   parameters: Record<string, unknown>
 }
 
+// ─── Schema Sanitization ───────────────────────────────────────────
+
+/**
+ * Fields that Gemini's functionDeclarations do NOT support.
+ * These are valid JSON Schema but rejected by the Gemini REST API.
+ * Must be stripped recursively from all tool parameter schemas.
+ */
+const UNSUPPORTED_GEMINI_SCHEMA_FIELDS = new Set([
+  '$schema',
+  'additionalProperties',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'patternProperties',
+  '$id',
+  '$ref',
+  '$comment',
+  'if',
+  'then',
+  'else',
+  'allOf',
+  'anyOf',
+  'oneOf',
+  'not',
+  'default',
+])
+
+/**
+ * Recursively strip fields that Gemini does not support from a JSON Schema object.
+ * Returns a new object — does not mutate the original.
+ */
+function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (UNSUPPORTED_GEMINI_SCHEMA_FIELDS.has(key)) continue
+
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      // Recurse into each property definition
+      result[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([propName, propSchema]) => [
+          propName,
+          propSchema && typeof propSchema === 'object' && !Array.isArray(propSchema)
+            ? sanitizeSchemaForGemini(propSchema as Record<string, unknown>)
+            : propSchema,
+        ]),
+      )
+    } else if (key === 'items' && value && typeof value === 'object' && !Array.isArray(value)) {
+      // Recurse into array item schema
+      result[key] = sanitizeSchemaForGemini(value as Record<string, unknown>)
+    } else {
+      result[key] = value
+    }
+  }
+
+  return result
+}
+
 // ─── Conversion ────────────────────────────────────────────────────
 
 export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiRequest {
@@ -69,13 +126,13 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
     }
   }
 
-  // Tools → functionDeclarations
+  // Tools → functionDeclarations (sanitize schemas for Gemini compatibility)
   if (params.tools && params.tools.length > 0) {
     request.tools = [{
       functionDeclarations: params.tools.map(t => ({
         name: t.name,
         description: t.description,
-        parameters: t.input_schema,
+        parameters: sanitizeSchemaForGemini(t.input_schema),
       })),
     }]
   }

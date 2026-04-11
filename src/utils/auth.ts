@@ -1880,7 +1880,7 @@ export function validateProviderAuth(provider: APIProvider): { valid: boolean; m
   const supported = PROVIDER_AUTH_SUPPORT[provider] ?? ['api_key']
   const methods = supported.join(' or ')
   const oauthHint = supported.includes('oauth')
-    ? ` Or authenticate with OAuth: run \`claude auth ${provider}\`.`
+    ? ` Or authenticate with OAuth: run \`/login\` and choose ${provider}.`
     : ''
 
   return {

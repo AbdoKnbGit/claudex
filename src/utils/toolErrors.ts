@@ -1,6 +1,7 @@
-import type { ZodError } from 'zod/v4'
+import type { ZodError, ZodTypeAny } from 'zod/v4'
 import { AbortError, ShellError } from './errors.js'
 import { INTERRUPT_MESSAGE_FOR_TOOL_USE } from './messages.js'
+import { zodToJsonSchema } from './zodToJsonSchema.js'
 
 export function formatError(error: unknown): string {
   if (error instanceof AbortError) {
@@ -66,6 +67,8 @@ function formatValidationPath(path: PropertyKey[]): string {
 export function formatZodValidationError(
   toolName: string,
   error: ZodError,
+  schema?: ZodTypeAny,
+  receivedInput?: unknown,
 ): string {
   const missingParams = error.issues
     .filter(
@@ -128,5 +131,108 @@ export function formatZodValidationError(
     errorContent = `${toolName} failed due to the following ${errorParts.length > 1 ? 'issues' : 'issue'}:\n${errorParts.join('\n')}`
   }
 
+  const schemaSummary = schema ? summarizeSchema(schema) : null
+  if (schemaSummary) {
+    errorContent += `\nExpected input schema:\n${schemaSummary}`
+  }
+
+  const receivedSummary = summarizeReceivedInput(receivedInput)
+  if (receivedSummary) {
+    errorContent += `\nReceived input:\n${receivedSummary}`
+  }
+
   return errorContent
+}
+
+function summarizeSchema(schema: ZodTypeAny): string | null {
+  try {
+    const jsonSchema = zodToJsonSchema(schema)
+    const condensed = condenseSchema(jsonSchema)
+    return limitSection(JSON.stringify(condensed, null, 2), 1500)
+  } catch {
+    return null
+  }
+}
+
+function condenseSchema(schema: Record<string, unknown>, depth = 0): unknown {
+  const summary: Record<string, unknown> = {}
+
+  if (typeof schema.type === 'string') {
+    summary.type = schema.type
+  }
+  if (typeof schema.format === 'string') {
+    summary.format = schema.format
+  }
+  if (Array.isArray(schema.required) && schema.required.length > 0) {
+    summary.required = schema.required
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    summary.enum = schema.enum.slice(0, 10)
+  }
+  if (schema.additionalProperties !== undefined) {
+    summary.additionalProperties = schema.additionalProperties
+  }
+  if (typeof schema.description === 'string' && depth === 0) {
+    summary.description = schema.description
+  }
+
+  if (
+    depth < 2 &&
+    schema.properties &&
+    typeof schema.properties === 'object' &&
+    !Array.isArray(schema.properties)
+  ) {
+    summary.properties = Object.fromEntries(
+      Object.entries(schema.properties).map(([key, value]) => [
+        key,
+        condenseSchema(value as Record<string, unknown>, depth + 1),
+      ]),
+    )
+  }
+
+  if (
+    depth < 2 &&
+    schema.items &&
+    typeof schema.items === 'object' &&
+    !Array.isArray(schema.items)
+  ) {
+    summary.items = condenseSchema(
+      schema.items as Record<string, unknown>,
+      depth + 1,
+    )
+  }
+
+  if (depth < 1 && Array.isArray(schema.anyOf) && schema.anyOf.length > 0) {
+    summary.anyOf = schema.anyOf
+      .slice(0, 3)
+      .map(option => condenseSchema(option as Record<string, unknown>, depth + 1))
+  }
+
+  if (depth < 1 && Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
+    summary.oneOf = schema.oneOf
+      .slice(0, 3)
+      .map(option => condenseSchema(option as Record<string, unknown>, depth + 1))
+  }
+
+  return summary
+}
+
+function summarizeReceivedInput(receivedInput: unknown): string | null {
+  if (receivedInput === undefined) {
+    return null
+  }
+
+  try {
+    return limitSection(JSON.stringify(receivedInput, null, 2), 1000)
+  } catch {
+    return null
+  }
+}
+
+function limitSection(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value
+  }
+
+  return `${value.slice(0, maxChars)}\n... [truncated]`
 }

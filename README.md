@@ -1,8 +1,10 @@
 # Claudex
 
-**The multi-provider AI coding CLI.** A fully integrated agentic coding system that brings the power of Claude Code's tool loop, MCP servers, hooks, skills, and interactive TUI to every major LLM provider — Anthropic, OpenAI, Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, and OpenRouter.
+**The multi-provider AI coding CLI.** Use Claude Code's full agentic tool loop, MCP servers, hooks, skills, and interactive TUI with every major LLM provider.
 
-Claudex is not a proxy or wrapper. It is a complete reimplementation of the Claude Code runtime with a provider-agnostic architecture: every provider goes through native adapters that translate the Anthropic tool-use protocol into each provider's native API format (OpenAI chat completions, Gemini generateContent, etc.), with full streaming, rate-limit handling, cache-control stripping, context-window management, and retry logic built in.
+Claudex is not a proxy or wrapper. It is a complete reimplementation of the Claude Code runtime with a provider-agnostic core: every provider goes through native adapters that translate the Anthropic tool-use protocol into each provider's native API format, with full streaming, rate-limit handling, and retry logic built in.
+
+**Supported Providers:** Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, OpenRouter
 
 ---
 
@@ -11,8 +13,6 @@ Claudex is not a proxy or wrapper. It is a complete reimplementation of the Clau
 ```bash
 npm install -g @abdoknbgit/claudex
 ```
-
-That's it. The postinstall script downloads a platform-correct ripgrep binary automatically.
 
 ### From source
 
@@ -43,104 +43,109 @@ claudex -p "explain this codebase"
 
 # Continue last conversation
 claudex -c
-
-# With a specific provider
-CLAUDE_CODE_USE_OPENAI=1 claudex
 ```
-
-### First Run
-
-Set the API key for the provider you want:
-
-```bash
-# Anthropic (default — works out of the box with Claude.ai login)
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# OpenAI
-export OPENAI_API_KEY=sk-...
-
-# Google Gemini
-export GEMINI_API_KEY=AIza...
-
-# Groq (free tier, no billing needed)
-export GROQ_API_KEY=gsk_...
-
-# DeepSeek
-export DEEPSEEK_API_KEY=sk-...
-
-# OpenRouter
-export OPENROUTER_API_KEY=sk-or-...
-
-# NVIDIA NIM
-export NIM_API_KEY=nvapi-...
-
-# Ollama — no key needed, just run `ollama serve`
-```
-
-Then switch providers at any time with the in-session command:
-
-```
-/provider
-```
-
-Your selection persists across sessions automatically.
 
 ---
 
-## Architecture
+## Commands
 
-```
-User Prompt
-    |
-    v
-+-------------------+
-|   Agent Loop      |  Tool use, MCP, hooks, skills, permissions
-|   (main.tsx)      |  — provider-agnostic, works identically
-+-------------------+  for every backend
-    |
-    v
-+-------------------+
-|   Provider Shim   |  Duck-types the Anthropic SDK interface
-|   (providerShim)  |  so the agent loop sees one API shape
-+-------------------+
-    |
-    +---> OpenAI Adapter -----> OpenAI, Groq, DeepSeek, NIM, Ollama, OpenRouter
-    |     (chat/completions)
-    +---> Gemini Adapter -----> Google Gemini
-    |     (generateContent)
-    +---> Anthropic SDK ------> Anthropic, Bedrock, Vertex, Foundry
-```
+### `/provider` - Switch between LLM providers
 
-Each adapter handles:
-- **Message format translation** — Anthropic content blocks to/from OpenAI messages or Gemini parts
-- **Tool call mapping** — Anthropic tool_use/tool_result to OpenAI function_call/tool or Gemini functionCall
-- **Cache control stripping** — removes Anthropic-specific `cache_control` fields before sending to third-party APIs
-- **Streaming** — native SSE parsing for all providers with proper backpressure
-- **Rate limit extraction** — reads X-RateLimit headers, respects Retry-After, exponential backoff with jitter
-- **Context window awareness** — tier-based model selection maps opus/sonnet/haiku to the best model at each provider
+Opens an interactive picker to switch between all 8 supported providers. Your selection is saved and persists across sessions. Each provider uses its native API format for best performance.
+
+### `/models` - Browse and pick any model
+
+Opens a live model browser that fetches the full model catalog from the selected provider's API. Search, filter, and set any model as your active model.
+
+- `/models` — open interactive provider + model picker
+- `/models <query>` — search the active provider's models
+- `/models <provider>:<query>` — search a specific provider (e.g. `/models groq:llama`)
+- `/model <model-id>` — set a specific model directly (e.g. `/model deepseek-reasoner`)
+
+**Example model counts per provider:**
+
+| Provider     | Models Available |
+|--------------|-----------------|
+| OpenAI       | 80+             |
+| Google Gemini| 30+             |
+| OpenRouter   | 300+            |
+| Groq         | 15+             |
+| DeepSeek     | 5+              |
+| NVIDIA NIM   | 100+            |
+| Ollama       | varies (local)  |
+
+### `/thinking` - Toggle thinking/reasoning mode
+
+Controls whether the model reasons step-by-step before answering. Works safely across all providers:
+
+- `/thinking` — toggle on/off
+- `/thinking on` — enable thinking
+- `/thinking off` — disable thinking
+- `/thinking status` — show current state and model support
+
+**Decision matrix (zero crashes guaranteed):**
+
+| State | Model Support | Behavior |
+|-------|--------------|----------|
+| thinking=on | model supports thinking | Thinking enabled |
+| thinking=on | model lacks thinking | Request sent normally (param silently omitted) |
+| thinking=off | any model | No thinking param sent |
+
+**Models with thinking support:** Claude 4+ (Anthropic), DeepSeek Reasoner, Kimi K2 Thinking (NIM), DeepSeek R1 distill models (Groq)
+
+### `/login` - Authenticate with a provider
+
+Configures API keys or starts an OAuth browser flow for providers that support it (OpenAI, Gemini). For API-key-only providers, prompts for the key and stores it securely.
+
+### `/effort` - Set reasoning effort level
+
+Controls how much effort the model puts into its response: `low`, `medium`, `high`, `max`, or `auto`.
+
+### `/compact` - Compact conversation context
+
+Summarizes the conversation to reduce token usage when approaching context limits.
+
+### Other commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all available commands |
+| `/model <id>` | Set a specific model directly |
+| `/fast` | Toggle fast mode |
+| `/config` | View/edit settings |
+| `/commit` | Generate a git commit from staged changes |
+| `/review-pr` | Review the current PR |
+| `/diff` | Show git diff |
+| `/mcp` | Manage MCP servers |
+| `/hooks` | Manage hooks |
+| `/memory` | Manage persistent memory |
+| `/context` | Add files/directories to context |
+| `/vim` | Toggle vim mode |
 
 ---
 
 ## Features
 
 ### Multi-Provider Engine
-- **8 providers** — Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, OpenRouter
-- **Native adapters** — each provider uses its own API format, not a lowest-common-denominator passthrough
-- **Provider tiers** — free/pro/plus model selection per provider with env-var overrides
-- **OAuth + API key auth** — API keys for all providers, OAuth for OpenAI and Gemini
-- **Persistent selection** — `/provider` command saves your choice across sessions
+- **8 providers** with native adapters (not a proxy)
+- **OAuth + API key auth** for all providers
+- **Persistent provider selection** across sessions
+- **Automatic tool schema sanitization** per provider (Gemini, OpenAI, Groq)
+- **Aggressive payload optimization** for rate-limited providers (Groq)
+- **Human-friendly error messages** for billing, quota, and auth errors
 
 ### Full Agent Tooling
 - **File editing** — Read, Edit, Write, Glob, Grep with permission controls
 - **Bash execution** — sandboxed shell commands with timeout and abort
 - **MCP servers** — full Model Context Protocol support for external tools
 - **Hooks** — PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification
-- **Skills** — slash commands: /commit, /review-pr, /simplify, /loop, and more
+- **Skills** — /commit, /review-pr, /simplify, /loop, and more
 - **Task management** — structured task tracking within sessions
 - **Web tools** — WebSearch, WebFetch for live data retrieval
 
 ### Developer Experience
 - **Interactive TUI** — Ink-based React terminal UI with streaming output
+- **Thinking mode** — toggle reasoning with `/thinking` across all providers
 - **Vim mode** — modal editing in the prompt
 - **Keyboard shortcuts** — configurable keybindings
 - **Debug mode** — `claudex --debug` for full request/response tracing
@@ -151,33 +156,7 @@ Each adapter handles:
 - **Retry-After respect** — honors provider rate-limit headers
 - **Context overflow recovery** — auto-reduces max_tokens when hitting context limits
 - **Streaming fallback** — NIM and Ollama fall back to non-streaming when needed
-- **Cross-platform** — Windows (git-bash), macOS, Linux with no hardcoded paths
-
----
-
-## Provider Model Table
-
-Default model mappings at the **pro** tier:
-
-| Provider     | Haiku (fast)                  | Sonnet (balanced)             | Opus (best)                   |
-|--------------|-------------------------------|-------------------------------|-------------------------------|
-| Anthropic    | claude-haiku-4.5              | claude-sonnet-4.6             | claude-opus-4.6               |
-| OpenAI       | gpt-5.4-mini                  | gpt-5.4                       | gpt-5.4                       |
-| Gemini       | gemini-3.1-flash-lite         | gemini-3.1-pro-preview        | gemini-3.1-pro-preview        |
-| Groq         | llama-3.3-70b-versatile       | deepseek-r1-distill-llama-70b | deepseek-r1-distill-llama-70b |
-| DeepSeek     | deepseek-chat                 | deepseek-chat                 | deepseek-reasoner             |
-| OpenRouter   | openai/gpt-5.4-mini           | openai/gpt-5.4                | anthropic/claude-sonnet-4-5   |
-| NVIDIA NIM   | nvidia/llama-3.1-8b-instruct  | moonshotai/kimi-k2.5          | moonshotai/kimi-k2-thinking   |
-| Ollama       | llama3.2:latest               | llama3.1:latest               | llama3.3:latest               |
-
-Override any slot:
-
-```bash
-export PROVIDER_TIER=plus          # global tier
-export OPENAI_TIER=free            # provider-specific tier
-export OPENAI_MODEL_OPUS=o3        # pin a specific model
-export OLLAMA_MODEL_SONNET=codellama:latest
-```
+- **Cross-platform** — Windows (git-bash), macOS, Linux
 
 ---
 
@@ -197,24 +176,6 @@ cd claudex-vscode
 npx @vscode/vsce package --no-dependencies
 code --install-extension claudex-vscode-*.vsix
 ```
-
----
-
-## Configuration
-
-Claudex reads configuration from `~/.claude/settings.json` (global) and `.claude/settings.json` (project-level), following the same format as Claude Code.
-
-Key settings:
-
-```jsonc
-{
-  "model": "opus",           // Default model tier
-  "effortLevel": "high",     // low | medium | high | max
-  "activeProvider": "openai" // Persistent provider selection
-}
-```
-
-Provider keys are stored in `~/.claude/.credentials.json` (managed by `/login`) or via environment variables.
 
 ---
 

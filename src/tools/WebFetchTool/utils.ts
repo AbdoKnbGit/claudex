@@ -26,9 +26,9 @@ class DomainBlockedError extends Error {
 }
 
 class DomainCheckFailedError extends Error {
-  constructor(domain: string) {
+  constructor(domain: string, details?: string) {
     super(
-      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
+      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.${details ? ` Raw error: ${details}` : ''}`,
     )
     this.name = 'DomainCheckFailedError'
   }
@@ -44,6 +44,13 @@ class EgressBlockedError extends Error {
       }),
     )
     this.name = 'EgressBlockedError'
+  }
+}
+
+class WebFetchRequestError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'WebFetchRequestError'
   }
 }
 
@@ -111,12 +118,21 @@ const MAX_URL_LENGTH = 2000
 // request or user from overwhelming the system."
 const MAX_HTTP_CONTENT_LENGTH = 10 * 1024 * 1024
 
-// Timeout for the main HTTP fetch request (60 seconds).
-// Prevents hanging indefinitely on slow/unresponsive servers.
-const FETCH_TIMEOUT_MS = 60_000
+// Timeout for the main HTTP fetch request.
+// Default is intentionally short to fail fast on blocked or broken requests.
+const FETCH_TIMEOUT_MS = parseInt(
+  process.env.WEB_FETCH_TIMEOUT_MS ?? '5000',
+  10,
+)
 
-// Timeout for the domain blocklist preflight check (10 seconds).
-const DOMAIN_CHECK_TIMEOUT_MS = 10_000
+// Timeout for the domain blocklist preflight check.
+const DOMAIN_CHECK_TIMEOUT_MS = parseInt(
+  process.env.WEB_FETCH_DOMAIN_CHECK_TIMEOUT_MS ??
+    String(Math.min(FETCH_TIMEOUT_MS, 5000)),
+  10,
+)
+
+const MAX_FETCH_RETRIES = 1
 
 // Cap same-host redirect hops. Without this a malicious server can return
 // a redirect loop (/a → /b → /a …) and the per-request FETCH_TIMEOUT_MS
@@ -180,9 +196,13 @@ export async function checkDomainBlocklist(
     return { status: 'allowed' }
   }
   try {
-    const response = await axios.get(
-      `https://api.anthropic.com/api/web/domain_info?domain=${encodeURIComponent(domain)}`,
-      { timeout: DOMAIN_CHECK_TIMEOUT_MS },
+    const response = await withSingleRetry(
+      () =>
+        axios.get(
+          `https://api.anthropic.com/api/web/domain_info?domain=${encodeURIComponent(domain)}`,
+          { timeout: DOMAIN_CHECK_TIMEOUT_MS },
+        ),
+      shouldRetryWebFetchRequest,
     )
     if (response.status === 200) {
       if (response.data.can_fetch === true) {
@@ -198,7 +218,14 @@ export async function checkDomainBlocklist(
     }
   } catch (e) {
     logError(e)
-    return { status: 'check_failed', error: e as Error }
+    return {
+      status: 'check_failed',
+      error: buildWebFetchError(
+        'domain_check',
+        `https://api.anthropic.com/api/web/domain_info?domain=${encodeURIComponent(domain)}`,
+        e,
+      ),
+    }
   }
 }
 
@@ -269,17 +296,21 @@ export async function getWithPermittedRedirects(
     throw new Error(`Too many redirects (exceeded ${MAX_REDIRECTS})`)
   }
   try {
-    return await axios.get(url, {
-      signal,
-      timeout: FETCH_TIMEOUT_MS,
-      maxRedirects: 0,
-      responseType: 'arraybuffer',
-      maxContentLength: MAX_HTTP_CONTENT_LENGTH,
-      headers: {
-        Accept: 'text/markdown, text/html, */*',
-        'User-Agent': getWebFetchUserAgent(),
-      },
-    })
+    return await withSingleRetry(
+      () =>
+        axios.get(url, {
+          signal,
+          timeout: FETCH_TIMEOUT_MS,
+          maxRedirects: 0,
+          responseType: 'arraybuffer',
+          maxContentLength: MAX_HTTP_CONTENT_LENGTH,
+          headers: {
+            Accept: 'text/markdown, text/html, */*',
+            'User-Agent': getWebFetchUserAgent(),
+          },
+        }),
+      shouldRetryWebFetchRequest,
+    )
   } catch (error) {
     if (
       axios.isAxiosError(error) &&
@@ -324,7 +355,7 @@ export async function getWithPermittedRedirects(
       throw new EgressBlockedError(hostname)
     }
 
-    throw error
+    throw buildWebFetchError('fetch', url, error)
   }
 }
 
@@ -393,7 +424,10 @@ export async function getURLMarkdownContent(
         case 'blocked':
           throw new DomainBlockedError(hostname)
         case 'check_failed':
-          throw new DomainCheckFailedError(hostname)
+          throw new DomainCheckFailedError(
+            hostname,
+            checkResult.error.message,
+          )
       }
     }
 
@@ -527,4 +561,85 @@ export async function applyPromptToMarkdown(
     }
   }
   return 'No response from model'
+}
+
+async function withSingleRetry<T>(
+  fn: () => Promise<T>,
+  shouldRetry: (error: unknown) => boolean,
+): Promise<T> {
+  let attempt = 0
+
+  while (true) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (attempt >= MAX_FETCH_RETRIES || !shouldRetry(error)) {
+        throw error
+      }
+      attempt += 1
+    }
+  }
+}
+
+function shouldRetryWebFetchRequest(error: unknown): boolean {
+  if (error instanceof AbortError) {
+    return false
+  }
+
+  if (!axios.isAxiosError(error)) {
+    return false
+  }
+
+  if (!error.response) {
+    return true
+  }
+
+  return [408, 409, 425, 429, 500, 502, 503, 504].includes(
+    error.response.status,
+  )
+}
+
+function buildWebFetchError(
+  phase: 'domain_check' | 'fetch',
+  url: string,
+  error: unknown,
+): Error {
+  if (error instanceof AbortError || error instanceof EgressBlockedError) {
+    return error
+  }
+
+  if (!axios.isAxiosError(error)) {
+    const message = error instanceof Error ? error.message : String(error)
+    return new WebFetchRequestError(
+      `WebFetch failed during ${phase}.\nURL: ${url}\nRaw error: ${message}`,
+    )
+  }
+
+  const parts = [
+    `WebFetch failed during ${phase}.`,
+    `URL: ${url}`,
+    `Timeout: ${phase === 'domain_check' ? DOMAIN_CHECK_TIMEOUT_MS : FETCH_TIMEOUT_MS}ms`,
+  ]
+
+  if (error.response) {
+    parts.push(`HTTP status: ${error.response.status}`)
+    if (typeof error.response.statusText === 'string' && error.response.statusText) {
+      parts.push(`HTTP status text: ${error.response.statusText}`)
+    }
+  }
+
+  if (error.code) {
+    parts.push(`Error code: ${error.code}`)
+  }
+
+  const proxyError = error.response?.headers?.['x-proxy-error']
+  if (typeof proxyError === 'string' && proxyError) {
+    parts.push(`Proxy error: ${proxyError}`)
+  }
+
+  if (error.message) {
+    parts.push(`Raw error: ${error.message}`)
+  }
+
+  return new WebFetchRequestError(parts.join('\n'))
 }

@@ -614,7 +614,12 @@ async function checkPermissionsAndCallTool(
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
   const parsedInput = tool.inputSchema.safeParse(input)
   if (!parsedInput.success) {
-    let errorContent = formatZodValidationError(tool.name, parsedInput.error)
+    let errorContent = formatZodValidationError(
+      tool.name,
+      parsedInput.error,
+      tool.inputSchema,
+      input,
+    )
 
     const schemaHint = buildSchemaNotSentHint(
       tool,
@@ -672,7 +677,7 @@ async function checkPermissionsAndCallTool(
               tool_use_id: toolUseID,
             },
           ],
-          toolUseResult: `InputValidationError: ${parsedInput.error.message}`,
+          toolUseResult: `InputValidationError: ${errorContent}`,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },

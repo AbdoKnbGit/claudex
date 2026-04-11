@@ -7,17 +7,13 @@
  * Base URL: https://integrate.api.nvidia.com/v1
  * Auth: Bearer token (nvapi-...)
  *
- * Key models (April 2026):
- *   - moonshotai/kimi-k2-thinking  — Reasoning model, supports budget_tokens
- *   - moonshotai/kimi-k2.5         — Latest Kimi, multimodal agentic
- *   - moonshotai/kimi-k2-instruct  — Instruction-tuned Kimi
- *   - minimaxai/minimax-m2.5       — 230B params, Feb 2026
- *   - nvidia/llama-3.1-8b-instruct — Ultra-fast small model
+ * Payload optimization is handled by the base OpenAIProvider class.
+ * NIM-specific env vars (NIM_MAX_TOKENS, NIM_MAX_SYSTEM_CHARS, NIM_NO_OPTIMIZE)
+ * override the generic PROVIDER_* vars when set.
  *
- * Special features:
- *   - Thinking models (kimi-k2-thinking) support budget_tokens
- *     via nvext: { budget_tokens: N } in request body
- *   - Some models may not support streaming — falls back to non-streaming
+ * This subclass adds:
+ *   - Thinking model support (kimi-k2-thinking) with nvext.budget_tokens
+ *   - Streaming fallback for models that don't support SSE
  */
 
 import { OpenAIProvider } from './openai_provider.js'
@@ -34,8 +30,6 @@ import {
 } from '../adapters/anthropic_to_openai.js'
 import {
   openAIStreamToAnthropicEvents,
-  openAIMessageToAnthropic,
-  type OpenAIChatCompletion,
 } from '../adapters/openai_to_anthropic.js'
 
 /** Models that support reasoning/thinking budget tokens */
@@ -55,19 +49,33 @@ export class NimProvider extends OpenAIProvider {
       baseUrl: config.baseUrl ?? 'https://integrate.api.nvidia.com/v1',
       extraHeaders: config.extraHeaders,
     })
+
+    // NIM-specific env vars override base class defaults
+    if (process.env.NIM_MAX_TOKENS) {
+      this.maxTokensCap = parseInt(process.env.NIM_MAX_TOKENS, 10)
+    }
+    if (process.env.NIM_MAX_SYSTEM_CHARS) {
+      this.maxSystemChars = parseInt(process.env.NIM_MAX_SYSTEM_CHARS, 10)
+    }
+    if (process.env.NIM_NO_OPTIMIZE === 'true') {
+      this.optimizePayload = false
+    }
+
     this.enableThinking = process.env.NIM_ENABLE_THINKING === 'true'
     this.thinkingBudget = parseInt(process.env.NIM_THINKING_BUDGET ?? '8192', 10)
   }
 
   /**
    * Override stream to handle NIM-specific features:
-   * - Inject thinking budget tokens for reasoning models
-   * - Fallback to non-streaming if streaming fails
+   * - Thinking model budget tokens injection
+   * - Streaming fallback for models that don't support SSE
+   *
+   * Payload optimization is handled by the base class's stream() method.
    */
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const model = this.resolveModel(params.model)
 
-    // Check if this is a thinking model and inject budget
+    // Thinking models need special handling (nvext.budget_tokens)
     if (this._isThinkingModel(model)) {
       return this._streamWithThinking(params, model)
     }
@@ -85,20 +93,25 @@ export class NimProvider extends OpenAIProvider {
     }
   }
 
+  // ─── Thinking Models ───────────────────────────────────────────
+
   /**
    * Stream with NIM thinking extensions (nvext.budget_tokens).
+   * Builds the request manually to inject the nvext field.
    */
   private async _streamWithThinking(
     params: ProviderRequestParams,
     model: string,
   ): Promise<ProviderStreamResult> {
-    const messages = anthropicMessagesToOpenAI(params.messages, params.system)
-    const tools = params.tools ? anthropicToolsToOpenAI(params.tools) : undefined
+    // Apply base class optimization before building the custom request
+    const optimized = this.optimizeParams(params)
+    const messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
+    const tools = optimized.tools ? anthropicToolsToOpenAI(optimized.tools) : undefined
 
     const body: Record<string, unknown> = {
       model,
       messages,
-      max_tokens: params.max_tokens,
+      max_tokens: optimized.max_tokens,
       stream: true,
       stream_options: { include_usage: true },
     }
@@ -106,8 +119,8 @@ export class NimProvider extends OpenAIProvider {
       body.tools = tools
       body.tool_choice = 'auto'
     }
-    if (params.temperature !== undefined) body.temperature = params.temperature
-    if (params.stop_sequences) body.stop = params.stop_sequences
+    if (optimized.temperature !== undefined) body.temperature = optimized.temperature
+    if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
     // Inject NIM thinking extension
     if (this.enableThinking) {

@@ -195,6 +195,49 @@ export function coalesceConsecutiveMessages(messages: OpenAIMessage[]): OpenAIMe
   return result
 }
 
+// ─── Schema Sanitization ──────────────────────────────────────────
+
+/**
+ * Fields that many OpenAI-compatible providers do not support in tool schemas.
+ * Standard JSON Schema but rejected by Groq, some OpenRouter models, etc.
+ * Stripping these avoids 400 errors across the ecosystem.
+ */
+const UNSUPPORTED_OPENAI_SCHEMA_FIELDS = new Set([
+  '$schema',
+  '$id',
+  '$ref',
+  '$comment',
+])
+
+/**
+ * Recursively strip unsupported JSON Schema fields from tool parameter schemas.
+ * Returns a new object — does not mutate the original.
+ */
+function sanitizeSchemaForOpenAI(schema: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (UNSUPPORTED_OPENAI_SCHEMA_FIELDS.has(key)) continue
+
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([propName, propSchema]) => [
+          propName,
+          propSchema && typeof propSchema === 'object' && !Array.isArray(propSchema)
+            ? sanitizeSchemaForOpenAI(propSchema as Record<string, unknown>)
+            : propSchema,
+        ]),
+      )
+    } else if (key === 'items' && value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = sanitizeSchemaForOpenAI(value as Record<string, unknown>)
+    } else {
+      result[key] = value
+    }
+  }
+
+  return result
+}
+
 // ─── Tool Conversion ───────────────────────────────────────────────
 
 export function anthropicToolsToOpenAI(tools: ProviderTool[]): OpenAITool[] {
@@ -203,7 +246,7 @@ export function anthropicToolsToOpenAI(tools: ProviderTool[]): OpenAITool[] {
     function: {
       name: t.name,
       description: t.description,
-      parameters: t.input_schema,
+      parameters: sanitizeSchemaForOpenAI(t.input_schema),
     },
   }))
 }

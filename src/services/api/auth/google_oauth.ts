@@ -21,6 +21,7 @@
 import { createServer } from 'http'
 import { randomBytes, createHash } from 'crypto'
 import { saveProviderKey, loadProviderKey } from './api_key_manager.js'
+import { openBrowser } from '../../../utils/browser.js'
 
 // ─── Configuration ─────────────────────────────────────────────────
 
@@ -65,18 +66,31 @@ export async function startGoogleOAuthFlow(): Promise<{
   accessToken: string
   refreshToken: string
 }> {
-  const clientId = process.env.GOOGLE_CLIENT_ID
+  const clientId =
+    process.env.GOOGLE_CLIENT_ID ?? loadProviderKey('google_client_id')
   if (!clientId) {
     throw new Error(
-      'GOOGLE_CLIENT_ID environment variable is required for Google OAuth.\n' +
-      'Create one at: https://console.cloud.google.com/apis/credentials\n' +
-      'Select "Desktop App" as the application type.',
+      'GOOGLE_CLIENT_ID environment variable is required for Google OAuth.\n\n' +
+      'To set up OAuth:\n' +
+      '  1. Go to https://console.cloud.google.com/apis/credentials\n' +
+      '  2. Create OAuth 2.0 Client ID (select "Desktop App")\n' +
+      '  3. Enable the "Generative Language API" in your project\n' +
+      '  4. Set GOOGLE_CLIENT_ID=<your-client-id> in your environment\n' +
+      '  5. Optionally set GOOGLE_CLIENT_SECRET=<your-secret>\n\n' +
+      'Alternatively, use an API key instead (simpler):\n' +
+      '  1. Go to https://aistudio.google.com/apikey\n' +
+      '  2. Create a new API key\n' +
+      '  3. Set GEMINI_API_KEY=<your-key> in your environment',
     )
   }
 
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET ?? ''
+  const clientSecret =
+    process.env.GOOGLE_CLIENT_SECRET ??
+    loadProviderKey('google_client_secret') ??
+    ''
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = generateCodeChallenge(codeVerifier)
+  const state = randomBytes(16).toString('hex')
 
   // Find a free port for the callback server
   const port = await findFreePort()
@@ -88,13 +102,22 @@ export async function startGoogleOAuthFlow(): Promise<{
   authUrl.searchParams.set('redirect_uri', redirectUri)
   authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('scope', SCOPES)
+  authUrl.searchParams.set('state', state)
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
   authUrl.searchParams.set('access_type', 'offline')
   authUrl.searchParams.set('prompt', 'consent')
 
+  const authUrlString = authUrl.toString()
+  const opened = await openBrowser(authUrlString)
+  if (!opened) {
+    console.log(
+      `\nOpen this URL in your browser to authenticate with Google:\n${authUrlString}\n`,
+    )
+  }
+
   // Start local server and wait for callback
-  const authCode = await waitForAuthCode(port)
+  const authCode = await waitForAuthCode(port, state)
 
   // Exchange code for tokens
   const tokenResponse = await fetch(GOOGLE_TOKEN_URL, {
@@ -125,9 +148,6 @@ export async function startGoogleOAuthFlow(): Promise<{
   }
   saveProviderKey('gemini_oauth', JSON.stringify(stored))
 
-  // Return the auth URL for the caller to open in the browser
-  console.log(`\nOpen this URL in your browser to authenticate:\n${authUrl.toString()}\n`)
-
   return {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token ?? '',
@@ -138,10 +158,14 @@ export async function startGoogleOAuthFlow(): Promise<{
  * Refresh an expired Google OAuth access token.
  */
 export async function refreshGoogleToken(refreshToken: string): Promise<string> {
-  const clientId = process.env.GOOGLE_CLIENT_ID
+  const clientId =
+    process.env.GOOGLE_CLIENT_ID ?? loadProviderKey('google_client_id')
   if (!clientId) throw new Error('GOOGLE_CLIENT_ID required for token refresh')
 
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET ?? ''
+  const clientSecret =
+    process.env.GOOGLE_CLIENT_SECRET ??
+    loadProviderKey('google_client_secret') ??
+    ''
 
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
@@ -214,7 +238,7 @@ function findFreePort(): Promise<number> {
   })
 }
 
-function waitForAuthCode(port: number): Promise<string> {
+function waitForAuthCode(port: number, expectedState: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       server.close()
@@ -227,6 +251,7 @@ function waitForAuthCode(port: number): Promise<string> {
       if (url.pathname === REDIRECT_PATH) {
         const code = url.searchParams.get('code')
         const error = url.searchParams.get('error')
+        const state = url.searchParams.get('state')
 
         if (error) {
           res.writeHead(400, { 'Content-Type': 'text/html' })
@@ -234,6 +259,15 @@ function waitForAuthCode(port: number): Promise<string> {
           clearTimeout(timeout)
           server.close()
           reject(new Error(`Google OAuth error: ${error}`))
+          return
+        }
+
+        if (state !== expectedState) {
+          res.writeHead(400, { 'Content-Type': 'text/html' })
+          res.end('<h1>Authentication Failed</h1><p>Invalid OAuth state.</p>')
+          clearTimeout(timeout)
+          server.close()
+          reject(new Error('Google OAuth error: invalid state parameter'))
           return
         }
 

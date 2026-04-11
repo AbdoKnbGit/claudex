@@ -1,35 +1,23 @@
-/**
- * /models command — Browse and search the full NVIDIA NIM model catalog.
- *
- * When run without arguments, opens the interactive searchable picker.
- * The picker fetches live models from the NIM API so only actually-available
- * models are shown (preventing 404 errors).
- *
- * When run with arguments, filters models by the given query.
- *
- * Usage:
- *   /models              — Open interactive model browser (fetches live models)
- *   /models llama        — Search for "llama" models
- *   /models meta         — Show all Meta models
- *   /models help         — Show help
- */
-
 import chalk from 'chalk'
 import * as React from 'react'
-import { NimModelPicker } from '../../components/NimModelPicker.js'
+import { ProviderModelPicker } from '../../components/ProviderModelPicker.js'
 import type { CommandResultDisplay } from '../../commands.js'
-import type { LocalJSXCommandCall } from '../../types/command.js'
 import { useSetAppState } from '../../state/AppState.js'
-import { getAPIProvider, setActiveProvider } from '../../utils/model/providers.js'
+import type { LocalJSXCommandCall } from '../../types/command.js'
 import {
-  searchNimModels,
-  fetchLiveNimModels,
-  buildLiveModelList,
-  hasLiveModels,
-  NIM_MODEL_COUNT,
-  NIM_PROVIDER_GROUPS,
-} from '../../utils/model/nim_catalog.js'
-import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
+  getAPIProvider,
+  PROVIDER_DISPLAY_NAMES,
+  setActiveProvider,
+} from '../../utils/model/providers.js'
+import {
+  BROWSABLE_MODEL_PROVIDERS,
+  filterProviderModels,
+  getDefaultBrowsableProvider,
+  getProviderBrowseLabel,
+  loadProviderModels,
+  parseProviderModelQuery,
+  type BrowsableModelProvider,
+} from '../../utils/model/providerCatalog.js'
 
 function ModelsPickerWrapper({
   onDone,
@@ -38,78 +26,89 @@ function ModelsPickerWrapper({
 }) {
   const setAppState = useSetAppState()
   const currentProvider = getAPIProvider()
+  const initialProvider = getDefaultBrowsableProvider(currentProvider)
 
-  function handleSelect(modelId: string) {
-    // If not already on NIM, switch to NIM
-    if (currentProvider !== 'nim') {
-      setActiveProvider('nim')
+  function handleSelect(provider: BrowsableModelProvider, modelId: string) {
+    if (currentProvider !== provider) {
+      setActiveProvider(provider)
     }
 
-    // Set the selected model
     setAppState(prev => ({
       ...prev,
       mainLoopModel: modelId,
       mainLoopModelForSession: null,
     }))
 
-    const providerNote = currentProvider !== 'nim'
-      ? ` (switched to ${chalk.bold('NVIDIA NIM')})`
+    const providerNote = currentProvider !== provider
+      ? ` (switched to ${chalk.bold(PROVIDER_DISPLAY_NAMES[provider])})`
       : ''
 
-    onDone(
-      `Set model to ${chalk.bold(modelId)}${providerNote}`,
-    )
+    onDone(`Set model to ${chalk.bold(modelId)}${providerNote}`)
   }
 
   function handleCancel() {
-    onDone(`Model selection cancelled`, { display: 'system' })
+    onDone('Model selection cancelled', { display: 'system' })
   }
 
-  return <NimModelPicker onSelect={handleSelect} onCancel={handleCancel} />
+  return (
+    <ProviderModelPicker
+      initialProvider={initialProvider}
+      onSelect={handleSelect}
+      onCancel={handleCancel}
+    />
+  )
 }
 
 async function showSearchResults(
-  query: string,
+  rawArgs: string,
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void,
 ) {
-  // Try to fetch live models first for accurate results
-  const apiKey = loadProviderKey('nim') ?? process.env.NIM_API_KEY ?? ''
-  let liveModelList = undefined
-  if (apiKey) {
-    try {
-      const liveIds = await fetchLiveNimModels(apiKey)
-      if (liveIds.size > 0) {
-        liveModelList = buildLiveModelList(liveIds)
-      }
-    } catch { /* fall back to static catalog */ }
-  }
+  const fallbackProvider = getDefaultBrowsableProvider(getAPIProvider())
+  const { provider, query } = parseProviderModelQuery(rawArgs, fallbackProvider)
 
-  const results = searchNimModels(query, liveModelList)
-  const isLive = liveModelList !== undefined
-
-  if (results.length === 0) {
+  let models
+  try {
+    models = await loadProviderModels(provider)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     onDone(
-      `No NIM models match "${chalk.bold(query)}". Try /models to browse all available models.`,
+      `Unable to load models from ${chalk.bold(getProviderBrowseLabel(provider))}: ${message}`,
       { display: 'system' },
     )
     return
   }
 
-  const liveTag = isLive ? chalk.green(' [LIVE]') : ''
+  const results = filterProviderModels(models, query)
+
+  if (results.length === 0) {
+    onDone(
+      `No ${getProviderBrowseLabel(provider)} models match "${chalk.bold(query)}". Try ${chalk.cyan('/models')} to browse providers and models interactively.`,
+      { display: 'system' },
+    )
+    return
+  }
+
   const lines = [
-    `Found ${chalk.bold(String(results.length))} model${results.length !== 1 ? 's' : ''} matching "${chalk.bold(query)}":${liveTag}`,
+    `${chalk.bold(getProviderBrowseLabel(provider))} - ${chalk.bold(String(results.length))} model${results.length === 1 ? '' : 's'}${query ? ` matching "${chalk.bold(query)}"` : ''}`,
     '',
     ...results.slice(0, 20).map(
-      m => `  ${chalk.cyan(m.id)} — ${m.name} (${chalk.dim(m.provider)})`,
+      model =>
+        `  ${chalk.cyan(model.id)}${model.name && model.name !== model.id ? ` - ${model.name}` : ''}`,
     ),
   ]
 
   if (results.length > 20) {
-    lines.push(`  ... and ${results.length - 20} more. Use /models to browse interactively.`)
+    lines.push(
+      `  ... and ${results.length - 20} more. Use /models to browse interactively.`,
+    )
   }
 
   lines.push('')
-  lines.push(chalk.dim(`Use /model <id> to set a model (e.g. /model ${results[0]!.id})`))
+  lines.push(
+    chalk.dim(
+      'Use /model <id> to set a model directly, or /models to open the provider-aware picker.',
+    ),
+  )
 
   onDone(lines.join('\n'), { display: 'system' })
 }
@@ -117,50 +116,49 @@ async function showSearchResults(
 function showHelp(
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void,
 ) {
-  const providerList = NIM_PROVIDER_GROUPS.map(
-    g => `  ${g.icon} ${chalk.bold(g.name)} (${g.models.length} models)`,
+  const providerList = BROWSABLE_MODEL_PROVIDERS.map(
+    provider => `  ${chalk.bold(getProviderBrowseLabel(provider))}`,
   ).join('\n')
 
   const lines = [
-    `${chalk.bold('NVIDIA NIM Model Catalog')} — ${NIM_MODEL_COUNT} models in catalog`,
+    `${chalk.bold('/models')} - provider-aware model browser`,
     '',
     chalk.bold('Usage:'),
-    `  ${chalk.cyan('/models')}              Open interactive model browser (fetches live available models)`,
-    `  ${chalk.cyan('/models <query>')}      Search models by name/provider/ID`,
-    `  ${chalk.cyan('/model <model-id>')}    Set a specific model directly`,
+    `  ${chalk.cyan('/models')}                    Pick a provider, then browse its live models`,
+    `  ${chalk.cyan('/models <query>')}            Search the active provider's models`,
+    `  ${chalk.cyan('/models <provider>:<query>')} Search a specific provider`,
+    `  ${chalk.cyan('/models <provider>')}         List models from one provider`,
+    `  ${chalk.cyan('/model <model-id>')}          Set a specific model directly`,
     '',
-    chalk.bold('Known Providers:'),
+    chalk.bold('Browsable Providers:'),
     providerList,
     '',
     chalk.bold('Examples:'),
-    `  ${chalk.cyan('/models llama')}        Find all LLaMA models`,
-    `  ${chalk.cyan('/models kimi')}         Find Kimi/Moonshot models`,
-    `  ${chalk.cyan('/models nvidia')}       Find NVIDIA-native models`,
-    `  ${chalk.cyan('/models qwen')}         Find Qwen/Alibaba models`,
-    `  ${chalk.cyan('/model moonshotai/kimi-k2-thinking')}  Set model directly`,
+    `  ${chalk.cyan('/models')}                      Open provider + model picker`,
+    `  ${chalk.cyan('/models qwen')}                 Search the active provider`,
+    `  ${chalk.cyan('/models openrouter:qwen')}      Search OpenRouter models`,
+    `  ${chalk.cyan('/models groq')}                 Show Groq models`,
+    `  ${chalk.cyan('/model deepseek-reasoner')}     Set model directly`,
     '',
-    chalk.dim('Note: /models fetches live availability from the NIM API to prevent 404 errors.'),
-    chalk.dim('Only models actually deployed on NIM at this moment will appear.'),
+    chalk.dim('The browser fetches live models from the selected provider.'),
+    chalk.dim('If a provider is not configured yet, run /login first.'),
   ]
 
   onDone(lines.join('\n'), { display: 'system' })
 }
 
 export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
-  args = args?.trim() || ''
+  const trimmedArgs = args?.trim() || ''
 
-  // Help
-  if (['help', '-h', '--help', '?'].includes(args.toLowerCase())) {
+  if (['help', '-h', '--help', '?'].includes(trimmedArgs.toLowerCase())) {
     showHelp(onDone)
     return
   }
 
-  // Search mode (non-interactive, with live fetch)
-  if (args) {
-    await showSearchResults(args, onDone)
+  if (trimmedArgs) {
+    await showSearchResults(trimmedArgs, onDone)
     return
   }
 
-  // Interactive picker mode (fetches live models internally)
   return <ModelsPickerWrapper onDone={onDone} />
 }
