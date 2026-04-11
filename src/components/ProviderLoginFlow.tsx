@@ -11,6 +11,7 @@ import { Box, Text, useInput } from '../ink.js'
 import type { APIProvider } from '../utils/model/providers.js'
 import { PROVIDER_DISPLAY_NAMES } from '../utils/model/providers.js'
 import {
+  loadProviderKey,
   saveProviderKey,
   validateKeyFormat,
 } from '../services/api/auth/api_key_manager.js'
@@ -65,6 +66,21 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
   },
 }
 
+/**
+ * Check if OAuth client IDs are actually configured for a provider.
+ * Without these, the OAuth flow will always fail with "CLIENT_ID required".
+ * When not configured, we skip the OAuth option and go straight to API key input.
+ */
+function isOAuthConfigured(provider: APIProvider): boolean {
+  if (provider === 'openai') {
+    return !!(process.env.OPENAI_CLIENT_ID ?? loadProviderKey('openai_client_id'))
+  }
+  if (provider === 'gemini') {
+    return !!(process.env.GOOGLE_CLIENT_ID ?? loadProviderKey('google_client_id'))
+  }
+  return false
+}
+
 type AuthMethod = 'api_key' | 'oauth'
 
 type Props = {
@@ -83,7 +99,7 @@ type FlowState =
 export function ProviderLoginFlow({ provider, onDone }: Props) {
   const meta = PROVIDER_META[provider]
   const name = PROVIDER_DISPLAY_NAMES[provider]
-  const supportsOAuth = meta?.supportsOAuth ?? false
+  const supportsOAuth = (meta?.supportsOAuth ?? false) && isOAuthConfigured(provider)
 
   const [state, setState] = useState<FlowState>(
     supportsOAuth ? { step: 'choose_method' } : { step: 'api_key_input' },
