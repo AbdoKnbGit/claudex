@@ -81,7 +81,6 @@ export const templatesMain = () => {};
 export const environmentRunnerMain = () => {};
 export const selfHostedRunnerMain = () => {};
 const proxy = new Proxy({}, { get: () => () => {} });
-export const c = () => [];
 export default proxy;
 `);
 
@@ -150,9 +149,10 @@ const result = await Bun.build({
             return { path: resolve(process.cwd(), 'src/native-ts/color-diff/index.ts') };
           }
 
-          // Handle react/compiler-runtime shim (not always available in all react versions)
+          // react/compiler-runtime is provided by React 19+ — let it resolve
+          // from node_modules as an external package.
           if (args.path === 'react/compiler-runtime') {
-            return { path: shimPath };
+            return;
           }
 
           let absPath: string;
@@ -291,7 +291,23 @@ if (!code.startsWith('#!')) {
     }
   );
 
-  writeFileSync(outPath, `#!/usr/bin/env node\n${patched}`);
+  // Polyfill React.useEffectEvent — available in React canary/internal builds
+  // but not in stable React 19. Provides a stable function ref that always
+  // calls the latest callback (used by React Compiler output).
+  const useEffectEventPolyfill = `
+import React from "react";
+if (!React.useEffectEvent) {
+  React.useEffectEvent = function useEffectEvent(fn) {
+    const ref = React.useRef(fn);
+    ref.current = fn;
+    return React.useCallback(function () {
+      return ref.current.apply(void 0, arguments);
+    }, []);
+  };
+}
+`;
+
+  writeFileSync(outPath, `#!/usr/bin/env node\n${useEffectEventPolyfill}${patched}`);
 }
 
 console.log(`✓ Built dist/cli.mjs (${(result.outputs[0]?.size / 1024 / 1024).toFixed(1)} MB)`);

@@ -1,7 +1,6 @@
 import chalk from 'chalk'
-import * as React from 'react'
 import { useState } from 'react'
-import { Box, Text } from '../../ink.js'
+import { Box, Text, useInput } from '../../ink.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import {
@@ -11,7 +10,6 @@ import {
   SELECTABLE_PROVIDERS,
   type APIProvider,
 } from '../../utils/model/providers.js'
-import { getProviderAuthStatus } from '../../services/api/auth/provider_auth.js'
 import { hasStoredKey } from '../../services/api/auth/api_key_manager.js'
 
 type ProviderOption = {
@@ -57,12 +55,7 @@ function ProviderPicker({
   const [selectedIndex, setSelectedIndex] = useState(0)
   const options = getProviderOptions()
   const current = getAPIProvider()
-
-  // Find the current provider index for initial highlight
-  const currentIdx = options.findIndex((o) => o.value === current)
-
-  const { useInput } = require('../../ink.js')
-  useInput((input: string, key: { upArrow?: boolean; downArrow?: boolean; return?: boolean; escape?: boolean }) => {
+  useInput((_input: string, key: { upArrow?: boolean; downArrow?: boolean; return?: boolean; escape?: boolean }) => {
     if (key.escape) {
       onDone(`Kept provider as ${chalk.bold(PROVIDER_DISPLAY_NAMES[current])}`, {
         display: 'system',
@@ -143,10 +136,6 @@ function ProviderPicker({
   )
 }
 
-export const call: LocalJSXCommandCall = async ({
-  onDone,
-}) => {
-  return {
-    component: <ProviderPicker onDone={onDone} />,
-  }
-}
+export const call: LocalJSXCommandCall = async (onDone) => (
+  <ProviderPicker onDone={onDone} />
+)

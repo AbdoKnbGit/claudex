@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/claudex",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Claudex — multi-provider AI coding CLI. Drop-in replacement for Claude Code with OpenAI, Gemini, Groq, DeepSeek, Ollama and more.",
   "author": "AbdoKnbGit",
   "repository": {
@@ -91,8 +91,8 @@
     "picomatch": "^4.0.2",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4",
-    "react": "~18.3.1",
-    "react-reconciler": "~0.29.2",
+    "react": "~19.1.0",
+    "react-reconciler": "~0.33.0",
     "semver": "^7.6.3",
     "shell-quote": "^1.8.2",
     "signal-exit": "^4.1.0",
@@ -112,13 +112,13 @@
     "zod": "^3.25.0"
   },
   "overrides": {
-    "react": "~18.3.1",
-    "react-reconciler": "~0.29.2"
+    "react": "~19.1.0",
+    "react-reconciler": "~0.33.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.10",
     "@types/node": "^22.14.0",
-    "@types/react": "^18.3.18",
+    "@types/react": "^19.1.0",
     "typescript": "^5.7.3"
   }
 }

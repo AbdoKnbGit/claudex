@@ -1,6 +1,4 @@
-import * as React from 'react'
 import { clearTrustedDeviceTokenCache } from '../../bridge/trustedDevice.js'
-import { Text } from '../../ink.js'
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js'
 import { getGroveNoticeConfig, getGroveSettings } from '../../services/api/grove.js'
 import { clearPolicyLimitsCache } from '../../services/policyLimits/index.js'
@@ -8,10 +6,10 @@ import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSet
 import { getClaudeAIOAuthTokens, removeApiKey } from '../../utils/auth.js'
 import { clearBetasCaches } from '../../utils/betas.js'
 import { saveGlobalConfig } from '../../utils/config.js'
-import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js'
 import { getSecureStorage } from '../../utils/secureStorage/index.js'
 import { clearToolSchemaCache } from '../../utils/toolSchemaCache.js'
 import { resetUserCache } from '../../utils/user.js'
+import type { LocalCommandCall } from '../../types/command.js'
 import {
   getAPIProvider,
   isThirdPartyProvider,
@@ -88,24 +86,14 @@ export async function clearAuthRelatedCaches(): Promise<void> {
   await clearPolicyLimitsCache()
 }
 
-export async function call(): Promise<React.ReactNode> {
+export const call: LocalCommandCall = async () => {
   const provider = getAPIProvider()
   const providerName = PROVIDER_DISPLAY_NAMES[provider]
 
   await performLogout({ clearOnboarding: !isThirdPartyProvider(provider) })
 
-  const message = (
-    <Text>
-      Successfully logged out from {providerName}.
-    </Text>
-  )
-
-  if (!isThirdPartyProvider(provider)) {
-    // For Anthropic, shut down after logout (original behavior)
-    setTimeout(() => {
-      gracefulShutdownSync(0, 'logout')
-    }, 200)
+  return {
+    type: 'text',
+    value: `Successfully logged out from ${providerName}.`,
   }
-
-  return message
 }

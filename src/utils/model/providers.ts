@@ -36,14 +36,20 @@ export function getAPIProvider(): APIProvider {
  * This takes priority over environment variables on next getAPIProvider() call.
  */
 export function setActiveProvider(provider: APIProvider): void {
-  saveGlobalConfig({ activeProvider: provider })
+  saveGlobalConfig(current => ({
+    ...current,
+    activeProvider: provider,
+  }))
 }
 
 /**
  * Clear the active provider from config, reverting to env-var detection.
  */
 export function clearActiveProvider(): void {
-  saveGlobalConfig({ activeProvider: undefined })
+  saveGlobalConfig(current => ({
+    ...current,
+    activeProvider: undefined,
+  }))
 }
 
 /** User-friendly display names for providers */

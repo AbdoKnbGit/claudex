@@ -12,7 +12,7 @@ import { ConsoleOAuthFlow } from '../../components/ConsoleOAuthFlow.js'
 import { ProviderLoginFlow } from '../../components/ProviderLoginFlow.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text, useInput } from '../../ink.js'
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js'
 import { refreshPolicyLimits } from '../../services/policyLimits/index.js'
 import { refreshRemoteManagedSettings } from '../../services/remoteManagedSettings/index.js'
@@ -21,7 +21,6 @@ import { stripSignatureBlocks } from '../../utils/messages.js'
 import {
   getAPIProvider,
   setActiveProvider,
-  isThirdPartyProvider,
   PROVIDER_DISPLAY_NAMES,
   SELECTABLE_PROVIDERS,
   type APIProvider,
@@ -72,27 +71,9 @@ export async function call(
   context: LocalJSXCommandContext,
 ): Promise<React.ReactNode> {
   const currentProvider = getAPIProvider()
-
-  // If already on a third-party provider, go directly to that provider's login
-  if (isThirdPartyProvider(currentProvider)) {
-    return (
-      <ThirdPartyLogin
-        provider={currentProvider}
-        onDone={(success) => {
-          if (success) {
-            context.onChangeAPIKey()
-            context.setMessages(stripSignatureBlocks)
-            runPostLoginRefresh(context)
-          }
-          onDone(success ? 'Login successful' : 'Login interrupted')
-        }}
-      />
-    )
-  }
-
-  // Otherwise show provider picker
   return (
     <ProviderPickerLogin
+      initialProvider={currentProvider}
       onDone={(success) => {
         if (success) {
           context.onChangeAPIKey()
@@ -108,14 +89,15 @@ export async function call(
 // ─── Provider picker for first-time login ────────────────────────
 
 function ProviderPickerLogin({
+  initialProvider,
   onDone,
 }: {
+  initialProvider: APIProvider
   onDone: (success: boolean) => void
 }) {
   const [selectedProvider, setSelectedProvider] = useState<APIProvider | null>(null)
-  const [selectedIndex, setSelectedIndex] = useState(0)
-
-  const { useInput } = require('../../ink.js')
+  const initialIndex = Math.max(0, SELECTABLE_PROVIDERS.indexOf(initialProvider))
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex)
 
   useInput((_input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }) => {
     if (selectedProvider) return // Already picked, let child handle input
@@ -135,7 +117,6 @@ function ProviderPickerLogin({
     if (key.return) {
       const provider = SELECTABLE_PROVIDERS[selectedIndex]
       if (provider) {
-        setActiveProvider(provider)
         setSelectedProvider(provider)
       }
     }
@@ -143,13 +124,24 @@ function ProviderPickerLogin({
 
   // Once a provider is selected, render its login flow
   if (selectedProvider) {
-    if (selectedProvider === 'firstParty') {
-      return <AnthropicLogin onDone={onDone} />
+    const providerForLogin = selectedProvider
+    const handleProviderDone = (success: boolean) => {
+      if (success) {
+        setActiveProvider(providerForLogin)
+        onDone(true)
+        return
+      }
+      // Cancel/error in provider flow should return to provider picker.
+      setSelectedProvider(null)
+    }
+
+    if (providerForLogin === 'firstParty') {
+      return <AnthropicLogin onDone={handleProviderDone} />
     }
     return (
       <ThirdPartyLogin
-        provider={selectedProvider}
-        onDone={onDone}
+        provider={providerForLogin}
+        onDone={handleProviderDone}
       />
     )
   }

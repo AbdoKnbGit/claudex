@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useState } from 'react'
-import { Box, Text } from '../ink.js'
+import { Box, Text, useInput } from '../ink.js'
 import type { APIProvider } from '../utils/model/providers.js'
 import { PROVIDER_DISPLAY_NAMES } from '../utils/model/providers.js'
 import {
@@ -15,7 +15,7 @@ import {
   validateKeyFormat,
 } from '../services/api/auth/api_key_manager.js'
 import { startProviderOAuth } from '../services/api/auth/provider_auth.js'
-import { BaseTextInput } from './BaseTextInput.js'
+import TextInput from './TextInput.js'
 
 // ─── Provider metadata ───────────────────────────────────────────
 
@@ -89,9 +89,9 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
     supportsOAuth ? { step: 'choose_method' } : { step: 'api_key_input' },
   )
   const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
   const [selectedMethod, setSelectedMethod] = useState<number>(0)
-
-  const { useInput } = require('../ink.js')
+  const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
 
   useInput((input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }) => {
     if (key.escape) {
@@ -145,6 +145,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
     if (!validation.valid) {
       setState({ step: 'api_key_input', error: validation.error })
       setApiKeyInput('')
+      setApiKeyCursorOffset(0)
       return
     }
 
@@ -209,12 +210,17 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           )}
           <Box marginTop={1}>
             <Text>API Key: </Text>
-            <BaseTextInput
+            <TextInput
               value={apiKeyInput}
               onChange={setApiKeyInput}
               onSubmit={handleApiKeySubmit}
               mask="*"
               placeholder="Paste your API key here..."
+              focus={true}
+              showCursor={true}
+              columns={inputColumns}
+              cursorOffset={apiKeyCursorOffset}
+              onChangeCursorOffset={setApiKeyCursorOffset}
             />
           </Box>
           <Box marginTop={1}>

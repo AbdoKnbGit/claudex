@@ -24,6 +24,14 @@ interface KeyStore {
   }>
 }
 
+// ─── In-memory cache ────────────────────────────────────────────
+// Avoids repeated synchronous disk reads on every hasStoredKey/loadProviderKey call.
+// Invalidated on write and after a TTL to pick up external edits.
+
+let _cachedStore: KeyStore | null = null
+let _cacheTimestamp = 0
+const CACHE_TTL_MS = 30_000 // 30 seconds
+
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true })
@@ -31,18 +39,30 @@ function ensureConfigDir(): void {
 }
 
 function readStore(): KeyStore {
+  const now = Date.now()
+  if (_cachedStore && (now - _cacheTimestamp) < CACHE_TTL_MS) {
+    return _cachedStore
+  }
   try {
     if (!existsSync(KEYS_FILE)) {
-      return { version: 1, keys: {}, metadata: {} }
+      _cachedStore = { version: 1, keys: {}, metadata: {} }
+      _cacheTimestamp = now
+      return _cachedStore
     }
     const data = readFileSync(KEYS_FILE, 'utf-8')
     const parsed = JSON.parse(data)
     if (parsed.version !== 1) {
-      return { version: 1, keys: {}, metadata: {} }
+      _cachedStore = { version: 1, keys: {}, metadata: {} }
+      _cacheTimestamp = now
+      return _cachedStore
     }
-    return parsed as KeyStore
+    _cachedStore = parsed as KeyStore
+    _cacheTimestamp = now
+    return _cachedStore
   } catch {
-    return { version: 1, keys: {}, metadata: {} }
+    _cachedStore = { version: 1, keys: {}, metadata: {} }
+    _cacheTimestamp = now
+    return _cachedStore
   }
 }
 
@@ -51,6 +71,9 @@ function writeStore(store: KeyStore): void {
   writeFileSync(KEYS_FILE, JSON.stringify(store, null, 2), {
     mode: 0o600,  // Owner read/write only
   })
+  // Update cache immediately after write
+  _cachedStore = store
+  _cacheTimestamp = Date.now()
 }
 
 /**
