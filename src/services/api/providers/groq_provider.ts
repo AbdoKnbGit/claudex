@@ -8,35 +8,34 @@
  * Auth: Bearer token (gsk_...)
  * API: OpenAI-compatible
  *
- * IMPORTANT — Groq free-tier has strict rate limits:
- *   - TPM (tokens per minute): 6,000–15,000 depending on model
- *   - RPM (requests per minute): 30
- *   - RPD (requests per day): 14,400
+ * CRITICAL — Groq free-tier TPM limits (tokens per minute, INPUT+OUTPUT combined):
+ *   qwen/qwen3-32b:               6,000 TPM
+ *   llama-3.3-70b-versatile:     12,000 TPM
+ *   deepseek-r1-distill-llama-70b: 6,000 TPM
+ *   openai/gpt-oss-120b:          6,000 TPM
  *
- * Because of the low TPM, we aggressively trim the system prompt
- * and tool payload to stay under ~6K total tokens per request.
- *
- * Available models (April 2026):
- *   - openai/gpt-oss-120b          — Flagship reasoning model
- *   - openai/gpt-oss-20b           — Smaller GPT-OSS variant
- *   - qwen/qwen3-32b               — Strong coding, replaced qwq
- *   - deepseek-r1-distill-llama-70b — DeepSeek R1 reasoning
- *   - deepseek-r1-distill-qwen-32b — DeepSeek R1 Qwen variant
- *   - llama-3.3-70b-versatile      — Proven Llama 3.3 workhorse
- *   - groq/compound                — Agentic system (search + code exec)
- *   - groq/compound-mini           — Lower-latency compound variant
+ * With 6K TPM, we must keep total per-request token usage under ~2500
+ * so the user can make 2 requests per minute. This means:
+ *   - System prompt: ~100 tokens (400 chars)
+ *   - Tools: 4 tools with minimal schemas (~300 tokens total)
+ *   - Conversation: ~100 tokens
+ *   - Output cap: 1024 tokens
+ *   - Total: ~1524 per request, fits 3-4 requests per minute
  */
 
 import { OpenAIProvider } from './openai_provider.js'
-import type { ProviderConfig, ProviderRequestParams, ProviderTool } from './base_provider.js'
+import type {
+  ProviderConfig,
+  ProviderRequestParams,
+  ProviderTool,
+  SystemBlock,
+} from './base_provider.js'
 
-/** Minimal tool set for Groq — only the essentials to stay under TPM */
-const GROQ_CORE_TOOLS = new Set([
+/** Only 4 tools — the absolute minimum for coding assistance */
+const GROQ_ESSENTIAL_TOOLS = new Set([
   'Bash',
   'Read',
-  'Write',
   'Edit',
-  'Glob',
   'Grep',
 ])
 
@@ -50,45 +49,105 @@ export class GroqProvider extends OpenAIProvider {
       extraHeaders: config.extraHeaders,
     })
 
-    // Aggressive optimization for Groq's low TPM limits
-    // Override base class defaults unless user set GROQ-specific env vars
+    // Extreme optimization for Groq's 6K TPM limits
     if (!process.env.GROQ_MAX_SYSTEM_CHARS && !process.env.PROVIDER_MAX_SYSTEM_CHARS) {
-      this.maxSystemChars = 2000
+      this.maxSystemChars = 400
     }
     if (!process.env.GROQ_MAX_TOKENS && !process.env.PROVIDER_MAX_TOKENS) {
-      this.maxTokensCap = 2048
+      this.maxTokensCap = 1024
     }
   }
 
   /**
-   * Override tool filtering for Groq — use a smaller tool set and
-   * strip verbose descriptions to minimize token usage.
+   * Override optimization for Groq — ultra-aggressive to stay under 6K TPM.
+   * Replaces the system prompt with a minimal one, strips tools to 4 essentials,
+   * and removes all verbose schema content.
    */
   protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
     if (!this.optimizePayload) return params
 
-    const optimized = super.optimizeParams(params)
+    // Build a minimal system prompt instead of trimming the huge one
+    const system = this._buildMinimalSystem()
 
-    // Further filter to Groq's minimal tool set
-    if (optimized.tools && optimized.tools.length > 0) {
-      const filtered = optimized.tools.filter(t => GROQ_CORE_TOOLS.has(t.name))
-      optimized.tools = filtered.length > 0 ? filtered.map(t => this._trimToolSchema(t)) : undefined
+    // Filter to 4 essential tools and strip their schemas to bare minimum
+    let tools: ProviderTool[] | undefined
+    if (params.tools && params.tools.length > 0) {
+      const filtered = params.tools.filter(t => GROQ_ESSENTIAL_TOOLS.has(t.name))
+      tools = filtered.length > 0 ? filtered.map(t => this._minimizeToolSchema(t)) : undefined
     }
 
-    return optimized
+    return {
+      ...params,
+      system,
+      tools,
+      max_tokens: Math.min(params.max_tokens, this.maxTokensCap),
+    }
   }
 
   /**
-   * Trim verbose tool descriptions to save tokens.
-   * Groq's models are smart enough to work with shorter descriptions.
+   * Build a tiny system prompt (~80 tokens) instead of trimming
+   * the massive Claude Code system prompt.
    */
-  private _trimToolSchema(tool: ProviderTool): ProviderTool {
-    const maxDescLen = 200
-    let desc = tool.description ?? ''
-    if (desc.length > maxDescLen) {
-      const cutPoint = desc.lastIndexOf('.', maxDescLen)
-      desc = desc.slice(0, cutPoint > maxDescLen * 0.5 ? cutPoint + 1 : maxDescLen)
+  private _buildMinimalSystem(): string {
+    return (
+      'You are a coding assistant. Help the user with software engineering tasks. ' +
+      'Use the provided tools: Bash (run commands), Read (read files), Edit (edit files), Grep (search code). ' +
+      'Be concise. Write correct, secure code.'
+    )
+  }
+
+  /**
+   * Strip tool schemas to absolute minimum — remove descriptions,
+   * remove optional property metadata, keep only required fields.
+   * This reduces each tool from ~200 tokens to ~40 tokens.
+   */
+  private _minimizeToolSchema(tool: ProviderTool): ProviderTool {
+    return {
+      name: tool.name,
+      description: this._getShortDesc(tool.name),
+      input_schema: this._stripSchema(tool.input_schema),
     }
-    return { ...tool, description: desc }
+  }
+
+  /** One-line description per tool — saves ~150 tokens vs full descriptions */
+  private _getShortDesc(name: string): string {
+    switch (name) {
+      case 'Bash':  return 'Run a shell command'
+      case 'Read':  return 'Read a file'
+      case 'Edit':  return 'Edit a file with string replacement'
+      case 'Grep':  return 'Search file contents with regex'
+      default:      return name
+    }
+  }
+
+  /**
+   * Recursively strip a JSON schema to its bare minimum:
+   * keep type, required, properties (names + types only), remove everything else.
+   */
+  private _stripSchema(schema: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {}
+
+    // Keep only essential fields
+    if (schema.type) result.type = schema.type
+    if (Array.isArray(schema.required)) result.required = schema.required
+
+    // Simplify properties — keep only name and type
+    if (schema.properties && typeof schema.properties === 'object') {
+      const props: Record<string, unknown> = {}
+      for (const [key, val] of Object.entries(schema.properties as Record<string, unknown>)) {
+        if (val && typeof val === 'object') {
+          const prop = val as Record<string, unknown>
+          const simplified: Record<string, unknown> = {}
+          if (prop.type) simplified.type = prop.type
+          if (prop.enum) simplified.enum = prop.enum
+          props[key] = simplified
+        } else {
+          props[key] = val
+        }
+      }
+      result.properties = props
+    }
+
+    return result
   }
 }
