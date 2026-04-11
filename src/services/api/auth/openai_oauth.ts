@@ -1,24 +1,19 @@
 /**
  * OpenAI OAuth2 PKCE flow for API access.
  *
- * OpenAI supports OAuth2 for third-party applications via their platform.
- * This enables users to authenticate with their OpenAI account directly
- * without manually copying an API key.
- *
- * Scopes: model.request (infer), api.all (full access)
- * Auth endpoint: https://auth.openai.com/authorize
- * Token endpoint: https://auth.openai.com/oauth/token
+ * Uses the same bundled OAuth client ID as OpenAI's Codex CLI
+ * (a public PKCE client — no client secret needed).
  *
  * Flow:
- *   1. Generate code_verifier + code_challenge (PKCE S256)
- *   2. Open browser to OpenAI auth URL
- *   3. Spin up local HTTP server to receive callback
- *   4. Exchange authorization code for tokens
+ *   1. Generate PKCE code_verifier + code_challenge (S256)
+ *   2. Open browser to OpenAI consent screen
+ *   3. Spin up local HTTP server for the redirect callback
+ *   4. Exchange authorization code for access + refresh tokens
  *   5. Store tokens via api_key_manager
  *   6. Auto-refresh when expired
  *
- * Requires: OPENAI_CLIENT_ID environment variable (or stored in config).
- * Get client ID by registering an app at: https://platform.openai.com/settings/apps
+ * No env vars required — works out of the box.
+ * The user signs in with their ChatGPT / OpenAI account.
  */
 
 import { createServer } from 'http'
@@ -26,12 +21,17 @@ import { randomBytes, createHash } from 'crypto'
 import { saveProviderKey, loadProviderKey } from './api_key_manager.js'
 import { openBrowser } from '../../../utils/browser.js'
 
-// ─── Configuration ─────────────────────────────────────────────────
+// ─── Bundled OAuth credentials (from openai/codex CLI) ───────────────
+// Source: https://github.com/openai/codex — public PKCE client, no secret
+const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+
+// ─── OAuth endpoints ──────────────────────────────────────────────────
 
 const OPENAI_AUTH_URL = 'https://auth.openai.com/authorize'
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token'
-const SCOPES = 'model.request'
-const REDIRECT_PATH = '/oauth/callback'
+const REDIRECT_PATH = '/auth/callback'
+
+const SCOPES = 'openid profile email offline_access'
 
 interface OpenAIOAuthTokens {
   access_token: string
@@ -61,31 +61,13 @@ function generateCodeChallenge(verifier: string): string {
 
 /**
  * Start the OpenAI OAuth PKCE flow.
- * Opens the user's browser and waits for the callback.
- *
- * Returns access and refresh tokens on success.
+ * Opens the user's browser to sign in with their OpenAI/ChatGPT account.
+ * No configuration required — uses bundled Codex CLI credentials.
  */
 export async function startOpenAIOAuthFlow(): Promise<{
   accessToken: string
   refreshToken: string
 }> {
-  const clientId =
-    process.env.OPENAI_CLIENT_ID ?? loadProviderKey('openai_client_id')
-  if (!clientId) {
-    throw new Error(
-      'OPENAI_CLIENT_ID environment variable is required for OpenAI OAuth.\n\n' +
-      'To set up OAuth:\n' +
-      '  1. Go to https://platform.openai.com/settings/apps\n' +
-      '  2. Register a new app (select "Web Application")\n' +
-      '  3. Set the redirect URI to http://localhost (any port)\n' +
-      '  4. Set OPENAI_CLIENT_ID=<your-client-id> in your environment\n\n' +
-      'Alternatively, use an API key instead (simpler):\n' +
-      '  1. Go to https://platform.openai.com/api-keys\n' +
-      '  2. Create a new API key\n' +
-      '  3. Set OPENAI_API_KEY=<your-key> in your environment',
-    )
-  }
-
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = generateCodeChallenge(codeVerifier)
   const state = randomBytes(16).toString('hex')
@@ -96,7 +78,7 @@ export async function startOpenAIOAuthFlow(): Promise<{
 
   // Build authorization URL
   const authUrl = new URL(OPENAI_AUTH_URL)
-  authUrl.searchParams.set('client_id', clientId)
+  authUrl.searchParams.set('client_id', CLIENT_ID)
   authUrl.searchParams.set('redirect_uri', redirectUri)
   authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('scope', SCOPES)
@@ -108,20 +90,20 @@ export async function startOpenAIOAuthFlow(): Promise<{
   const opened = await openBrowser(authUrlString)
   if (!opened) {
     console.log(
-      `\nOpen this URL in your browser to authenticate with OpenAI:\n${authUrlString}\n`,
+      `\nOpen this URL in your browser to sign in with OpenAI:\n${authUrlString}\n`,
     )
   }
 
   // Start local server and wait for callback
   const authCode = await waitForAuthCode(port, state)
 
-  // Exchange code for tokens
+  // Exchange code for tokens (PKCE — no client_secret needed)
   const tokenResponse = await fetch(OPENAI_TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       code: authCode,
-      client_id: clientId,
+      client_id: CLIENT_ID,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
       code_verifier: codeVerifier,
@@ -153,15 +135,11 @@ export async function startOpenAIOAuthFlow(): Promise<{
  * Refresh an expired OpenAI OAuth access token.
  */
 export async function refreshOpenAIToken(refreshToken: string): Promise<string> {
-  const clientId =
-    process.env.OPENAI_CLIENT_ID ?? loadProviderKey('openai_client_id')
-  if (!clientId) throw new Error('OPENAI_CLIENT_ID required for token refresh')
-
   const response = await fetch(OPENAI_TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: clientId,
+      client_id: CLIENT_ID,
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
     }),
@@ -253,7 +231,7 @@ function waitForAuthCode(port: number, expectedState: string): Promise<string> {
 
         if (state !== expectedState) {
           res.writeHead(400, { 'Content-Type': 'text/html' })
-          res.end('<h1>Authentication Failed</h1><p>Invalid OAuth state.</p>')
+          res.end('<h1>Authentication Failed</h1><p>Invalid state.</p>')
           clearTimeout(timeout)
           server.close()
           reject(new Error('OpenAI OAuth error: invalid state parameter'))
@@ -262,7 +240,11 @@ function waitForAuthCode(port: number, expectedState: string): Promise<string> {
 
         if (code) {
           res.writeHead(200, { 'Content-Type': 'text/html' })
-          res.end('<h1>Authentication Successful!</h1><p>You can close this window and return to Claude Code.</p>')
+          res.end(
+            '<h1>Signed in!</h1>' +
+            '<p>You can close this window and return to Claudex.</p>' +
+            '<script>window.close()</script>',
+          )
           clearTimeout(timeout)
           server.close()
           resolve(code)

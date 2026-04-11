@@ -13,8 +13,8 @@
  *   ┌────────────┬─────────┬───────┬─────────────────────────────────┐
  *   │ Provider   │ API Key │ OAuth │ Notes                           │
  *   ├────────────┼─────────┼───────┼─────────────────────────────────┤
- *   │ OpenAI     │ ✓       │ ✓     │ OPENAI_CLIENT_ID for OAuth      │
- *   │ Gemini     │ ✓       │ ✓     │ GOOGLE_CLIENT_ID for OAuth      │
+ *   │ OpenAI     │ ✓       │ ✓     │ Bundled Codex CLI client ID     │
+ *   │ Gemini     │ ✓       │ ✓     │ Bundled Gemini CLI client ID    │
  *   │ OpenRouter │ ✓       │ ✗     │ API key only                    │
  *   │ Groq       │ ✓       │ ✗     │ API key only                    │
  *   │ NIM        │ ✓       │ ✗     │ API key only                    │
