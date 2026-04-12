@@ -183,11 +183,18 @@ export class GeminiProvider extends BaseProvider {
     }
 
     // API key path → try to use context caching, then call v1beta.
+    if (!this.apiKey) {
+      throw new Error(
+        'Gemini API error 401: No credentials available.\n' +
+        'Your OAuth session may have expired and no API key is configured.\n' +
+        'Run /login to sign in again.',
+      )
+    }
     const cacheName = await this._applyContextCache(model, body)
-    const url = `${this.baseUrl}/models/${model}:streamGenerateContent?alt=sse`
+    const url = `${this.baseUrl}/models/${model}:streamGenerateContent?key=${encodeURIComponent(this.apiKey)}&alt=sse`
     const response = await fetch(url, {
       method: 'POST',
-      headers: this._apiKeyHeaders(),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
 
@@ -245,11 +252,18 @@ export class GeminiProvider extends BaseProvider {
     }
 
     // API key path → try to use context caching, then call v1beta.
+    if (!this.apiKey) {
+      throw new Error(
+        'Gemini API error 401: No credentials available.\n' +
+        'Your OAuth session may have expired and no API key is configured.\n' +
+        'Run /login to sign in again.',
+      )
+    }
     const cacheName = await this._applyContextCache(model, body)
-    const url = `${this.baseUrl}/models/${model}:generateContent`
+    const url = `${this.baseUrl}/models/${model}:generateContent?key=${encodeURIComponent(this.apiKey)}`
     const response = await fetch(url, {
       method: 'POST',
-      headers: this._apiKeyHeaders(),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
 
@@ -312,7 +326,7 @@ export class GeminiProvider extends BaseProvider {
     }
 
     // API key path — v1beta/models is fine here.
-    const url = `${this.baseUrl}/models?key=${this.apiKey}`
+    const url = `${this.baseUrl}/models?key=${encodeURIComponent(this.apiKey)}`
     const response = await fetch(url)
 
     if (!response.ok) return []
@@ -365,7 +379,8 @@ export class GeminiProvider extends BaseProvider {
     if (status === 401 || status === 403) {
       return new Error(
         `Gemini API error ${status}: Authentication failed.\n` +
-        `Your API key or OAuth token may be invalid. Run /login to reconfigure.`,
+        `${errorDetail || 'Your API key or OAuth token may be invalid.'}\n` +
+        `Run /login to reconfigure.`,
       )
     }
 
@@ -380,11 +395,4 @@ export class GeminiProvider extends BaseProvider {
     return new Error(`Gemini API error ${status}: ${body}`)
   }
 
-  /** Headers for the API-key path (v1beta direct). */
-  private _apiKeyHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': this.apiKey,
-    }
-  }
 }

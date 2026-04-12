@@ -68,6 +68,63 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
 
 type AuthMethod = 'api_key' | 'oauth' | 'oauth_cli' | 'oauth_antigravity'
 
+/** Quick API-level check that an API key actually works before saving it. */
+async function _testApiKey(
+  provider: APIProvider,
+  key: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    let url: string
+    let headers: Record<string, string> = {}
+
+    switch (provider) {
+      case 'gemini':
+        url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`
+        break
+      case 'openai':
+        url = 'https://api.openai.com/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      case 'groq':
+        url = 'https://api.groq.com/openai/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      case 'deepseek':
+        url = 'https://api.deepseek.com/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      case 'openrouter':
+        url = 'https://openrouter.ai/api/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      default:
+        // Can't test — accept optimistically
+        return { ok: true }
+    }
+
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    })
+
+    if (res.ok) return { ok: true }
+
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        error: `API key rejected (${res.status}). Check that the key is correct and the API is enabled on your account.`,
+      }
+    }
+
+    // Other errors (429, 500, etc.) — key format is OK, accept it
+    return { ok: true }
+  } catch {
+    // Network error — can't test, accept optimistically
+    return { ok: true }
+  }
+}
+
 type Props = {
   provider: APIProvider
   onDone: (success: boolean) => void
@@ -177,24 +234,34 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
 
     setState({ step: 'validating' })
 
-    // Store the key. Saving an API key deactivates any stored OAuth
-    // token for this provider — one credential at a time.
-    saveProviderKey(provider, key)
-    deleteProviderKey(`${provider}_oauth`)
-    // Gemini: also clear dual OAuth keys
-    if (provider === 'gemini') {
-      deleteProviderKey('gemini_oauth_cli')
-      deleteProviderKey('gemini_oauth_antigravity')
-    }
+    // Test the key against the API before saving.
+    _testApiKey(provider, key).then((testResult) => {
+      if (!testResult.ok) {
+        setState({ step: 'api_key_input', error: testResult.error })
+        setApiKeyInput('')
+        setApiKeyCursorOffset(0)
+        return
+      }
 
-    // Also set as environment variable for the current session
-    const envVar = meta?.envVar
-    if (envVar) {
-      process.env[envVar] = key
-    }
+      // Store the key. Saving an API key deactivates any stored OAuth
+      // token for this provider — one credential at a time.
+      saveProviderKey(provider, key)
+      deleteProviderKey(`${provider}_oauth`)
+      // Gemini: also clear dual OAuth keys
+      if (provider === 'gemini') {
+        deleteProviderKey('gemini_oauth_cli')
+        deleteProviderKey('gemini_oauth_antigravity')
+      }
 
-    setState({ step: 'success' })
-    setTimeout(() => onDone(true), 800)
+      // Also set as environment variable for the current session
+      const envVar = meta?.envVar
+      if (envVar) {
+        process.env[envVar] = key
+      }
+
+      setState({ step: 'success' })
+      setTimeout(() => onDone(true), 800)
+    })
   }
 
   // ─── Render ──────────────────────────────────────────────────────

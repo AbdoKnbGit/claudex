@@ -8,7 +8,7 @@ import { registerBundledSkill } from '../bundledSkills.js'
  * This keeps the skill prompt in sync with the actual types.
  */
 function generateSettingsSchema(): string {
-  const jsonSchema = toJSONSchema(SettingsSchema(), { io: 'input' })
+  const jsonSchema = toJSONSchema(SettingsSchema(), { io: 'input', unrepresentable: 'any' })
   return jsonStringify(jsonSchema, null, 2)
 }
 
