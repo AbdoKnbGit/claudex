@@ -15,6 +15,7 @@ import type {
   ProviderTool,
   SystemBlock,
 } from '../providers/base_provider.js'
+import { getThoughtSignature } from './gemini_thought_cache.js'
 
 // ─── Gemini types ──────────────────────────────────────────────────
 
@@ -45,9 +46,16 @@ export interface GeminiContent {
   parts: GeminiPart[]
 }
 
+/**
+ * Synthetic thought signature used when no real signature is available.
+ * The Gemini API accepts this sentinel to bypass strict signature validation.
+ * Matches the constant used by the Gemini CLI.
+ */
+const SYNTHETIC_THOUGHT_SIGNATURE = 'skip_thought_signature_validator'
+
 export type GeminiPart =
-  | { text: string }
-  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { text: string; thought?: boolean }
+  | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: { content: string } } }
   | { inlineData: { mimeType: string; data: string } }
 
@@ -61,50 +69,70 @@ export interface GeminiFunctionDeclaration {
 
 /**
  * Fields that Gemini's functionDeclarations do NOT support.
- * These are valid JSON Schema but rejected by the Gemini REST API.
- * Must be stripped recursively from all tool parameter schemas.
+ * Gemini accepts a subset of OpenAPI 3.0 schema: type, format,
+ * description, nullable, enum, items, properties, required,
+ * minimum, maximum, minItems, maxItems, minLength, maxLength.
+ * Everything else must be stripped recursively.
  */
 const UNSUPPORTED_GEMINI_SCHEMA_FIELDS = new Set([
-  '$schema',
-  'additionalProperties',
-  'exclusiveMinimum',
-  'exclusiveMaximum',
-  'patternProperties',
-  '$id',
-  '$ref',
-  '$comment',
-  'if',
-  'then',
-  'else',
-  'allOf',
-  'anyOf',
-  'oneOf',
-  'not',
-  'default',
+  // JSON Schema identifiers & references
+  '$schema', '$id', '$ref', '$comment', '$defs', 'definitions',
+  // Composition keywords (Gemini has no union/intersection support)
+  'allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else',
+  // Object validation keywords Gemini rejects
+  'additionalProperties', 'patternProperties', 'propertyNames',
+  'minProperties', 'maxProperties', 'unevaluatedProperties',
+  'dependentRequired', 'dependentSchemas',
+  // Number validation keywords beyond min/max
+  'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+  // String validation (pattern is regex — Gemini doesn't support it)
+  'pattern', 'contentMediaType', 'contentEncoding',
+  // Array validation beyond items/min/max
+  'unevaluatedItems', 'prefixItems', 'contains', 'minContains', 'maxContains',
+  // Metadata fields
+  'default', 'const', 'examples', 'deprecated', 'readOnly', 'writeOnly', 'title',
 ])
 
 /**
  * Recursively strip fields that Gemini does not support from a JSON Schema object.
+ * Also removes undefined values that cannot be serialized to JSON.
  * Returns a new object — does not mutate the original.
  */
 function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
 
   for (const [key, value] of Object.entries(schema)) {
+    // Strip unsupported fields and undefined values
     if (UNSUPPORTED_GEMINI_SCHEMA_FIELDS.has(key)) continue
+    if (value === undefined) continue
 
     if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
       // Recurse into each property definition
       result[key] = Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).map(([propName, propSchema]) => [
-          propName,
-          propSchema && typeof propSchema === 'object' && !Array.isArray(propSchema)
-            ? sanitizeSchemaForGemini(propSchema as Record<string, unknown>)
-            : propSchema,
-        ]),
+        Object.entries(value as Record<string, unknown>)
+          .filter(([, v]) => v !== undefined)
+          .map(([propName, propSchema]) => [
+            propName,
+            propSchema && typeof propSchema === 'object' && !Array.isArray(propSchema)
+              ? sanitizeSchemaForGemini(propSchema as Record<string, unknown>)
+              : propSchema,
+          ]),
       )
     } else if (key === 'items' && value && typeof value === 'object' && !Array.isArray(value)) {
       // Recurse into array item schema
+      result[key] = sanitizeSchemaForGemini(value as Record<string, unknown>)
+    } else if (key === 'required' && Array.isArray(value)) {
+      // Keep required array as-is (list of field names)
+      result[key] = value
+    } else if (Array.isArray(value)) {
+      // Recurse into arrays of schemas (e.g. items as tuple)
+      result[key] = value.map(item =>
+        item && typeof item === 'object' && !Array.isArray(item)
+          ? sanitizeSchemaForGemini(item as Record<string, unknown>)
+          : item,
+      )
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      // Recurse into any nested schema object (e.g. additionalItems)
       result[key] = sanitizeSchemaForGemini(value as Record<string, unknown>)
     } else {
       result[key] = value
@@ -198,17 +226,37 @@ function convertMessages(
           if (block.text) parts.push({ text: block.text })
           break
 
-        case 'tool_use':
+        case 'tool_use': {
           // Track id → name for later functionResponse
           if (block.id && block.name) {
             toolIdToName.set(block.id, block.name)
           }
-          parts.push({
+          // Always include thoughtSignature (camelCase) — Gemini 2.5+
+          // thinking models require it on every functionCall in history.
+          // Priority: real sig from content block → session cache → synthetic.
+          const sig = block._gemini_thought_signature
+            ?? getThoughtSignature(block.id ?? '')
+            ?? SYNTHETIC_THOUGHT_SIGNATURE
+          const fcPart: Record<string, unknown> = {
             functionCall: {
               name: block.name ?? '',
               args: (block.input as Record<string, unknown>) ?? {},
             },
-          })
+            thoughtSignature: sig,
+          }
+          parts.push(fcPart as GeminiPart)
+          break
+        }
+
+        case 'thinking':
+          // Gemini thinking text → { text, thought: true }
+          if (block.thinking) {
+            parts.push({ text: block.thinking, thought: true })
+          }
+          break
+
+        case 'redacted_thinking':
+          // Anthropic redacted thinking — not applicable to Gemini, skip
           break
 
         case 'tool_result': {

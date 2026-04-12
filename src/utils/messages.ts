@@ -2228,14 +2228,17 @@ export function normalizeMessagesForAPI(
                     }
                   }
 
-                  // When tool search is NOT enabled, explicitly construct tool_use
-                  // block with only standard API fields to avoid sending fields like
-                  // 'caller' that may be stored in sessions from tool search runs
-                  return {
-                    type: 'tool_use' as const,
-                    id: block.id,
-                    name: canonicalName,
-                    input: normalizedInput,
+                  // When tool search is NOT enabled, strip 'caller' but
+                  // preserve everything else (provider round-trip metadata
+                  // like _gemini_thought_signature must survive).
+                  {
+                    const sanitized: Record<string, unknown> = {
+                      ...block,
+                      name: canonicalName,
+                      input: normalizedInput,
+                    }
+                    delete sanitized.caller
+                    return sanitized as typeof block
                   }
                 }
                 return block

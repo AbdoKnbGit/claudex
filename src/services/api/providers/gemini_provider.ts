@@ -73,6 +73,19 @@ const ANTIGRAVITY_MODELS: ModelInfo[] = [
  * candidates for general chat turns. OAuth users never see them because
  * Code Assist does not proxy these endpoints.
  */
+/** Check if a Gemini model is a text/chat model (not image gen, TTS, etc.). */
+function _isGeminiChatModel(id: string): boolean {
+  const lower = id.toLowerCase()
+  if (lower.includes('-tts')) return false
+  if (lower.includes('-image')) return false
+  if (lower.includes('-live') || lower.includes('-native-audio')) return false
+  if (lower.startsWith('veo-')) return false
+  if (lower.startsWith('lyria-')) return false
+  if (lower.includes('embedding')) return false
+  if (lower.includes('robotics')) return false
+  return true
+}
+
 function _enrichGeminiModelName(id: string, displayName: string): string {
   const lower = id.toLowerCase()
   if (lower.includes('-tts')) return `${displayName} · TTS`
@@ -308,6 +321,7 @@ export class GeminiProvider extends BaseProvider {
     }
     return (data.models ?? [])
       .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+      .filter(m => _isGeminiChatModel(m.name.replace('models/', '')))
       .map(m => {
         const id = m.name.replace('models/', '')
         return {
@@ -326,6 +340,11 @@ export class GeminiProvider extends BaseProvider {
     return models.sonnet
   }
 
+  /**
+   * Format Gemini API errors. All error messages include the numeric status
+   * code in the format "Gemini API error NNN: ..." so the app's withRetry
+   * logic (which matches /API error (\d{3})/) can detect retryable errors.
+   */
   private _formatGeminiError(status: number, body: string): Error {
     let errorDetail = ''
     try {
@@ -337,7 +356,7 @@ export class GeminiProvider extends BaseProvider {
 
     if (status === 400 && errorDetail.includes('Unknown name')) {
       return new Error(
-        `Gemini API error: Invalid tool schema fields.\n` +
+        `Gemini API error ${status}: Invalid tool schema fields.\n` +
         `The tool parameter schemas contain fields not supported by Gemini.\n` +
         `This is a bug — please report it. Details: ${errorDetail.slice(0, 300)}`,
       )
@@ -345,14 +364,14 @@ export class GeminiProvider extends BaseProvider {
 
     if (status === 401 || status === 403) {
       return new Error(
-        `Gemini API error: Authentication failed.\n` +
-        `Your API key or OAuth token may be invalid. Run /provider to reconfigure.`,
+        `Gemini API error ${status}: Authentication failed.\n` +
+        `Your API key or OAuth token may be invalid. Run /login to reconfigure.`,
       )
     }
 
     if (status === 429) {
       return new Error(
-        `Gemini API error: Rate limit or quota exceeded.\n` +
+        `Gemini API error ${status}: Rate limit or quota exceeded.\n` +
         `${errorDetail}\n` +
         `Wait a moment and retry, or check your quota at console.cloud.google.com.`,
       )

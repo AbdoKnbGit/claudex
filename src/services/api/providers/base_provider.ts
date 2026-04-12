@@ -19,13 +19,18 @@ export interface ProviderStreamResult {
 // ─── Anthropic-compatible types (subset we need for normalization) ──
 
 export interface AnthropicContentBlock {
-  type: 'text' | 'tool_use'
+  type: 'text' | 'tool_use' | 'thinking'
   // text block
   text?: string
   // tool_use block
   id?: string
   name?: string
   input?: Record<string, unknown>
+  // thinking block (Gemini thought / Anthropic thinking)
+  thinking?: string
+  signature?: string
+  // Gemini round-trip: thought_signature on functionCall parts
+  _gemini_thought_signature?: string
 }
 
 export interface AnthropicMessage {
@@ -62,6 +67,7 @@ export interface AnthropicStreamEvent {
     type?: string
     text?: string
     partial_json?: string
+    thinking?: string
     stop_reason?: string
     stop_sequence?: string | null
   }
@@ -144,7 +150,7 @@ export interface ProviderMessage {
 }
 
 export interface ProviderContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result' | 'image'
+  type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking' | 'redacted_thinking'
   // text
   text?: string
   // tool_use
@@ -157,6 +163,11 @@ export interface ProviderContentBlock {
   is_error?: boolean
   // image
   source?: { type: string; media_type: string; data: string }
+  // thinking block
+  thinking?: string
+  signature?: string
+  // Gemini round-trip: thought_signature on tool_use blocks
+  _gemini_thought_signature?: string
 }
 
 export interface ProviderTool {

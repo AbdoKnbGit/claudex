@@ -13,6 +13,7 @@ import type {
   AnthropicStreamEvent,
   AnthropicContentBlock,
 } from '../providers/base_provider.js'
+import { storeThoughtSignature } from './gemini_thought_cache.js'
 
 // ─── Gemini response types ─────────────────────────────────────────
 
@@ -22,7 +23,9 @@ export interface GeminiStreamChunk {
       role?: string
       parts?: Array<{
         text?: string
+        thought?: boolean
         functionCall?: { name: string; args: Record<string, unknown> }
+        thoughtSignature?: string
       }>
     }
     finishReason?: string
@@ -49,7 +52,9 @@ export interface GeminiGenerateContentResponse {
       role?: string
       parts?: Array<{
         text?: string
+        thought?: boolean
         functionCall?: { name: string; args: Record<string, unknown> }
+        thoughtSignature?: string
       }>
     }
     finishReason?: string
@@ -74,15 +79,25 @@ export function geminiMessageToAnthropic(
   if (candidate?.content?.parts) {
     for (const part of candidate.content.parts) {
       if (part.text) {
-        content.push({ type: 'text', text: part.text })
+        if (part.thought) {
+          content.push({ type: 'thinking', thinking: part.text })
+        } else {
+          content.push({ type: 'text', text: part.text })
+        }
       }
       if (part.functionCall) {
-        content.push({
+        const toolId = `toolu_${Math.random().toString(36).slice(2, 14)}`
+        const block: AnthropicContentBlock = {
           type: 'tool_use',
-          id: `toolu_${Math.random().toString(36).slice(2, 14)}`,
+          id: toolId,
           name: part.functionCall.name,
           input: part.functionCall.args ?? {},
-        })
+        }
+        if (part.thoughtSignature) {
+          block._gemini_thought_signature = part.thoughtSignature
+          storeThoughtSignature(toolId, part.thoughtSignature)
+        }
+        content.push(block)
       }
     }
   }
@@ -133,6 +148,8 @@ export async function* geminiStreamToAnthropicEvents(
 
   // Track open blocks for proper closing
   let textBlockOpen = false
+  let thinkingBlockOpen = false
+  let hasToolUse = false
   const openToolBlocks: Set<number> = new Set()
 
   for await (const chunk of geminiStream) {
@@ -186,42 +203,83 @@ export async function* geminiStreamToAnthropicEvents(
     if (candidate?.content?.parts) {
       for (const part of candidate.content.parts) {
         if (part.text !== undefined) {
-          if (!textBlockOpen) {
-            textBlockOpen = true
-            yield {
-              type: 'content_block_start',
-              index: blockIndex,
-              content_block: { type: 'text', text: '' },
+          if (part.thought) {
+            // Thinking text — close regular text block if open
+            if (textBlockOpen) {
+              yield { type: 'content_block_stop', index: blockIndex }
+              blockIndex++
+              textBlockOpen = false
             }
-          }
-          yield {
-            type: 'content_block_delta',
-            index: blockIndex,
-            delta: { type: 'text_delta', text: part.text },
+            if (!thinkingBlockOpen) {
+              thinkingBlockOpen = true
+              yield {
+                type: 'content_block_start',
+                index: blockIndex,
+                content_block: { type: 'thinking', thinking: '' },
+              }
+            }
+            yield {
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: { type: 'thinking_delta', thinking: part.text },
+            }
+          } else {
+            // Regular text — close thinking block if open
+            if (thinkingBlockOpen) {
+              yield { type: 'content_block_stop', index: blockIndex }
+              blockIndex++
+              thinkingBlockOpen = false
+            }
+            if (!textBlockOpen) {
+              textBlockOpen = true
+              yield {
+                type: 'content_block_start',
+                index: blockIndex,
+                content_block: { type: 'text', text: '' },
+              }
+            }
+            yield {
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: { type: 'text_delta', text: part.text },
+            }
           }
         }
 
         if (part.functionCall) {
-          // Close text block first if open
+          // Close thinking block first if open
+          if (thinkingBlockOpen) {
+            yield { type: 'content_block_stop', index: blockIndex }
+            blockIndex++
+            thinkingBlockOpen = false
+          }
+          // Close text block if open
           if (textBlockOpen) {
             yield { type: 'content_block_stop', index: blockIndex }
             blockIndex++
             textBlockOpen = false
           }
 
+          hasToolUse = true
           const toolId = `toolu_${Math.random().toString(36).slice(2, 14)}`
           const currentIndex = blockIndex++
 
-          // Emit tool_use block as a single start + delta + stop
+          // Preserve thought_signature for thinking-model round-trip
+          const contentBlock: AnthropicContentBlock = {
+            type: 'tool_use',
+            id: toolId,
+            name: part.functionCall.name,
+            input: {},
+          }
+          if (part.thoughtSignature) {
+            contentBlock._gemini_thought_signature = part.thoughtSignature
+            storeThoughtSignature(toolId, part.thoughtSignature)
+          }
+
           yield {
             type: 'content_block_start',
             index: currentIndex,
-            content_block: {
-              type: 'tool_use',
-              id: toolId,
-              name: part.functionCall.name,
-              input: {},
-            },
+            content_block: contentBlock,
           }
 
           // Emit the full args as a single JSON delta
@@ -242,6 +300,11 @@ export async function* geminiStreamToAnthropicEvents(
 
     // Handle finish reason
     if (candidate?.finishReason) {
+      // Close any open thinking block
+      if (thinkingBlockOpen) {
+        yield { type: 'content_block_stop', index: blockIndex }
+        thinkingBlockOpen = false
+      }
       // Close any open text block
       if (textBlockOpen) {
         yield { type: 'content_block_stop', index: blockIndex }
@@ -250,7 +313,7 @@ export async function* geminiStreamToAnthropicEvents(
 
       const finishReason = candidate.finishReason
       const stopReason = finishReason === 'MAX_TOKENS' ? 'max_tokens'
-        : finishReason === 'SAFETY' ? 'end_turn'
+        : hasToolUse ? 'tool_use'
         : 'end_turn'
 
       yield {
@@ -266,12 +329,15 @@ export async function* geminiStreamToAnthropicEvents(
 
   // Safety: close gracefully if stream ended without finishReason
   if (messageStarted) {
+    if (thinkingBlockOpen) {
+      yield { type: 'content_block_stop', index: blockIndex }
+    }
     if (textBlockOpen) {
       yield { type: 'content_block_stop', index: blockIndex }
     }
     yield {
       type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      delta: { stop_reason: hasToolUse ? 'tool_use' : 'end_turn', stop_sequence: null },
       usage: { output_tokens: outputTokens },
     }
     yield { type: 'message_stop' }
