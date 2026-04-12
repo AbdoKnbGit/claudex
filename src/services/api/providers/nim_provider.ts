@@ -167,10 +167,12 @@ export class NimProvider extends OpenAIProvider {
       body.nvext = { budget_tokens: budget }
     }
 
+    const ac = new AbortController()
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),
+      signal: ac.signal,
     })
 
     if (!response.ok) {
@@ -184,7 +186,7 @@ export class NimProvider extends OpenAIProvider {
 
     const sseStream = this._parseSSE(response.body)
     const anthropicEvents = openAIStreamToAnthropicEvents(sseStream)
-    return buildProviderStreamResult(anthropicEvents)
+    return buildProviderStreamResult(anthropicEvents, ac)
   }
 
   private _isThinkingModel(model: string): boolean {

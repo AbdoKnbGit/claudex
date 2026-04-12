@@ -28,6 +28,7 @@ import {
   getProviderOAuthToken,
 } from '../../../utils/auth.js'
 import { loadProviderKey } from '../auth/api_key_manager.js'
+import { getOpenAISessionToken } from '../auth/openai_oauth.js'
 import type {
   BaseProvider,
   AnthropicStreamEvent,
@@ -55,7 +56,8 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'openai': {
       if (authMethod === 'oauth') {
         const oauthToken = getProviderOAuthToken('openai') ?? ''
-        return new OpenAIProvider({ apiKey: oauthToken, baseUrl })
+        const sessionToken = getOpenAISessionToken() ?? undefined
+        return new OpenAIProvider({ apiKey: oauthToken, baseUrl, sessionToken })
       }
       return new OpenAIProvider({ apiKey, baseUrl })
     }

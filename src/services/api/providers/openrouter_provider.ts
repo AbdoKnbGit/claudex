@@ -10,7 +10,7 @@
  */
 
 import { OpenAIProvider } from './openai_provider.js'
-import type { ModelInfo, ProviderConfig } from './base_provider.js'
+import type { ModelInfo, ProviderConfig, ProviderRequestParams } from './base_provider.js'
 
 export class OpenRouterProvider extends OpenAIProvider {
   readonly name = 'openrouter'
@@ -26,6 +26,19 @@ export class OpenRouterProvider extends OpenAIProvider {
         ...(config.extraHeaders ?? {}),
       },
     })
+    // OpenRouter passes cache_control through to underlying providers
+    // (Anthropic, Google, etc.) enabling prompt caching.
+    this.preserveCacheControl = true
+  }
+
+  /**
+   * OpenRouter routes to frontier models (Claude, GPT-4, Gemini, etc.)
+   * that fully support tool calling, agents, MCP servers, and plugins.
+   * Skip the payload optimization that strips tools down to core-only —
+   * send the full tool set so all claudex features work.
+   */
+  protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
+    return params
   }
 
   /**

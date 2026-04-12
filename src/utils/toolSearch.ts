@@ -170,6 +170,16 @@ export type ToolSearchMode = 'tst' | 'tst-auto' | 'standard'
  *   (unset)               tst (default: always defer MCP and shouldDefer tools)
  */
 export function getToolSearchMode(): ToolSearchMode {
+  // OpenRouter routes to frontier models that support full tool calling
+  // but doesn't support Anthropic-specific defer_loading / tool_reference.
+  // Force 'standard' so ALL tools (Agent, MCP, Skills, Plan, Tasks) are
+  // sent with full schemas and the model can actually call them.
+  // Other 3P providers (OpenAI, Gemini, NIM, etc.) are unaffected — their
+  // optimizeParams() already filters tools to a core set before this matters.
+  if (getAPIProvider() === 'openrouter') {
+    return 'standard'
+  }
+
   // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is a kill switch for beta API
   // features. Tool search emits defer_loading on tool definitions and
   // tool_reference content blocks — both require the API to accept a beta

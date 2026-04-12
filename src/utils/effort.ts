@@ -3,8 +3,9 @@ import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, isThirdPartyProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
+import { getOpenAIReasoningLevel, modelSupportsReasoning } from './model/openaiReasoning.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
@@ -170,11 +171,23 @@ export function resolveAppliedEffort(
  * Resolve the effort level to show the user. Wraps resolveAppliedEffort
  * with the 'high' fallback (what the API uses when no effort param is sent).
  * Single source of truth for the status bar and /effort output (CC-1088).
+ *
+ * For third-party providers: returns the provider-native effort when
+ * applicable (OpenAI reasoning), otherwise falls back to 'high'.
  */
 export function getDisplayedEffortLevel(
   model: string,
   appStateEffort: EffortValue | undefined,
 ): EffortLevel {
+  const provider = getAPIProvider()
+  // OpenAI reasoning models have their own effort system
+  if (isThirdPartyProvider(provider) && modelSupportsReasoning(model)) {
+    return getOpenAIReasoningLevel() as EffortLevel
+  }
+  // Other third-party providers don't use Anthropic effort
+  if (isThirdPartyProvider(provider)) {
+    return 'high'
+  }
   const resolved = resolveAppliedEffort(model, appStateEffort) ?? 'high'
   return convertEffortValueToLevel(resolved)
 }
@@ -184,11 +197,23 @@ export function getDisplayedEffortLevel(
  * Returns empty string if the user hasn't explicitly set an effort value.
  * Delegates to resolveAppliedEffort() so the displayed level matches what
  * the API actually receives (including max→high clamp for non-Opus models).
+ *
+ * For third-party providers: shows the provider-native effort when
+ * applicable (e.g. OpenAI reasoning level), otherwise no suffix —
+ * Anthropic's effort system doesn't apply to them.
  */
 export function getEffortSuffix(
   model: string,
   effortValue: EffortValue | undefined,
 ): string {
+  const provider = getAPIProvider()
+  // OpenAI reasoning models use their own effort system
+  if (isThirdPartyProvider(provider) && modelSupportsReasoning(model)) {
+    const level = getOpenAIReasoningLevel()
+    return ` with ${level} effort`
+  }
+  // Other third-party providers don't use Anthropic effort — no suffix
+  if (isThirdPartyProvider(provider)) return ''
   if (effortValue === undefined) return ''
   const resolved = resolveAppliedEffort(model, effortValue)
   if (resolved === undefined) return ''

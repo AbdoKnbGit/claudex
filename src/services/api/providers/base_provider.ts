@@ -79,6 +79,8 @@ export interface ProviderConfig {
   apiKey: string
   baseUrl?: string
   extraHeaders?: Record<string, string>
+  /** OpenAI session token for ChatGPT backend API (Codex models) */
+  sessionToken?: string
 }
 
 export interface ModelInfo {
@@ -180,25 +182,32 @@ export interface ProviderTool {
 
 export function buildProviderStreamResult(
   events: AsyncIterable<AnthropicStreamEvent>,
+  fetchAbortController?: AbortController,
 ): ProviderStreamResult {
   let finalMsg: AnthropicMessage | null = null
   const messageCallbacks: Array<(msg: AnthropicMessage) => void> = []
   let aborted = false
-  let abortController: AbortController | undefined
 
   const collected: AnthropicStreamEvent[] = []
 
   const iteratorPromise = (async function* () {
-    for await (const event of events) {
-      if (aborted) break
-      collected.push(event)
-      if (event.type === 'message_start' && event.message) {
-        finalMsg = event.message
+    try {
+      for await (const event of events) {
+        if (aborted) break
+        collected.push(event)
+        if (event.type === 'message_start' && event.message) {
+          finalMsg = event.message
+        }
+        if (event.type === 'message_stop' && finalMsg) {
+          messageCallbacks.forEach(cb => cb(finalMsg!))
+        }
+        yield event
       }
-      if (event.type === 'message_stop' && finalMsg) {
-        messageCallbacks.forEach(cb => cb(finalMsg!))
-      }
-      yield event
+    } catch (err: any) {
+      // Swallow AbortError — the user cancelled the request via Escape.
+      // Re-throw anything else so real errors surface.
+      if (err?.name === 'AbortError') return
+      throw err
     }
   })()
 
@@ -224,7 +233,7 @@ export function buildProviderStreamResult(
     },
     abort() {
       aborted = true
-      abortController?.abort()
+      fetchAbortController?.abort()
     },
   }
 

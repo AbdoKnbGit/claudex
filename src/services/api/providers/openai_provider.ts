@@ -107,12 +107,21 @@ export class OpenAIProvider extends BaseProvider {
   protected optimizePayload: boolean
   protected maxTokensCap: number
   protected maxSystemChars: number
+  /** Session token for ChatGPT backend API (OAuth users, GPT-5 Codex models) */
+  protected sessionToken?: string
+  /**
+   * Preserve cache_control markers when converting to OpenAI format.
+   * Providers like OpenRouter pass these through to underlying providers
+   * (Anthropic, etc.) enabling prompt caching. Off by default.
+   */
+  protected preserveCacheControl: boolean = false
 
   constructor(config: ProviderConfig) {
     super()
     this.apiKey = config.apiKey
     this.baseUrl = config.baseUrl ?? 'https://api.openai.com/v1'
     this.extraHeaders = config.extraHeaders ?? {}
+    this.sessionToken = config.sessionToken
 
     // Payload optimization — on by default for all 3P providers
     this.optimizePayload = process.env.PROVIDER_NO_OPTIMIZE !== 'true'
@@ -219,19 +228,25 @@ export class OpenAIProvider extends BaseProvider {
       return this._streamResponses(optimized, model)
     }
 
-    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
+    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system, { preserveCacheControl: this.preserveCacheControl })
     if (this.needsMessageCoalescing(model)) {
       messages = coalesceConsecutiveMessages(messages)
     }
     const tools = optimized.tools ? anthropicToolsToOpenAI(optimized.tools) : undefined
 
+    // GPT-5 and o-series require max_completion_tokens, not max_tokens.
+    // Sending max_tokens to these models causes 500 errors.
+    const useNewTokenParam = this._usesMaxCompletionTokens(model)
     const body: Record<string, unknown> = {
       model,
       messages,
-      max_tokens: optimized.max_tokens,
       stream: true,
-      // Request usage in stream for token counting
       stream_options: { include_usage: true },
+    }
+    if (useNewTokenParam) {
+      body.max_completion_tokens = optimized.max_tokens
+    } else {
+      body.max_tokens = optimized.max_tokens
     }
     if (tools && tools.length > 0) {
       body.tools = tools
@@ -244,10 +259,12 @@ export class OpenAIProvider extends BaseProvider {
     const effort = this.resolveReasoningEffort(model, optimized.thinking)
     if (effort) body.reasoning_effort = effort
 
+    const ac = new AbortController()
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),
+      signal: ac.signal,
     })
 
     if (!response.ok) {
@@ -264,7 +281,7 @@ export class OpenAIProvider extends BaseProvider {
 
     const sseStream = this._parseSSE(response.body)
     const anthropicEvents = openAIStreamToAnthropicEvents(sseStream)
-    return buildProviderStreamResult(anthropicEvents)
+    return buildProviderStreamResult(anthropicEvents, ac)
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
@@ -276,16 +293,21 @@ export class OpenAIProvider extends BaseProvider {
       return this._createResponses(optimized, model)
     }
 
-    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
+    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system, { preserveCacheControl: this.preserveCacheControl })
     if (this.needsMessageCoalescing(model)) {
       messages = coalesceConsecutiveMessages(messages)
     }
     const tools = optimized.tools ? anthropicToolsToOpenAI(optimized.tools) : undefined
 
+    const useNewTokenParam = this._usesMaxCompletionTokens(model)
     const body: Record<string, unknown> = {
       model,
       messages,
-      max_tokens: optimized.max_tokens,
+    }
+    if (useNewTokenParam) {
+      body.max_completion_tokens = optimized.max_tokens
+    } else {
+      body.max_tokens = optimized.max_tokens
     }
     if (tools && tools.length > 0) {
       body.tools = tools
@@ -460,11 +482,44 @@ export class OpenAIProvider extends BaseProvider {
     }
   }
 
+  /**
+   * Returns the URL and headers for Responses API calls.
+   * OAuth users → chatgpt.com/backend-api/codex (session token auth)
+   * API key users → standard api.openai.com/v1/responses
+   */
+  private _responsesEndpoint(): { url: string; headers: Record<string, string> } {
+    if (this.sessionToken) {
+      return {
+        url: 'https://chatgpt.com/backend-api/codex/responses',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.sessionToken}`,
+          'OpenAI-Beta': 'responses_websockets=2026-02-06',
+          ...this.extraHeaders,
+        },
+      }
+    }
+    return {
+      url: `${this.baseUrl}/responses`,
+      headers: this._headers(),
+    }
+  }
+
   // ─── Responses API (GPT-5 Codex models) ─────────────────────────
 
-  /** True when the model should use POST /v1/responses instead of /chat/completions. */
+  /**
+   * True when the model should use the Responses API via the ChatGPT backend.
+   * GPT-5 Codex models only work through chatgpt.com/backend-api/codex which
+   * requires the OAuth session token (first-exchange access_token).
+   * The standard api.openai.com endpoint rejects these models (missing scopes).
+   */
   private _useResponsesAPI(model: string): boolean {
-    return /^gpt-[5-9]/i.test(model)
+    return /^gpt-[5-9]/i.test(model) && !!this.sessionToken
+  }
+
+  /** True for models that require max_completion_tokens instead of max_tokens. */
+  private _usesMaxCompletionTokens(model: string): boolean {
+    return /^(gpt-[5-9]|o[1-9])/i.test(model)
   }
 
   private async _streamResponses(
@@ -494,10 +549,14 @@ export class OpenAIProvider extends BaseProvider {
     const effort = this.resolveReasoningEffort(model, params.thinking)
     if (effort) body.reasoning = { effort }
 
-    const response = await fetch(`${this.baseUrl}/responses`, {
+    const { url, headers } = this._responsesEndpoint()
+
+    const ac = new AbortController()
+    const response = await fetch(url, {
       method: 'POST',
-      headers: this._headers(),
+      headers,
       body: JSON.stringify(body),
+      signal: ac.signal,
     })
 
     if (!response.ok) {
@@ -513,7 +572,7 @@ export class OpenAIProvider extends BaseProvider {
 
     const sseStream = this._parseResponsesSSE(response.body)
     const anthropicEvents = responsesStreamToAnthropicEvents(sseStream)
-    return buildProviderStreamResult(anthropicEvents)
+    return buildProviderStreamResult(anthropicEvents, ac)
   }
 
   private async _createResponses(
@@ -541,9 +600,11 @@ export class OpenAIProvider extends BaseProvider {
     const effort = this.resolveReasoningEffort(model, params.thinking)
     if (effort) body.reasoning = { effort }
 
-    const response = await fetch(`${this.baseUrl}/responses`, {
+    const { url, headers } = this._responsesEndpoint()
+
+    const response = await fetch(url, {
       method: 'POST',
-      headers: this._headers(),
+      headers,
       body: JSON.stringify(body),
     })
 

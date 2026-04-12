@@ -25,6 +25,7 @@ export interface OpenAIContentPart {
   type: 'text' | 'image_url'
   text?: string
   image_url?: { url: string; detail?: string }
+  cache_control?: { type: string }
 }
 
 export interface OpenAIToolCall {
@@ -61,24 +62,57 @@ function stripAnthropicFields(block: ProviderContentBlock): ProviderContentBlock
 
 // ─── Message Conversion ────────────────────────────────────────────
 
+export interface AdapterOptions {
+  /**
+   * Preserve cache_control markers on content blocks.
+   * OpenRouter passes these through to underlying providers (Anthropic, etc.)
+   * enabling prompt caching and reducing per-request token usage.
+   */
+  preserveCacheControl?: boolean
+}
+
 export function anthropicMessagesToOpenAI(
   messages: ProviderMessage[],
   system?: string | SystemBlock[],
+  options?: AdapterOptions,
 ): OpenAIMessage[] {
   const result: OpenAIMessage[] = []
+  const keepCache = options?.preserveCacheControl === true
 
-  // System prompt → system message (strip cache_control from system blocks)
+  // System prompt → system message
   if (system) {
-    const systemText = typeof system === 'string'
-      ? system
-      : system.map(s => {
-          const { cache_control, ...rest } = s as SystemBlock & { cache_control?: unknown }
-          return rest.text
-        }).join('\n\n')
-    if (systemText) {
-      result.push({ role: 'system', content: systemText })
+    if (keepCache && Array.isArray(system)) {
+      // Preserve cache_control in structured content blocks so providers
+      // like OpenRouter can forward them for prompt caching.
+      const parts: OpenAIContentPart[] = system.map(s => {
+        const block = s as SystemBlock & { cache_control?: { type: string } }
+        const part: OpenAIContentPart = { type: 'text', text: block.text }
+        if (block.cache_control) {
+          part.cache_control = block.cache_control
+        }
+        return part
+      })
+      result.push({ role: 'system', content: parts })
+    } else {
+      const systemText = typeof system === 'string'
+        ? system
+        : system.map(s => {
+            const { cache_control, ...rest } = s as SystemBlock & { cache_control?: unknown }
+            return rest.text
+          }).join('\n\n')
+      if (systemText) {
+        result.push({ role: 'system', content: systemText })
+      }
     }
   }
+
+  const stripBlock = keepCache
+    ? (block: ProviderContentBlock) => {
+        // Keep cache_control, strip only other Anthropic-specific fields
+        const { citations, ...clean } = block as ProviderContentBlock & { citations?: unknown }
+        return clean
+      }
+    : stripAnthropicFields
 
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
@@ -86,8 +120,8 @@ export function anthropicMessagesToOpenAI(
       continue
     }
 
-    // Content is an array of blocks — strip Anthropic-specific fields
-    const blocks = (msg.content as ProviderContentBlock[]).map(stripAnthropicFields)
+    // Content is an array of blocks
+    const blocks = (msg.content as ProviderContentBlock[]).map(stripBlock)
 
     if (msg.role === 'assistant') {
       // Check for tool_use blocks

@@ -162,10 +162,12 @@ export class GeminiProvider extends BaseProvider {
         : geminiCLIApiHeaders(oauthToken, model)
 
       const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
+      const ac = new AbortController()
       const response = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(wrapped),
+        signal: ac.signal,
       })
 
       if (!response.ok) {
@@ -179,7 +181,7 @@ export class GeminiProvider extends BaseProvider {
 
       const geminiChunks = parseCodeAssistSSE(response.body)
       const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
-      return buildProviderStreamResult(anthropicEvents)
+      return buildProviderStreamResult(anthropicEvents, ac)
     }
 
     // API key path → try to use context caching, then call v1beta.
@@ -192,10 +194,12 @@ export class GeminiProvider extends BaseProvider {
     }
     const cacheName = await this._applyContextCache(model, body)
     const url = `${this.baseUrl}/models/${model}:streamGenerateContent?key=${encodeURIComponent(this.apiKey)}&alt=sse`
+    const ac = new AbortController()
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ac.signal,
     })
 
     if (!response.ok) {
@@ -213,7 +217,7 @@ export class GeminiProvider extends BaseProvider {
 
     const geminiChunks = parseGeminiSSE(response.body)
     const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
-    return buildProviderStreamResult(anthropicEvents)
+    return buildProviderStreamResult(anthropicEvents, ac)
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {

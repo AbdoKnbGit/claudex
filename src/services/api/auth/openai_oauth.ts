@@ -19,8 +19,9 @@
  * The user signs in with their ChatGPT / OpenAI account.
  */
 
-import { createServer } from 'http'
+import { createServer, type Server } from 'http'
 import { randomBytes, createHash } from 'crypto'
+import { execSync } from 'child_process'
 import { saveProviderKey, loadProviderKey } from './api_key_manager.js'
 import { openBrowser } from '../../../utils/browser.js'
 
@@ -40,12 +41,52 @@ const SUCCESS_PATH = '/success'
 // Codex CLI's registered port — OpenAI validates redirect URIs exactly
 const DEFAULT_PORT = 1455
 
-// These are the exact scopes the Codex CLI's public client is registered
-// for. Adding `api.connectors.read`/`api.connectors.invoke` (as an earlier
-// version of this file did) broke the consent screen: clicking "Continue
-// with email" or "Continue with Google" threw an error before the flow
-// even got to the redirect. CLIProxyAPI's Codex port has the same four
-// scopes and works — matching it exactly is the fix.
+// ─── Active server tracking ──────────────────────────────────────────
+// Keeps a reference to the callback server so repeat /login calls can
+// close the stale one instead of failing with EADDRINUSE.
+let _activeServer: Server | null = null
+
+function _cleanupActiveServer(): void {
+  if (_activeServer) {
+    try { _activeServer.close() } catch {}
+    _activeServer = null
+  }
+}
+
+/**
+ * Force-close any TCP server in this process that is bound to the given port.
+ * Handles the edge case where a previous /login created a callback server
+ * with old code that didn't track it in _activeServer.
+ */
+function _forceCloseServersOnPort(port: number): void {
+  try {
+    // Node internals: _getActiveHandles() returns all open handles
+    // (sockets, servers, timers, etc.) in the current event loop.
+    const handles = (process as any)._getActiveHandles?.() as any[] | undefined
+    if (!handles) return
+    for (const h of handles) {
+      // TCP servers have a .close() method and an address() that returns
+      // { port, address, family } when bound.
+      if (typeof h?.close === 'function' && typeof h?.address === 'function') {
+        try {
+          const addr = h.address()
+          if (addr && addr.port === port) {
+            h.close()
+          }
+        } catch { /* not a server or already closed */ }
+      }
+    }
+  } catch { /* _getActiveHandles may not exist in all runtimes */ }
+}
+
+// Clean up on process exit so we never leave a stale listener behind.
+// Only use 'exit' — adding SIGINT/SIGTERM listeners can interfere with
+// the main graceful shutdown flow in gracefulShutdown.ts.
+process.on('exit', _cleanupActiveServer)
+
+// Must match the scopes the Codex CLI public client is registered for.
+// Only these 4 are accepted — adding api.connectors.* or api.responses.*
+// triggers "invalid_scope" on the consent screen.
 const SCOPES = 'openid profile email offline_access'
 
 interface OpenAIOAuthTokens {
@@ -58,9 +99,10 @@ interface OpenAIOAuthTokens {
 }
 
 interface StoredOpenAITokens {
-  accessToken: string // API-capable token (from token exchange)
+  accessToken: string   // API key from token exchange (for api.openai.com)
+  sessionToken: string  // First-exchange access_token (for chatgpt.com/backend-api)
   refreshToken: string
-  expiresAt: number // Unix timestamp ms
+  expiresAt: number     // Unix timestamp ms
 }
 
 // ─── PKCE Helpers ──────────────────────────────────────────────────
@@ -88,7 +130,7 @@ export async function startOpenAIOAuthFlow(): Promise<{
 }> {
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = generateCodeChallenge(codeVerifier)
-  const state = randomBytes(16).toString('hex')
+  let state = randomBytes(16).toString('hex')
 
   // Must use port 1455 — matches Codex CLI's registered redirect URI.
   // OpenAI validates the redirect URI exactly, so we cannot fall back
@@ -96,9 +138,14 @@ export async function startOpenAIOAuthFlow(): Promise<{
   const port = DEFAULT_PORT
   const redirectUri = `http://localhost:${port}${REDIRECT_PATH}`
 
+  // Close any stale callback server from a previous /login attempt
+  // in this process before trying to bind the port.
+  _cleanupActiveServer()
+  _forceCloseServersOnPort(port)
+
   // Start the callback server BEFORE opening the browser so the redirect
-  // always has something to talk to. If the port is in use we bail before
-  // the user wastes time in their browser.
+  // always has something to talk to. If the port is in use, the retry
+  // logic below will try to free it automatically.
   const callbackReady = startCallbackServer(port, state)
 
   // Build authorization URL.
@@ -125,8 +172,29 @@ export async function startOpenAIOAuthFlow(): Promise<{
   authUrl.searchParams.set('state', state)
 
   // Wait until the server is actually listening before opening the browser.
-  // If the port is in use we throw here and never pop a browser window.
-  const { authCodePromise } = await callbackReady
+  // If the port is in use, try to free it and retry once — this handles
+  // stale listeners from crashed sessions or the real Codex CLI.
+  let authCodePromise: Promise<string>
+  try {
+    ;({ authCodePromise } = await callbackReady)
+  } catch (err: any) {
+    if (err?.message?.includes('Port') && err?.message?.includes('in use')) {
+      // Try to free the port and retry once
+      const freed = await _tryFreePort(port)
+      if (freed) {
+        const retryState = randomBytes(16).toString('hex')
+        // Update the state in the auth URL (we haven't opened the browser yet)
+        state = retryState
+        authUrl.searchParams.set('state', retryState)
+        const retry = startCallbackServer(port, retryState)
+        ;({ authCodePromise } = await retry)
+      } else {
+        throw err
+      }
+    } else {
+      throw err
+    }
+  }
 
   const authUrlString = authUrl.toString()
   const opened = await openBrowser(authUrlString)
@@ -181,8 +249,6 @@ export async function startOpenAIOAuthFlow(): Promise<{
           requested_token: 'openai-api-key',
           subject_token: firstTokens.id_token,
           subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-          // No `scope` — matches Codex CLI's obtain_api_key() exactly.
-          // Adding scope here restricts the API key's permissions.
         }),
       })
       if (exchange.ok) {
@@ -192,14 +258,16 @@ export async function startOpenAIOAuthFlow(): Promise<{
         }
       }
     } catch {
-      // If the second exchange fails, fall back to the first-exchange
-      // access token — some endpoints may still accept it.
+      // Fall back to first-exchange token.
     }
   }
 
-  // Store tokens
+  // Store tokens — keep both the API key AND the session token.
+  // The session token (first-exchange) is used for chatgpt.com/backend-api
+  // which is the endpoint that accepts the Responses API for Codex models.
   const stored: StoredOpenAITokens = {
     accessToken: apiAccessToken,
+    sessionToken: firstTokens.access_token,
     refreshToken: firstTokens.refresh_token ?? '',
     expiresAt: Date.now() + firstTokens.expires_in * 1000,
   }
@@ -265,15 +333,35 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<string> 
     }
   }
 
-  // Update stored tokens
+  // Update stored tokens — keep the session token (first-exchange access_token)
+  // for chatgpt.com/backend-api access.
   const stored: StoredOpenAITokens = {
     accessToken: apiAccessToken,
+    sessionToken: tokens.access_token,
     refreshToken: tokens.refresh_token ?? refreshToken,
     expiresAt: Date.now() + tokens.expires_in * 1000,
   }
   saveProviderKey('openai_oauth', JSON.stringify(stored))
 
   return apiAccessToken
+}
+
+/**
+ * Get the stored OpenAI session token (first-exchange access_token).
+ * This is needed for the ChatGPT backend API (chatgpt.com/backend-api/codex)
+ * which is the endpoint that accepts the Responses API for GPT-5 Codex models.
+ * Returns null if no tokens are stored or expired.
+ */
+export function getOpenAISessionToken(): string | null {
+  const stored = loadProviderKey('openai_oauth')
+  if (!stored) return null
+  try {
+    const tokens = JSON.parse(stored) as StoredOpenAITokens
+    if (Date.now() > tokens.expiresAt - 5 * 60 * 1000) return null
+    return tokens.sessionToken || null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -302,6 +390,103 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────
+
+/**
+ * Try to free a port by killing whatever process is listening on it.
+ * Returns true if the port was successfully freed (or is now free).
+ *
+ * This handles the common case where a previous claudex session crashed
+ * and left a stale callback server behind, or the real Codex CLI is
+ * occupying the port.  Claudex is a standalone tool and should not
+ * require users to hunt down stale listeners manually.
+ */
+async function _tryFreePort(port: number): Promise<boolean> {
+  try {
+    // ── Step 1: Same-process stale server ──────────────────────────
+    // The most common case: a previous /login in THIS claudex session
+    // left a callback server alive. _cleanupActiveServer only works if
+    // the module-level _activeServer was set, but after a hot-reload or
+    // first run with new code the reference may be null even though an
+    // old server is still bound.  We use a brute-force approach: try to
+    // find the port owner's PID and compare with process.pid.  If it's
+    // us, we know there's a dangling server inside our own event loop
+    // that we can't reach via _activeServer.  In that case we create a
+    // throw-away connection to the port, which lets us confirm it's
+    // reachable, then we use the exclusive trick below.
+    const ownPid = String(process.pid)
+    let portOwnedBySelf = false
+
+    if (process.platform === 'win32') {
+      try {
+        const out = execSync(
+          `netstat -ano | findstr ":${port}" | findstr "LISTENING"`,
+          { encoding: 'utf-8', timeout: 5000 },
+        )
+        const pids = new Set<string>()
+        for (const line of out.trim().split('\n')) {
+          const parts = line.trim().split(/\s+/)
+          const pid = parts[parts.length - 1]
+          if (pid && pid !== '0' && /^\d+$/.test(pid)) pids.add(pid)
+        }
+
+        if (pids.has(ownPid)) {
+          portOwnedBySelf = true
+        }
+
+        // Kill only external processes (never ourselves)
+        for (const pid of pids) {
+          if (pid === ownPid) continue
+          try {
+            execSync(`taskkill /F /PID ${pid}`, {
+              encoding: 'utf-8',
+              timeout: 5000,
+              stdio: 'ignore',
+            })
+          } catch { /* process may already be gone */ }
+        }
+      } catch { /* netstat failed — port may already be free */ }
+    } else {
+      // macOS / Linux
+      try {
+        const pidOutput = execSync(`lsof -ti:${port} 2>/dev/null`, {
+          encoding: 'utf-8',
+          timeout: 5000,
+        }).trim()
+        if (pidOutput) {
+          const pids = pidOutput.split('\n').map(p => p.trim())
+          if (pids.includes(ownPid)) {
+            portOwnedBySelf = true
+          }
+          // Kill only external processes
+          const externalPids = pids.filter(p => p !== ownPid).join(' ')
+          if (externalPids) {
+            execSync(`kill -9 ${externalPids}`, {
+              encoding: 'utf-8',
+              timeout: 5000,
+              stdio: 'ignore',
+            })
+          }
+        }
+      } catch { /* nothing found */ }
+    }
+
+    // ── Step 2: Same-process — force-close the orphaned server ─────
+    // When the stale server is in our own process, we can't taskkill
+    // ourselves. Instead, enumerate all active Node handles and close
+    // any TCP server bound to this port.
+    if (portOwnedBySelf) {
+      _forceCloseServersOnPort(port)
+      // Small delay for the OS to process the close
+      await new Promise(r => setTimeout(r, 300))
+    }
+
+    // Give the OS a moment to release the socket
+    await new Promise(r => setTimeout(r, 600))
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * Start the local callback server and return a promise for the auth code.
@@ -337,6 +522,11 @@ function startCallbackServer(
       5 * 60 * 1000,
     )
 
+    const closeServer = () => {
+      try { server.close() } catch {}
+      if (_activeServer === server) _activeServer = null
+    }
+
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '', `http://localhost:${port}`)
 
@@ -349,11 +539,7 @@ function startCallbackServer(
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
           res.end(renderErrorPage(`OpenAI returned: ${error}`))
           clearTimeout(timeout)
-          setTimeout(() => {
-            try {
-              server.close()
-            } catch {}
-          }, 1000)
+          setTimeout(closeServer, 1000)
           rejectCode(new Error(`OpenAI OAuth error: ${error}`))
           return
         }
@@ -362,11 +548,7 @@ function startCallbackServer(
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
           res.end(renderErrorPage('Invalid state parameter.'))
           clearTimeout(timeout)
-          setTimeout(() => {
-            try {
-              server.close()
-            } catch {}
-          }, 1000)
+          setTimeout(closeServer, 1000)
           rejectCode(new Error('OpenAI OAuth error: invalid state parameter'))
           return
         }
@@ -379,11 +561,7 @@ function startCallbackServer(
           clearTimeout(timeout)
           // Keep the server alive long enough to serve /success before
           // closing — otherwise the browser sees "connection refused".
-          setTimeout(() => {
-            try {
-              server.close()
-            } catch {}
-          }, 2000)
+          setTimeout(closeServer, 2000)
           resolveCode(code)
           return
         }
@@ -399,13 +577,17 @@ function startCallbackServer(
       res.end()
     })
 
+    // Don't let the callback server keep the process alive if the user
+    // cancels / Ctrl-C's out of the login flow.
+    server.unref()
+
     server.once('error', (err: NodeJS.ErrnoException) => {
       clearTimeout(timeout)
       if (err.code === 'EADDRINUSE') {
         const msg =
-          `Port ${port} is in use. Close whatever is bound to it ` +
-          `(maybe the real Codex CLI?) and try /login again. ` +
-          `OpenAI OAuth requires this exact port for the redirect.`
+          `Port ${port} is in use — attempting to free it automatically. ` +
+          `If this keeps failing, check for stale node/codex processes ` +
+          `on port ${port}.`
         rejectReady(new Error(msg))
         rejectCode(new Error(msg))
       } else {
@@ -413,6 +595,9 @@ function startCallbackServer(
         rejectCode(err)
       }
     })
+
+    // Track the server so we can clean it up on repeat /login or process exit.
+    _activeServer = server
 
     // Bind to all interfaces (dual-stack) so `localhost` reaches us
     // regardless of whether the browser resolves it to ::1 (IPv6) or

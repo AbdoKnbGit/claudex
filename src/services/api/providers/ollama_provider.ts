@@ -191,10 +191,12 @@ export class OllamaProvider extends OpenAIProvider {
     if (optimized.temperature !== undefined) body.temperature = optimized.temperature
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
+    const ac = new AbortController()
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),
+      signal: ac.signal,
     })
 
     if (!response.ok) {
@@ -212,7 +214,7 @@ export class OllamaProvider extends OpenAIProvider {
 
     const sseStream = this._parseSSE(response.body)
     const anthropicEvents = openAIStreamToAnthropicEvents(sseStream)
-    return buildProviderStreamResult(anthropicEvents)
+    return buildProviderStreamResult(anthropicEvents, ac)
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
