@@ -117,8 +117,8 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           : startProviderOAuth(provider)
     oauthPromise
       .then(() => {
-        // Gemini OAuth coexists with API key; others are exclusive.
-        if (provider !== 'gemini') deleteProviderKey(provider)
+        // Activating OAuth deactivates API key for this provider.
+        deleteProviderKey(provider)
         setState({ step: 'success' })
         setTimeout(() => onDone(true), 1000)
       })
@@ -178,9 +178,14 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
     setState({ step: 'validating' })
 
     // Store the key. Saving an API key deactivates any stored OAuth
-    // token for this provider — one credential at a time, per provider.
+    // token for this provider — one credential at a time.
     saveProviderKey(provider, key)
     deleteProviderKey(`${provider}_oauth`)
+    // Gemini: also clear dual OAuth keys
+    if (provider === 'gemini') {
+      deleteProviderKey('gemini_oauth_cli')
+      deleteProviderKey('gemini_oauth_antigravity')
+    }
 
     // Also set as environment variable for the current session
     const envVar = meta?.envVar

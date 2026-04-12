@@ -75,50 +75,58 @@ const CLIENT_METADATA =
   '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}'
 
 const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
-const CACHE_FILE = join(CONFIG_DIR, 'gemini-code-assist.json')
 
-// Cache version — bump this when the onboarding flow changes so stale
-// pre-Antigravity caches get invalidated on first use after upgrade.
-// Old caches have no `version` field and will be treated as v0.
-const CACHE_VERSION = 2
+// Per-executor cache files — each executor type gets its own onboarding
+// and project ID because the Code Assist server tracks them separately.
+const CACHE_FILE_CLI = join(CONFIG_DIR, 'gemini-code-assist-cli.json')
+const CACHE_FILE_ANTIGRAVITY = join(CONFIG_DIR, 'gemini-code-assist.json')
+
+const CACHE_VERSION = 3  // bump: split caches per executor
 
 interface CodeAssistCache {
   version: number
-  projectId: string | null  // null = use managed free-tier project
+  projectId: string | null
   onboardedAt: number
 }
 
-// In-memory cache so we don't re-read on every request
-let _cached: CodeAssistCache | null = null
+// In-memory caches — one per executor type
+let _cachedCli: CodeAssistCache | null = null
+let _cachedAntigravity: CodeAssistCache | null = null
 
-function _readCache(): CodeAssistCache | null {
-  if (_cached) return _cached
+function _cacheFileFor(executor: GeminiExecutor): string {
+  return executor === 'cli' ? CACHE_FILE_CLI : CACHE_FILE_ANTIGRAVITY
+}
+
+function _readCache(executor: GeminiExecutor): CodeAssistCache | null {
+  const mem = executor === 'cli' ? _cachedCli : _cachedAntigravity
+  if (mem) return mem
   try {
-    if (!existsSync(CACHE_FILE)) return null
-    const raw = readFileSync(CACHE_FILE, 'utf-8')
+    const file = _cacheFileFor(executor)
+    if (!existsSync(file)) return null
+    const raw = readFileSync(file, 'utf-8')
     const parsed = JSON.parse(raw) as CodeAssistCache
-    // Stale cache from the old Gemini CLI flow — ignore it so we re-run
-    // onboarding with the Antigravity metadata and hit the right quota pool.
     if ((parsed.version ?? 0) < CACHE_VERSION) return null
-    _cached = parsed
+    if (executor === 'cli') _cachedCli = parsed
+    else _cachedAntigravity = parsed
     return parsed
   } catch {
     return null
   }
 }
 
-function _writeCache(cache: CodeAssistCache): void {
+function _writeCache(executor: GeminiExecutor, cache: CodeAssistCache): void {
   try {
     if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
-    writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2))
-    _cached = cache
+    writeFileSync(_cacheFileFor(executor), JSON.stringify(cache, null, 2))
+    if (executor === 'cli') _cachedCli = cache
+    else _cachedAntigravity = cache
   } catch {
-    // Cache is best-effort — if we can't persist, we'll just re-onboard next launch.
+    // Cache is best-effort.
   }
 }
 
-/** Headers every Code Assist RPC must carry to be treated as Antigravity. */
-function _antigravityHeaders(accessToken: string): Record<string, string> {
+/** Onboarding headers for the Antigravity executor. */
+function _antigravityOnboardHeaders(accessToken: string): Record<string, string> {
   return {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
@@ -128,43 +136,51 @@ function _antigravityHeaders(accessToken: string): Record<string, string> {
   }
 }
 
+/** Onboarding headers for the Gemini CLI executor. */
+function _cliOnboardHeaders(accessToken: string): Record<string, string> {
+  const os = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux'
+  const arch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : 'x86'
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+    'User-Agent': `GeminiCLI/0.31.0 (${os}; ${arch})`,
+    'X-Goog-Api-Client': 'google-genai-sdk/1.41.0 gl-node/v22.19.0',
+  }
+}
+
 // ─── Onboarding ──────────────────────────────────────────────────────
 
 /**
- * Ensure the user is onboarded to Code Assist and return the project ID to use
- * (or null to use the managed free-tier project).
+ * Ensure the user is onboarded to Code Assist and return the project ID.
  *
- * Called lazily on the first Gemini request after login. Subsequent requests
- * read from the cache.
- *
- * Follows CLIProxyAPI's FetchProjectID → OnboardUser sequence:
- *   1. POST :loadCodeAssist with metadata only (ideType=ANTIGRAVITY). No
- *      cloudaicompanionProject field — we let the server decide whether
- *      the user already has a bound project.
- *   2. If the response carries `cloudaicompanionProject`, cache it and
- *      return.
- *   3. Otherwise, walk allowedTiers to find the default tier id (falling
- *      back to "legacy-tier") and POST :onboardUser. Poll up to 5 times
- *      with 2s sleeps until `done: true`, then extract the project id
- *      from `response.cloudaicompanionProject`.
+ * Each executor type (CLI vs Antigravity) has its own cache and uses
+ * different onboarding headers/metadata so the server associates the
+ * project with the right quota pool.
  */
-export async function ensureCodeAssistReady(accessToken: string): Promise<string | null> {
-  const cached = _readCache()
+export async function ensureCodeAssistReady(
+  accessToken: string,
+  executor: GeminiExecutor = 'antigravity',
+): Promise<string | null> {
+  const cached = _readCache(executor)
   if (cached) return cached.projectId
+
+  // CLI uses GEMINI_CLI ideType; Antigravity uses ANTIGRAVITY.
+  const ideType = executor === 'cli' ? 'GEMINI_CLI' : 'ANTIGRAVITY'
+  const headers = executor === 'cli'
+    ? _cliOnboardHeaders(accessToken)
+    : _antigravityOnboardHeaders(accessToken)
 
   const loadReqBody = {
     metadata: {
-      ideType: 'ANTIGRAVITY',
+      ideType,
       platform: 'PLATFORM_UNSPECIFIED',
       pluginType: 'GEMINI',
     },
   }
 
-  // Step 1: loadCodeAssist — tells us whether the account already has a
-  // bound cloudaicompanionProject or needs to be onboarded.
   const loadRes = await fetch(`${CODE_ASSIST_BASE}:loadCodeAssist`, {
     method: 'POST',
-    headers: _antigravityHeaders(accessToken),
+    headers,
     body: JSON.stringify(loadReqBody),
   })
 
@@ -189,7 +205,7 @@ export async function ensureCodeAssistReady(accessToken: string): Promise<string
 
   const directProjectId = _extractProjectId(loadData.cloudaicompanionProject)
   if (directProjectId) {
-    _writeCache({
+    _writeCache(executor, {
       version: CACHE_VERSION,
       projectId: directProjectId,
       onboardedAt: Date.now(),
@@ -209,8 +225,8 @@ export async function ensureCodeAssistReady(accessToken: string): Promise<string
     }
   }
 
-  const onboardedProject = await _onboardUser(accessToken, tierId)
-  _writeCache({
+  const onboardedProject = await _onboardUser(accessToken, tierId, executor)
+  _writeCache(executor, {
     version: CACHE_VERSION,
     projectId: onboardedProject,
     onboardedAt: Date.now(),
@@ -248,11 +264,16 @@ function _extractProjectId(
 async function _onboardUser(
   accessToken: string,
   tierId: string,
+  executor: GeminiExecutor = 'antigravity',
 ): Promise<string | null> {
+  const ideType = executor === 'cli' ? 'GEMINI_CLI' : 'ANTIGRAVITY'
+  const headers = executor === 'cli'
+    ? _cliOnboardHeaders(accessToken)
+    : _antigravityOnboardHeaders(accessToken)
   const requestBody = {
     tierId,
     metadata: {
-      ideType: 'ANTIGRAVITY',
+      ideType,
       platform: 'PLATFORM_UNSPECIFIED',
       pluginType: 'GEMINI',
     },
@@ -270,7 +291,7 @@ async function _onboardUser(
     try {
       res = await fetch(`${CODE_ASSIST_BASE}:onboardUser`, {
         method: 'POST',
-        headers: _antigravityHeaders(accessToken),
+        headers,
         body: bodyJson,
         signal: controller.signal,
       })

@@ -138,7 +138,7 @@ export class GeminiProvider extends BaseProvider {
     const oauthToken = this._tokenForModel(model)
     if (this.hasOAuth && oauthToken) {
       const executor = executorForModel(model)
-      const projectId = await ensureCodeAssistReady(oauthToken)
+      const projectId = await ensureCodeAssistReady(oauthToken, executor)
 
       const wrapped = executor === 'antigravity'
         ? wrapForCodeAssist(model, projectId, body as unknown as Record<string, unknown>)
@@ -204,7 +204,7 @@ export class GeminiProvider extends BaseProvider {
     const oauthToken = this._tokenForModel(model)
     if (this.hasOAuth && oauthToken) {
       const executor = executorForModel(model)
-      const projectId = await ensureCodeAssistReady(oauthToken)
+      const projectId = await ensureCodeAssistReady(oauthToken, executor)
 
       const wrapped = executor === 'antigravity'
         ? wrapForCodeAssist(model, projectId, body as unknown as Record<string, unknown>)
