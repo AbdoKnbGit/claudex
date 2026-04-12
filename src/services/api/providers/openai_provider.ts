@@ -46,6 +46,27 @@ import {
   type OpenAIChatCompletionChunk,
 } from '../adapters/openai_to_anthropic.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
+import {
+  getOpenAIReasoningLevel,
+  modelSupportsReasoning,
+  type OpenAIReasoningLevel,
+} from '../../../utils/model/openaiReasoning.js'
+
+// ─── Curated Codex model list ─────────────────────────────────────
+// Returned by listModels() so /models always shows available models
+// even before making an API call. Matches the GPT-5 Codex family.
+
+const OPENAI_CODEX_MODELS: ModelInfo[] = [
+  { id: 'gpt-5.4',            name: 'GPT-5.4' },
+  { id: 'gpt-5.4-mini',       name: 'GPT-5.4 Mini' },
+  { id: 'gpt-5.4-nano',       name: 'GPT-5.4 Nano' },
+  { id: 'gpt-5.4-pro',        name: 'GPT-5.4 Pro' },
+  { id: 'gpt-5.3-codex',      name: 'GPT-5.3 Codex' },
+  { id: 'gpt-5.2',            name: 'GPT-5.2' },
+  { id: 'o4-mini',            name: 'o4-mini' },
+  { id: 'o3',                 name: 'o3' },
+  { id: 'o3-mini',            name: 'o3-mini' },
+]
 
 // ─── Payload optimization constants ─────────────────────────────
 
@@ -105,29 +126,20 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   /**
-   * OpenAI reasoning models (o1/o3/o4/gpt-5 family) accept a
-   * `reasoning_effort` parameter instead of the Anthropic-style thinking
-   * budget. Subclasses with different reasoning surfaces can override.
+   * Resolve the reasoning_effort to send with the request.
+   *
+   * Priority: user-selected level from /models picker → Anthropic thinking
+   * budget mapping → default 'medium'.
    */
-  protected modelSupportsReasoningEffort(model: string): boolean {
-    return /^(o[1-9](-|$)|o[1-9][0-9]?(-mini|-pro)?|gpt-[5-9])/i.test(model)
-  }
-
-  /**
-   * Map an Anthropic-style thinking param to an OpenAI reasoning_effort
-   * label. Budgets are coarsely bucketed: <4K → low, <16K → medium, rest → high.
-   * Adaptive or disabled → medium / undefined.
-   */
-  protected thinkingToReasoningEffort(
+  protected resolveReasoningEffort(
+    model: string,
     thinking: ProviderRequestParams['thinking'],
-  ): 'low' | 'medium' | 'high' | undefined {
-    if (!thinking) return undefined
-    if (thinking.type === 'disabled') return undefined
-    if (thinking.type === 'adaptive') return 'medium'
-    const budget = thinking.budget_tokens
-    if (budget < 4096) return 'low'
-    if (budget < 16384) return 'medium'
-    return 'high'
+  ): OpenAIReasoningLevel | undefined {
+    if (!modelSupportsReasoning(model)) return undefined
+
+    // Use the globally stored level from the model picker (set via ←/→).
+    // This is the primary control surface for Codex reasoning.
+    return getOpenAIReasoningLevel()
   }
 
   // ─── Payload optimization ───────────────────────────────────────
@@ -140,6 +152,11 @@ export class OpenAIProvider extends BaseProvider {
    */
   protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
     if (!this.optimizePayload) return params
+
+    // GPT-5 Codex models have 1M+ context — send full payload with all
+    // tools so agents, MCP servers, plan mode etc. work without limits.
+    const model = this.resolveModel(params.model)
+    if (/^gpt-[5-9]/i.test(model)) return params
 
     return {
       ...params,
@@ -209,12 +226,9 @@ export class OpenAIProvider extends BaseProvider {
     if (optimized.temperature !== undefined) body.temperature = optimized.temperature
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
-    // Translate Anthropic-style thinking → OpenAI reasoning_effort
-    // (only for o-series/gpt-5 reasoning models; other models ignore it).
-    if (this.modelSupportsReasoningEffort(model)) {
-      const effort = this.thinkingToReasoningEffort(optimized.thinking)
-      if (effort) body.reasoning_effort = effort
-    }
+    // Send reasoning_effort for Codex / o-series models.
+    const effort = this.resolveReasoningEffort(model, optimized.thinking)
+    if (effort) body.reasoning_effort = effort
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -260,10 +274,9 @@ export class OpenAIProvider extends BaseProvider {
     if (optimized.temperature !== undefined) body.temperature = optimized.temperature
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
-    if (this.modelSupportsReasoningEffort(model)) {
-      const effort = this.thinkingToReasoningEffort(optimized.thinking)
-      if (effort) body.reasoning_effort = effort
-    }
+    // Send reasoning_effort for Codex / o-series models.
+    const effort = this.resolveReasoningEffort(model, optimized.thinking)
+    if (effort) body.reasoning_effort = effort
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -283,12 +296,28 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const response = await fetch(`${this.baseUrl}/models`, {
-      headers: this._headers(),
-    })
-    if (!response.ok) return []
-    const data = (await response.json()) as { data: Array<{ id: string }> }
-    return (data.data ?? []).map(m => ({ id: m.id, name: m.id }))
+    // Return curated Codex models first, then append any extra from the API.
+    // This ensures /models always shows something even if the API call fails.
+    const curated = new Map(OPENAI_CODEX_MODELS.map(m => [m.id, m]))
+
+    try {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        headers: this._headers(),
+        signal: AbortSignal.timeout(8_000),
+      })
+      if (response.ok) {
+        const data = (await response.json()) as { data: Array<{ id: string }> }
+        for (const m of data.data ?? []) {
+          if (!curated.has(m.id)) {
+            curated.set(m.id, { id: m.id, name: m.id })
+          }
+        }
+      }
+    } catch {
+      // API unreachable — curated list is enough
+    }
+
+    return [...curated.values()]
   }
 
   resolveModel(claudeModel: string): string {

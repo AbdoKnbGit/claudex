@@ -11,6 +11,12 @@ import {
   type ProviderModelSection,
   type SectionedModelInfo,
 } from '../utils/model/providerCatalog.js'
+import {
+  cycleOpenAIReasoningLevel,
+  getOpenAIReasoningLevel,
+  getReasoningLabel,
+  modelSupportsReasoning,
+} from '../utils/model/openaiReasoning.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
@@ -29,13 +35,14 @@ type FlatRow =
 
 /** Single source of truth for how tags render. */
 const TAG_STYLE: Record<ModelTag, { label: string; color: string }> = {
-  cloud:    { label: 'cloud',    color: 'magenta' },
-  local:    { label: 'local',    color: 'cyan' },
-  tools:    { label: 'tools',    color: 'green' },
-  'no-tools': { label: 'no tools', color: 'yellow' },
-  thinking: { label: 'thinking', color: 'blue' },
-  pulled:   { label: 'ready',    color: 'green' },
-  missing:  { label: 'pull',     color: 'yellow' },
+  cloud:     { label: 'cloud',     color: 'magenta' },
+  local:     { label: 'local',     color: 'cyan' },
+  tools:     { label: 'tools',     color: 'green' },
+  'no-tools':{ label: 'no tools',  color: 'yellow' },
+  thinking:  { label: 'thinking',  color: 'blue' },
+  reasoning: { label: 'reasoning', color: 'blue' },
+  pulled:    { label: 'ready',     color: 'green' },
+  missing:   { label: 'pull',      color: 'yellow' },
 }
 
 const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string> = {
@@ -125,6 +132,7 @@ export function ProviderModelPicker({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
+  const [reasoningLevel, setReasoningLevel] = useState(getOpenAIReasoningLevel)
 
   const selectedProvider =
     BROWSABLE_MODEL_PROVIDERS[selectedProviderIndex] ?? initialProvider
@@ -282,6 +290,16 @@ export function ProviderModelPicker({
       return
     }
 
+    // ← → cycle reasoning level for OpenAI Codex models
+    if (key.leftArrow || key.rightArrow) {
+      const row = flatRows[selectedRowIndex]
+      if (row?.kind === 'model' && modelSupportsReasoning(row.model.id)) {
+        const newLevel = cycleOpenAIReasoningLevel(key.leftArrow ? 'left' : 'right')
+        setReasoningLevel(newLevel)
+      }
+      return
+    }
+
     if (key.backspace || key.delete) {
       setQuery(currentQuery => currentQuery.slice(0, -1))
       setSelectedRowIndex(firstModelIndex(flatRows))
@@ -416,6 +434,7 @@ export function ProviderModelPicker({
                 model.name && model.name !== model.id
                   ? `${model.id} - ${model.name}`
                   : model.id
+              const isReasoning = modelSupportsReasoning(model.id)
 
               return (
                 <Box key={`model-${row.sectionId}-${model.id}`}>
@@ -427,9 +446,14 @@ export function ProviderModelPicker({
                     {isSelected ? '> ' : '  '}
                     {label}
                   </Text>
+                  {isReasoning && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ {getReasoningLabel(reasoningLevel)} ▶
+                    </Text>
+                  )}
                   {model.tags && model.tags.length > 0 && (
                     <>
-                      {model.tags.map(tag => {
+                      {model.tags.filter(t => t !== 'reasoning').map(tag => {
                         const style = TAG_STYLE[tag]
                         return (
                           <Text key={tag} color={style.color}>
@@ -460,7 +484,7 @@ export function ProviderModelPicker({
 
       <Box marginTop={1}>
         <Text dimColor>
-          Type to filter | ↑/↓ navigate | Enter select | Esc back
+          Type to filter | ↑/↓ navigate | ←/→ reasoning level | Enter select | Esc back
         </Text>
       </Box>
     </Box>

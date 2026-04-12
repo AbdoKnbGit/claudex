@@ -12,6 +12,7 @@ import {
   type APIProvider,
   PROVIDER_DISPLAY_NAMES,
 } from './providers.js'
+import { modelSupportsReasoning } from './openaiReasoning.js'
 
 export type BrowsableModelProvider = Exclude<APIProvider, 'firstParty'>
 
@@ -109,6 +110,7 @@ export type ModelTag =
   | 'tools'
   | 'no-tools'
   | 'thinking'
+  | 'reasoning'
   | 'pulled'
   | 'missing'
 
@@ -127,6 +129,30 @@ export async function loadProviderModelSections(
   }
 
   const models = await loadProviderModels(provider)
+
+  // For OpenAI: split into Codex (reasoning) and other models.
+  if (provider === 'openai') {
+    const codex: SectionedModelInfo[] = []
+    const other: SectionedModelInfo[] = []
+    for (const m of models) {
+      const tags: ModelTag[] = modelSupportsReasoning(m.id) ? ['reasoning'] : []
+      const entry: SectionedModelInfo = { ...m, tags: tags.length > 0 ? tags : undefined }
+      if (modelSupportsReasoning(m.id)) {
+        codex.push(entry)
+      } else {
+        other.push(entry)
+      }
+    }
+    const sections: ProviderModelSection[] = []
+    if (codex.length > 0) {
+      sections.push({ id: 'codex', title: 'Codex models  ← → reasoning level', models: codex })
+    }
+    if (other.length > 0) {
+      sections.push({ id: 'other', title: 'Other models', models: other })
+    }
+    return sections.length > 0 ? sections : [{ id: 'all', title: 'OpenAI models', models: models.map(m => ({ ...m })) }]
+  }
+
   return [
     {
       id: 'all',
