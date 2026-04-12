@@ -27,9 +27,6 @@ import { openBrowser } from '../../../utils/browser.js'
 // ─── Bundled OAuth credentials (from openai/codex CLI) ───────────────
 // Source: https://github.com/openai/codex — public PKCE client, no secret
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-// Originator identifier — must be sent so OpenAI recognizes us as a
-// Codex-compatible client. Matches codex-rs default.
-const ORIGINATOR = 'codex_cli_rs'
 
 // ─── OAuth endpoints ──────────────────────────────────────────────────
 
@@ -43,11 +40,13 @@ const SUCCESS_PATH = '/success'
 // Codex CLI's registered port — OpenAI validates redirect URIs exactly
 const DEFAULT_PORT = 1455
 
-// Must match the Codex CLI scope list exactly — these are the scopes
-// registered for app_EMoamEEZ73f0CkXaXp7hrann. Missing api.connectors.*
-// causes a "scope not allowed" error.
-const SCOPES =
-  'openid profile email offline_access api.connectors.read api.connectors.invoke'
+// These are the exact scopes the Codex CLI's public client is registered
+// for. Adding `api.connectors.read`/`api.connectors.invoke` (as an earlier
+// version of this file did) broke the consent screen: clicking "Continue
+// with email" or "Continue with Google" threw an error before the flow
+// even got to the redirect. CLIProxyAPI's Codex port has the same four
+// scopes and works — matching it exactly is the fix.
+const SCOPES = 'openid profile email offline_access'
 
 interface OpenAIOAuthTokens {
   access_token: string
@@ -67,7 +66,9 @@ interface StoredOpenAITokens {
 // ─── PKCE Helpers ──────────────────────────────────────────────────
 
 function generateCodeVerifier(): string {
-  return randomBytes(32).toString('base64url')
+  // 96 random bytes → 128 base64url characters.
+  // Matches CLIProxyAPI's PKCE implementation exactly.
+  return randomBytes(96).toString('base64url')
 }
 
 function generateCodeChallenge(verifier: string): string {
@@ -101,9 +102,16 @@ export async function startOpenAIOAuthFlow(): Promise<{
   const callbackReady = startCallbackServer(port, state)
 
   // Build authorization URL.
-  // The extra id_token_add_organizations + codex_cli_simplified_flow params
-  // are required by OpenAI's Codex OAuth client — omitting them triggers a
-  // blank response page in the browser.
+  //   - `id_token_add_organizations=true` + `codex_cli_simplified_flow=true`
+  //     are required by OpenAI's Codex OAuth client — omitting either one
+  //     triggers a blank response page in the browser.
+  //   - `prompt=login` forces a fresh auth every time, which is how Codex
+  //     CLI and CLIProxyAPI both call it. Without this, re-running /login
+  //     can reuse a stale session cookie and dump the user on a broken
+  //     "Continue with email / Google" screen.
+  //   - No `originator` param — CLIProxyAPI doesn't send one, and adding
+  //     it was correlated with the email/google redirection error users
+  //     kept hitting.
   const authUrl = new URL(OPENAI_AUTH_URL)
   authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('client_id', CLIENT_ID)
@@ -113,7 +121,7 @@ export async function startOpenAIOAuthFlow(): Promise<{
   authUrl.searchParams.set('code_challenge_method', 'S256')
   authUrl.searchParams.set('id_token_add_organizations', 'true')
   authUrl.searchParams.set('codex_cli_simplified_flow', 'true')
-  authUrl.searchParams.set('originator', ORIGINATOR)
+  authUrl.searchParams.set('prompt', 'login')
   authUrl.searchParams.set('state', state)
 
   // Wait until the server is actually listening before opening the browser.
@@ -134,7 +142,10 @@ export async function startOpenAIOAuthFlow(): Promise<{
   // Step 1 — exchange authorization code for id_token + access_token + refresh_token.
   const firstExchange = await fetch(OPENAI_TOKEN_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       code: authCode,
@@ -160,7 +171,10 @@ export async function startOpenAIOAuthFlow(): Promise<{
     try {
       const exchange = await fetch(OPENAI_TOKEN_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+        },
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
           client_id: CLIENT_ID,
@@ -202,7 +216,10 @@ export async function startOpenAIOAuthFlow(): Promise<{
 export async function refreshOpenAIToken(refreshToken: string): Promise<string> {
   const response = await fetch(OPENAI_TOKEN_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
     body: new URLSearchParams({
       client_id: CLIENT_ID,
       refresh_token: refreshToken,
@@ -224,7 +241,10 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<string> 
     try {
       const exchange = await fetch(OPENAI_TOKEN_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+        },
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
           client_id: CLIENT_ID,
@@ -291,10 +311,9 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
  * browser hits /auth/callback, or rejects on timeout / error / mismatched
  * state / port-in-use.
  *
- * We bind explicitly to 127.0.0.1 — on modern Windows Node defaults to
- * IPv6 `::` which leaves `localhost` (resolved to 127.0.0.1 via hosts)
- * with nothing listening, producing a "connection refused" / spinner that
- * the OpenAI auth page reports as "Operation timed out".
+ * We bind to all interfaces (dual-stack) so `localhost` works regardless
+ * of whether the browser resolves it to ::1 (IPv6) or 127.0.0.1 (IPv4).
+ * Matches CLIProxyAPI's `:port` binding.
  */
 function startCallbackServer(
   port: number,
@@ -319,7 +338,7 @@ function startCallbackServer(
     )
 
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '', `http://127.0.0.1:${port}`)
+      const url = new URL(req.url ?? '', `http://localhost:${port}`)
 
       if (url.pathname === REDIRECT_PATH) {
         const code = url.searchParams.get('code')
@@ -395,8 +414,10 @@ function startCallbackServer(
       }
     })
 
-    // Bind to 127.0.0.1 explicitly so `localhost` always reaches us.
-    server.listen(port, '127.0.0.1', () => {
+    // Bind to all interfaces (dual-stack) so `localhost` reaches us
+    // regardless of whether the browser resolves it to ::1 (IPv6) or
+    // 127.0.0.1 (IPv4). Matches CLIProxyAPI's `:port` binding.
+    server.listen(port, () => {
       resolveReady({ authCodePromise })
     })
   })

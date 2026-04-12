@@ -29,30 +29,51 @@ import {
 import {
   CODE_ASSIST_BASE,
   ensureCodeAssistReady,
+  executorForModel,
   parseCodeAssistSSE,
   unwrapCodeAssistResponse,
   wrapForCodeAssist,
+  wrapForGeminiCLI,
+  geminiCLIApiHeaders,
+  antigravityApiHeaders,
 } from './gemini_code_assist.js'
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
 
-// Models reachable through the Code Assist proxy when signed in via
-// OAuth (cloud-platform scope). Hardcoded because Code Assist does not
-// expose a listModels endpoint, and v1beta/models rejects cloud-platform
-// tokens as restricted_client.
+// Models reachable via the two OAuth executors:
 //
-// The canonical source for this list is Google's own gemini-cli:
-// google-gemini/gemini-cli/packages/core/src/config/models.ts
-// Listed here in priority order (top = strongest reasoning).
-const GEMINI_OAUTH_CURATED_MODELS: ModelInfo[] = [
+// 1. Gemini CLI executor (google_oauth 'cli' token) — free-tier flash/lite
+//    models with good rate limits. Needs User-Agent=GeminiCLI/...
+//
+// 2. Antigravity executor (google_oauth 'antigravity' token) — pro models
+//    with Antigravity quota pool. Needs body.userAgent="antigravity".
+//
+// Both route through the Code Assist proxy at cloudcode-pa.googleapis.com.
+// The curated lists below are split by executor so the provider can show
+// only the models the user actually has tokens for.
+
+/** Models available via the Gemini CLI OAuth client (free tier). */
+const GEMINI_CLI_MODELS: ModelInfo[] = [
   { id: 'gemini-3.1-pro-preview',              name: 'Gemini 3.1 Pro (preview)' },
   { id: 'gemini-3-pro-preview',                name: 'Gemini 3 Pro (preview)' },
   { id: 'gemini-3.1-pro-preview-customtools',  name: 'Gemini 3.1 Pro · custom tools (preview)' },
   { id: 'gemini-3-flash-preview',              name: 'Gemini 3 Flash (preview)' },
   { id: 'gemini-3.1-flash-lite-preview',       name: 'Gemini 3.1 Flash Lite (preview)' },
+  { id: 'gemini-3.1-flash-image-preview',      name: 'Gemini 3.1 Flash · image gen (preview)' },
+  { id: 'gemini-3-pro-image-preview',          name: 'Gemini 3 Pro · image gen (preview)' },
   { id: 'gemini-2.5-pro',                      name: 'Gemini 2.5 Pro' },
   { id: 'gemini-2.5-flash',                    name: 'Gemini 2.5 Flash' },
   { id: 'gemini-2.5-flash-lite',               name: 'Gemini 2.5 Flash Lite' },
+]
+
+/** Models available via the Antigravity OAuth client (pro tier). */
+const ANTIGRAVITY_MODELS: ModelInfo[] = [
+  { id: 'gemini-3.1-pro-high',                 name: 'Gemini 3.1 Pro · high thinking' },
+  { id: 'gemini-3.1-pro-low',                  name: 'Gemini 3.1 Pro · low thinking' },
+  { id: 'gemini-3-pro-high',                   name: 'Gemini 3 Pro · high thinking' },
+  { id: 'gemini-3-pro-low',                    name: 'Gemini 3 Pro · low thinking' },
+  { id: 'gemini-3-flash',                      name: 'Gemini 3 Flash' },
+  { id: 'gemini-3.1-flash-image',              name: 'Gemini 3.1 Flash · image gen' },
 ]
 
 /**
@@ -78,28 +99,69 @@ export class GeminiProvider extends BaseProvider {
   readonly name = 'gemini'
   private apiKey: string
   private baseUrl: string
-  private oauthToken?: string
+  /** OAuth token from the Gemini CLI client (flash/lite models). */
+  private cliOAuthToken?: string
+  /** OAuth token from the Antigravity client (pro models). */
+  private antigravityOAuthToken?: string
 
-  constructor(config: ProviderConfig & { oauthToken?: string }) {
+  constructor(config: ProviderConfig & {
+    cliOAuthToken?: string
+    antigravityOAuthToken?: string
+    /** @deprecated Use cliOAuthToken / antigravityOAuthToken */
+    oauthToken?: string
+  }) {
     super()
     this.apiKey = config.apiKey
     this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta'
-    this.oauthToken = config.oauthToken
+    this.cliOAuthToken = config.cliOAuthToken
+    this.antigravityOAuthToken = config.antigravityOAuthToken
+    // Backwards compat: old single oauthToken → treat as antigravity
+    if (config.oauthToken && !config.antigravityOAuthToken) {
+      this.antigravityOAuthToken = config.oauthToken
+    }
+  }
+
+  /** True if any OAuth token is available. */
+  private get hasOAuth(): boolean {
+    return !!(this.cliOAuthToken || this.antigravityOAuthToken)
+  }
+
+  /**
+   * Pick the right OAuth token for a model. Falls back to the other
+   * token if the preferred one is missing (the API will reject if the
+   * model isn't available on that executor — better than a client error).
+   * Returns null if no OAuth tokens are stored at all.
+   */
+  private _tokenForModel(model: string): string | null {
+    const executor = executorForModel(model)
+    if (executor === 'antigravity') {
+      return this.antigravityOAuthToken ?? this.cliOAuthToken ?? null
+    }
+    return this.cliOAuthToken ?? this.antigravityOAuthToken ?? null
   }
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const model = this.resolveModel(params.model)
     const body = anthropicToGeminiRequest(params)
 
-    // OAuth path → route through Code Assist (cloud-platform scope only).
-    if (this.oauthToken) {
-      const projectId = await ensureCodeAssistReady(this.oauthToken)
-      const wrapped = wrapForCodeAssist(model, projectId, body as Record<string, unknown>)
+    // OAuth path → route through Code Assist with the right executor.
+    const oauthToken = this._tokenForModel(model)
+    if (this.hasOAuth && oauthToken) {
+      const executor = executorForModel(model)
+      const projectId = await ensureCodeAssistReady(oauthToken)
+
+      const wrapped = executor === 'antigravity'
+        ? wrapForCodeAssist(model, projectId, body as unknown as Record<string, unknown>)
+        : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
+
+      const headers = executor === 'antigravity'
+        ? antigravityApiHeaders(oauthToken)
+        : geminiCLIApiHeaders(oauthToken, model)
 
       const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
       const response = await fetch(url, {
         method: 'POST',
-        headers: this._headers(),
+        headers,
         body: JSON.stringify(wrapped),
       })
 
@@ -122,13 +184,12 @@ export class GeminiProvider extends BaseProvider {
     const url = `${this.baseUrl}/models/${model}:streamGenerateContent?alt=sse`
     const response = await fetch(url, {
       method: 'POST',
-      headers: this._headers(),
+      headers: this._apiKeyHeaders(),
       body: JSON.stringify(body),
     })
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      // Cached content expired on the server side — drop it and retry inline.
       if (cacheName && this._isCacheExpiredError(response.status, errText)) {
         invalidateCache(cacheName)
         return this.stream(params)
@@ -149,15 +210,24 @@ export class GeminiProvider extends BaseProvider {
     const model = this.resolveModel(params.model)
     const body = anthropicToGeminiRequest(params)
 
-    // OAuth path → route through Code Assist.
-    if (this.oauthToken) {
-      const projectId = await ensureCodeAssistReady(this.oauthToken)
-      const wrapped = wrapForCodeAssist(model, projectId, body as Record<string, unknown>)
+    // OAuth path → route through Code Assist with the right executor.
+    const oauthToken = this._tokenForModel(model)
+    if (this.hasOAuth && oauthToken) {
+      const executor = executorForModel(model)
+      const projectId = await ensureCodeAssistReady(oauthToken)
+
+      const wrapped = executor === 'antigravity'
+        ? wrapForCodeAssist(model, projectId, body as unknown as Record<string, unknown>)
+        : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
+
+      const headers = executor === 'antigravity'
+        ? antigravityApiHeaders(oauthToken)
+        : geminiCLIApiHeaders(oauthToken, model)
 
       const url = `${CODE_ASSIST_BASE}:generateContent`
       const response = await fetch(url, {
         method: 'POST',
-        headers: this._headers(),
+        headers,
         body: JSON.stringify(wrapped),
       })
 
@@ -176,7 +246,7 @@ export class GeminiProvider extends BaseProvider {
     const url = `${this.baseUrl}/models/${model}:generateContent`
     const response = await fetch(url, {
       method: 'POST',
-      headers: this._headers(),
+      headers: this._apiKeyHeaders(),
       body: JSON.stringify(body),
     })
 
@@ -215,20 +285,12 @@ export class GeminiProvider extends BaseProvider {
       tools: body.tools,
     })
     if (!cacheName) return null
-    // cachedContent replaces systemInstruction + tools — Gemini rejects
-    // requests that carry both. Strip them from the outgoing body.
     delete body.systemInstruction
     delete body.tools
     body.cachedContent = cacheName
     return cacheName
   }
 
-  /**
-   * Detect the Gemini error shape that means "the cachedContent name
-   * you referenced no longer exists" — typically a 404 or a 400 with
-   * "CachedContent" in the message. On a match we drop the cache entry
-   * and retry inline.
-   */
   private _isCacheExpiredError(status: number, body: string): boolean {
     if (status === 404) return true
     if (status === 400 && /cached.?content/i.test(body)) return true
@@ -236,13 +298,14 @@ export class GeminiProvider extends BaseProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    // OAuth path: the Gemini CLI OAuth client is scoped to cloud-platform
-    // only, which generativelanguage.googleapis.com/v1beta/models rejects
-    // (403 restricted_client). Code Assist doesn't expose a listModels
-    // endpoint either, so we return a curated list of the models that are
-    // actually reachable through the Code Assist proxy.
-    if (this.oauthToken) {
-      return GEMINI_OAUTH_CURATED_MODELS
+    // OAuth path: return only the models the user has tokens for.
+    // Code Assist doesn't expose a listModels endpoint and v1beta/models
+    // rejects cloud-platform tokens (403 restricted_client).
+    if (this.hasOAuth) {
+      const models: ModelInfo[] = []
+      if (this.cliOAuthToken) models.push(...GEMINI_CLI_MODELS)
+      if (this.antigravityOAuthToken) models.push(...ANTIGRAVITY_MODELS)
+      return models
     }
 
     // API key path — v1beta/models is fine here.
@@ -293,7 +356,7 @@ export class GeminiProvider extends BaseProvider {
     if (status === 401 || status === 403) {
       return new Error(
         `Gemini API error: Authentication failed.\n` +
-        `Your API key or OAuth token may be invalid. Run /login to reconfigure.`,
+        `Your API key or OAuth token may be invalid. Run /provider to reconfigure.`,
       )
     }
 
@@ -308,15 +371,11 @@ export class GeminiProvider extends BaseProvider {
     return new Error(`Gemini API error ${status}: ${body}`)
   }
 
-  private _headers(): Record<string, string> {
-    const headers: Record<string, string> = {
+  /** Headers for the API-key path (v1beta direct). */
+  private _apiKeyHeaders(): Record<string, string> {
+    return {
       'Content-Type': 'application/json',
+      'x-goog-api-key': this.apiKey,
     }
-    if (this.oauthToken) {
-      headers['Authorization'] = `Bearer ${this.oauthToken}`
-    } else {
-      headers['x-goog-api-key'] = this.apiKey
-    }
-    return headers
   }
 }

@@ -78,12 +78,17 @@ export class OllamaProvider extends OpenAIProvider {
 
   /**
    * Override to handle Ollama-specific behavior:
+   *   - Pre-flight health check on /api/tags so we fail fast (< 5s) with
+   *     an actionable error message when the daemon isn't running,
+   *     instead of hanging on a dead socket for minutes.
    *   - Some models don't support max_tokens → retry without
    *   - Cloud thinking models get an `enable_thinking` parameter when the
    *     user's thinking toggle is on (otherwise we omit the field entirely,
    *     since non-thinking models 400 on unknown params).
    */
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
+    await this._assertDaemonReachable()
+
     if (modelSupportsThinkingToggle(params.model)) {
       return this._streamWithThinkingToggle(params)
     }
@@ -96,6 +101,52 @@ export class OllamaProvider extends OpenAIProvider {
         return super.stream({ ...params, max_tokens: -1 })
       }
       throw err
+    }
+  }
+
+  /**
+   * Probe the Ollama daemon's /api/tags endpoint with a short timeout
+   * (configurable via OLLAMA_CONNECT_TIMEOUT_MS, default 4 s). Throws
+   * a user-friendly error if the daemon is unreachable — the previous
+   * behaviour was to let the chat-completions fetch hang for minutes on
+   * a dead TCP socket before failing with an unhelpful network error.
+   */
+  private async _assertDaemonReachable(): Promise<void> {
+    const timeoutMs = parseInt(
+      process.env.OLLAMA_CONNECT_TIMEOUT_MS ?? '4000',
+      10,
+    )
+    // /api/tags lives at the daemon root, NOT under the OpenAI /v1 path.
+    const rootUrl = this.baseUrl.replace(/\/v1\/?$/i, '').replace(/\/+$/, '')
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+    try {
+      const res = await fetch(`${rootUrl}/api/tags`, {
+        signal: controller.signal,
+      })
+      if (!res.ok) {
+        throw new Error(
+          `Ollama daemon at ${rootUrl} answered with HTTP ${res.status}. ` +
+            `Check the daemon log.`,
+        )
+      }
+    } catch (err: unknown) {
+      const reason =
+        err instanceof Error && err.name === 'AbortError'
+          ? `timed out after ${timeoutMs}ms`
+          : err instanceof Error
+            ? err.message
+            : String(err)
+      throw new Error(
+        `Ollama is not responding at ${rootUrl} (${reason}).\n` +
+          `  • Start the daemon: \`ollama serve\`\n` +
+          `  • Or change the base URL from /provider → Ollama → Set custom base URL\n` +
+          `  • Or set OLLAMA_BASE_URL to the host you want to use.`,
+      )
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -165,6 +216,7 @@ export class OllamaProvider extends OpenAIProvider {
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
+    await this._assertDaemonReachable()
     try {
       return await super.create(params)
     } catch (err: any) {

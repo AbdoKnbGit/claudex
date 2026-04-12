@@ -30,7 +30,16 @@ import {
   PROVIDER_AUTH_SUPPORT,
   type ProviderAuthMethod,
 } from '../../../utils/auth.js'
-import { getGoogleOAuthToken, startGoogleOAuthFlow, refreshGoogleToken } from './google_oauth.js'
+import {
+  getGeminiOAuthToken,
+  startGeminiOAuth,
+  refreshGeminiOAuth,
+  type GeminiOAuthType,
+  // Backwards-compat wrappers (still used by some callers)
+  getGoogleOAuthToken,
+  startGoogleOAuthFlow,
+  refreshGoogleToken,
+} from './google_oauth.js'
 import { getOpenAIOAuthToken, startOpenAIOAuthFlow, refreshOpenAIToken } from './openai_oauth.js'
 import { loadProviderKey, deleteProviderKey } from './api_key_manager.js'
 
@@ -73,11 +82,21 @@ export async function resolveProviderAuth(provider: APIProvider): Promise<{
 /**
  * Get a valid OAuth token for a provider, refreshing if expired.
  * Returns null if no OAuth tokens are stored or refresh fails.
+ *
+ * For Gemini: refreshes BOTH CLI and Antigravity tokens if stored.
+ * Returns any valid token to signal "OAuth is working".
  */
 async function _getValidOAuthToken(provider: APIProvider): Promise<string | null> {
   switch (provider) {
-    case 'gemini':
-      return getGoogleOAuthToken()
+    case 'gemini': {
+      // Refresh both Gemini OAuth types independently.
+      // Either may be null (user didn't login with that flow).
+      const [cli, antigravity] = await Promise.all([
+        getGeminiOAuthToken('cli').catch(() => null),
+        getGeminiOAuthToken('antigravity').catch(() => null),
+      ])
+      return cli ?? antigravity
+    }
     case 'openai':
       return getOpenAIOAuthToken()
     default:
@@ -107,12 +126,24 @@ export async function startProviderOAuth(provider: APIProvider): Promise<{
 
   switch (provider) {
     case 'gemini':
-      return startGoogleOAuthFlow()
+      // Default to antigravity for backwards compat.
+      // Use startGeminiOAuthFlow() for type-specific flows.
+      return startGeminiOAuth('antigravity')
     case 'openai':
       return startOpenAIOAuthFlow()
     default:
       throw new Error(`OAuth not implemented for ${provider}`)
   }
+}
+
+/**
+ * Start a specific Gemini OAuth flow (CLI for flash/lite, Antigravity for pro).
+ */
+export async function startGeminiOAuthFlow(type: GeminiOAuthType): Promise<{
+  accessToken: string
+  refreshToken: string
+}> {
+  return startGeminiOAuth(type)
 }
 
 /**
@@ -177,6 +208,11 @@ export function getProviderAuthStatus(provider: APIProvider): ProviderAuthStatus
  */
 export function clearProviderOAuth(provider: APIProvider): void {
   deleteProviderKey(`${provider}_oauth`)
+  // Gemini dual OAuth: clear both keys + legacy key.
+  if (provider === 'gemini') {
+    deleteProviderKey('gemini_oauth_cli')
+    deleteProviderKey('gemini_oauth_antigravity')
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────

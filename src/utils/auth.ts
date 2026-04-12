@@ -1815,15 +1815,28 @@ function _loadStoredOAuthToken(provider: string): string | null {
     const keysFile = join(homedir(), '.config', 'claude-code', 'provider-keys.json')
     if (!existsSync(keysFile)) return null
     const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
-    const oauthKey = `${provider}_oauth`
-    const stored = data?.keys?.[oauthKey]
-    if (!stored) return null
 
-    // Parse the stored token object
+    // Gemini has dual OAuth (CLI + Antigravity) — check both keys.
+    if (provider === 'gemini') {
+      return _tryParseToken(data?.keys?.['gemini_oauth_cli'])
+          ?? _tryParseToken(data?.keys?.['gemini_oauth_antigravity'])
+          ?? _tryParseToken(data?.keys?.['gemini_oauth'])  // legacy
+    }
+
+    const oauthKey = `${provider}_oauth`
+    return _tryParseToken(data?.keys?.[oauthKey])
+  } catch {
+    return null
+  }
+}
+
+/** Parse a stored token JSON string — returns accessToken if not expired, else null. */
+function _tryParseToken(stored: string | undefined): string | null {
+  if (!stored) return null
+  try {
     const tokens = JSON.parse(stored)
-    // Check expiry (with 5 min buffer)
     if (tokens.expiresAt && Date.now() > tokens.expiresAt - 5 * 60 * 1000) {
-      return null  // Expired — caller should trigger refresh
+      return null
     }
     return tokens.accessToken ?? null
   } catch {

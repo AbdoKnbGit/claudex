@@ -27,6 +27,7 @@ import {
   getProviderAuthMethod,
   getProviderOAuthToken,
 } from '../../../utils/auth.js'
+import { loadProviderKey } from '../auth/api_key_manager.js'
 import type {
   BaseProvider,
   AnthropicStreamEvent,
@@ -60,8 +61,17 @@ function createProvider(provider: APIProvider): BaseProvider {
     }
     case 'gemini': {
       if (authMethod === 'oauth') {
-        const oauthToken = getProviderOAuthToken('gemini') ?? ''
-        return new GeminiProvider({ apiKey: '', baseUrl, oauthToken })
+        // Dual OAuth: load both stored tokens synchronously.
+        // Async refresh already happened in client.ts pre-flight
+        // (resolveProviderAuth → _getValidOAuthToken).
+        const cliToken = _readStoredGeminiToken('gemini_oauth_cli')
+        const antigravityToken = _readStoredGeminiToken('gemini_oauth_antigravity')
+        return new GeminiProvider({
+          apiKey: apiKey ?? '',
+          baseUrl,
+          cliOAuthToken: cliToken ?? undefined,
+          antigravityOAuthToken: antigravityToken ?? undefined,
+        })
       }
       return new GeminiProvider({ apiKey, baseUrl })
     }
@@ -190,4 +200,23 @@ export function createProviderShim(provider: APIProvider): unknown {
  */
 export function getProvider(provider: APIProvider): BaseProvider {
   return createProvider(provider)
+}
+
+/**
+ * Synchronously read a stored Gemini OAuth token from provider-keys.json.
+ * Returns the accessToken if stored and not expired, null otherwise.
+ * No async refresh — that's handled by the client.ts pre-flight.
+ */
+function _readStoredGeminiToken(storageKey: string): string | null {
+  try {
+    const raw = loadProviderKey(storageKey)
+    if (!raw) return null
+    const tokens = JSON.parse(raw) as { accessToken?: string; expiresAt?: number }
+    if (tokens.expiresAt && Date.now() > tokens.expiresAt - 5 * 60 * 1000) {
+      return null  // expired
+    }
+    return tokens.accessToken ?? null
+  } catch {
+    return null
+  }
 }

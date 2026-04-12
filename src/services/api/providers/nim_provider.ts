@@ -115,10 +115,27 @@ export class NimProvider extends OpenAIProvider {
     const messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
     const tools = optimized.tools ? anthropicToolsToOpenAI(optimized.tools) : undefined
 
+    // Kimi K2 Thinking can spend 4–8k tokens in `reasoning_content` before
+    // it starts emitting the final answer. If `max_tokens` is the generic
+    // optimized cap (often 4096), the model hits the ceiling mid-thought
+    // and the user sees "nothing happened" even though the request
+    // succeeded. Raise the floor for thinking-capable NIM models so there
+    // is always room for reasoning + answer.
+    //
+    // Tunable: NIM_THINKING_MIN_MAX_TOKENS, NIM_MAX_TOKENS.
+    const thinkingMinMaxTokens = parseInt(
+      process.env.NIM_THINKING_MIN_MAX_TOKENS ?? '16384',
+      10,
+    )
+    const effectiveMaxTokens = Math.max(
+      optimized.max_tokens ?? 0,
+      thinkingMinMaxTokens,
+    )
+
     const body: Record<string, unknown> = {
       model,
       messages,
-      max_tokens: optimized.max_tokens,
+      max_tokens: effectiveMaxTokens,
       stream: true,
       stream_options: { include_usage: true },
     }

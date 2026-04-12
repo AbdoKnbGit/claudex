@@ -1,141 +1,905 @@
+/**
+ * /provider — connect / disconnect AI providers.
+ *
+ * Two-view state machine:
+ *   list       → overview of all manageable providers with auth badges
+ *   configure  → per-provider options: Activate OAuth / Activate API Key / Deactivate
+ *
+ * Core rules (from spec):
+ *   - Multiple providers can be connected simultaneously.
+ *   - OAuth and API Key on the SAME provider are mutually exclusive —
+ *     switching one deactivates the other (mutex is already enforced
+ *     inside saveProviderKey / OAuth finish paths, we just call them).
+ *   - The user only sees "OpenAI" and "Google Gemini" — CLIProxyAPI /
+ *     Antigravity / Codex are implicit engines behind OAuth and never
+ *     surface as provider rows.
+ *   - OAuth flow is one step: browser opens, user picks account, done.
+ *   - API Key flow: prompt → paste → validate → done.
+ *
+ * This command does NOT flip the "active provider" for routing — that's
+ * owned by /model and surf. /provider is purely about which credentials
+ * are connected.
+ */
+
+import * as React from 'react'
+import { useEffect, useState } from 'react'
 import chalk from 'chalk'
-import { useState } from 'react'
 import { Box, Text, useInput } from '../../ink.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import {
-  getAPIProvider,
-  setActiveProvider,
   PROVIDER_DISPLAY_NAMES,
-  SELECTABLE_PROVIDERS,
   type APIProvider,
 } from '../../utils/model/providers.js'
-import { hasStoredKey } from '../../services/api/auth/api_key_manager.js'
+import {
+  deleteAllProviderCredentials,
+  deleteProviderKey,
+  hasStoredKey,
+  loadProviderKey,
+  saveProviderKey,
+  validateKeyFormat,
+} from '../../services/api/auth/api_key_manager.js'
+import { startProviderOAuth, startGeminiOAuthFlow } from '../../services/api/auth/provider_auth.js'
+import { PROVIDER_AUTH_SUPPORT } from '../../utils/auth.js'
+import TextInput from '../../components/TextInput.js'
 
-type ProviderOption = {
-  label: string
-  value: APIProvider
-  authMethod: string
-  configured: boolean
+// ─── Config ──────────────────────────────────────────────────────
+
+/**
+ * Providers the user can connect via /provider.
+ *
+ * Excluded on purpose:
+ *   - firstParty (Anthropic)  → handled by /login
+ *   - bedrock/vertex/foundry  → env/IAM-based, no credentials to manage here
+ *
+ * Ollama is a special case: no OAuth, no API key — the "credential" is
+ * whether the local daemon is reachable at the configured base URL, and
+ * the only configurable bit is that base URL.
+ *
+ * CLIProxyAPI/Antigravity/Codex are implicit engines behind Gemini &
+ * OpenAI OAuth — not listed as separate rows.
+ */
+const MANAGEABLE_PROVIDERS = [
+  'openai',
+  'gemini',
+  'openrouter',
+  'groq',
+  'nim',
+  'deepseek',
+  'ollama',
+] as const satisfies readonly APIProvider[]
+
+type ManageableProvider = (typeof MANAGEABLE_PROVIDERS)[number]
+
+/** Storage key for the user-supplied Ollama base URL (persisted in provider-keys.json). */
+const OLLAMA_BASE_URL_KEY = 'ollama_base_url'
+const OLLAMA_DEFAULT_BASE = 'http://localhost:11434'
+
+interface ProviderMeta {
+  envVar: string
+  keyPrefix: string
+  getKeyUrl: string
 }
 
-function getProviderOptions(): ProviderOption[] {
-  const current = getAPIProvider()
-  return SELECTABLE_PROVIDERS.map((p) => {
-    const name = PROVIDER_DISPLAY_NAMES[p]
-    const isOAuth = p === 'openai' || p === 'gemini'
-    const isFirstParty = p === 'firstParty'
-    const authMethod = isFirstParty
-      ? 'OAuth'
-      : isOAuth
-        ? 'OAuth / API Key'
-        : 'API Key'
+/**
+ * Auth/credential metadata for providers that use API keys or OAuth.
+ * Ollama is absent on purpose — it has no key to validate or issue.
+ */
+type KeyedProvider = Exclude<ManageableProvider, 'ollama'>
 
-    let configured = false
-    if (isFirstParty) {
-      configured = true // Anthropic auth is handled separately
-    } else {
-      configured = hasStoredKey(p) || hasStoredKey(`${p}_oauth`)
-    }
-
-    return {
-      label: name,
-      value: p,
-      authMethod,
-      configured,
-    }
-  })
+const PROVIDER_META: Record<KeyedProvider, ProviderMeta> = {
+  openai: {
+    envVar: 'OPENAI_API_KEY',
+    keyPrefix: 'sk-',
+    getKeyUrl: 'https://platform.openai.com/api-keys',
+  },
+  gemini: {
+    envVar: 'GEMINI_API_KEY',
+    keyPrefix: 'AIza',
+    getKeyUrl: 'https://aistudio.google.com/apikey',
+  },
+  openrouter: {
+    envVar: 'OPENROUTER_API_KEY',
+    keyPrefix: 'sk-or-',
+    getKeyUrl: 'https://openrouter.ai/keys',
+  },
+  groq: {
+    envVar: 'GROQ_API_KEY',
+    keyPrefix: 'gsk_',
+    getKeyUrl: 'https://console.groq.com/keys',
+  },
+  nim: {
+    envVar: 'NIM_API_KEY',
+    keyPrefix: 'nvapi-',
+    getKeyUrl: 'https://build.nvidia.com/settings/api-keys',
+  },
+  deepseek: {
+    envVar: 'DEEPSEEK_API_KEY',
+    keyPrefix: 'sk-',
+    getKeyUrl: 'https://platform.deepseek.com/api_keys',
+  },
 }
 
-function ProviderPicker({
-  onDone,
-}: {
-  onDone: (message: string, options?: CommandResultDisplay) => void
-}) {
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const options = getProviderOptions()
-  const current = getAPIProvider()
-  useInput((_input: string, key: { upArrow?: boolean; downArrow?: boolean; return?: boolean; escape?: boolean }) => {
-    if (key.escape) {
-      onDone(`Kept provider as ${chalk.bold(PROVIDER_DISPLAY_NAMES[current])}`, {
-        display: 'system',
+// ─── Auth state helpers ──────────────────────────────────────────
+
+type AuthState = 'oauth' | 'api_key' | 'inactive'
+
+function getAuthState(provider: KeyedProvider): AuthState {
+  // Gemini dual OAuth: check both CLI and Antigravity keys.
+  if (provider === 'gemini') {
+    if (hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth_antigravity') || hasStoredKey('gemini_oauth')) {
+      return 'oauth'
+    }
+    if (hasStoredKey('gemini')) return 'api_key'
+    return 'inactive'
+  }
+  if (hasStoredKey(`${provider}_oauth`)) return 'oauth'
+  if (hasStoredKey(provider)) return 'api_key'
+  return 'inactive'
+}
+
+/** Detailed Gemini auth state — which OAuth flows are active. */
+function getGeminiDetailedState(): { cliOAuth: boolean; antigravityOAuth: boolean; apiKey: boolean } {
+  return {
+    cliOAuth: hasStoredKey('gemini_oauth_cli'),
+    antigravityOAuth: hasStoredKey('gemini_oauth_antigravity') || hasStoredKey('gemini_oauth'),
+    apiKey: hasStoredKey('gemini'),
+  }
+}
+
+function supportsOAuth(provider: APIProvider): boolean {
+  return (PROVIDER_AUTH_SUPPORT[provider] ?? []).includes('oauth')
+}
+
+function formatBadge(state: AuthState): string {
+  switch (state) {
+    case 'oauth':
+      return chalk.green('[OAuth ✅]')
+    case 'api_key':
+      return chalk.green('[API Key ✅]')
+    case 'inactive':
+      return chalk.dim('[   –   ]')
+  }
+}
+
+function formatGeminiBadge(): string {
+  const { cliOAuth, antigravityOAuth, apiKey } = getGeminiDetailedState()
+  const parts: string[] = []
+  if (cliOAuth) parts.push('CLI')
+  if (antigravityOAuth) parts.push('Pro')
+  if (apiKey) parts.push('Key')
+  if (parts.length === 0) return chalk.dim('[   –   ]')
+  return chalk.green(`[${parts.join(' + ')} ✅]`)
+}
+
+// ─── Ollama reachability ──────────────────────────────────────────
+//
+// Ollama has no credentials — we treat the "state" as whether the
+// daemon actually answers. The reachability probe is async so the
+// list view holds it in React state and the badge reflects the last
+// result.
+
+type OllamaStatus = 'unknown' | 'running' | 'offline'
+
+function getOllamaBaseUrl(): string {
+  // Order of precedence matches ollamaCatalog.ts:
+  //   OLLAMA_HOST → OLLAMA_BASE_URL → stored override → default.
+  // We normalise to a bare origin (no /v1 suffix) because /api/tags
+  // lives under the root, not under the OpenAI-compat path.
+  const envHost = process.env.OLLAMA_HOST ?? process.env.OLLAMA_BASE_URL
+  const stored = loadProviderKey(OLLAMA_BASE_URL_KEY)
+  const raw = envHost ?? stored ?? OLLAMA_DEFAULT_BASE
+  const withScheme = /^https?:/i.test(raw) ? raw : `http://${raw}`
+  return withScheme.replace(/\/+$/, '').replace(/\/v1$/i, '')
+}
+
+async function probeOllama(baseUrl: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/api/tags`, { signal })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+function formatOllamaBadge(status: OllamaStatus): string {
+  switch (status) {
+    case 'running':
+      return chalk.green('[🟢 Running]')
+    case 'offline':
+      return chalk.red('[🔴 Offline]')
+    case 'unknown':
+      return chalk.dim('[   ?    ]')
+  }
+}
+
+// ─── View state machine ─────────────────────────────────────────
+
+type View =
+  | { kind: 'list'; selectedIndex: number }
+  | { kind: 'configure'; provider: ManageableProvider; selectedIndex: number }
+  | {
+      kind: 'api_key_input'
+      provider: KeyedProvider
+      error?: string
+    }
+  | {
+      kind: 'ollama_url_input'
+      error?: string
+    }
+  | { kind: 'oauth_pending'; provider: KeyedProvider }
+  | {
+      kind: 'result'
+      provider: ManageableProvider
+      message: string
+      tone: 'success' | 'error'
+    }
+
+type ConfigureOption =
+  | { kind: 'activate_oauth' }
+  | { kind: 'activate_oauth_cli' }          // Gemini CLI OAuth (flash/lite)
+  | { kind: 'activate_oauth_antigravity' }  // Gemini Antigravity OAuth (pro)
+  | { kind: 'activate_api_key' }
+  | { kind: 'deactivate' }
+  | { kind: 'set_ollama_url' }
+  | { kind: 'reset_ollama_url' }
+  | { kind: 'test_ollama' }
+  | { kind: 'back' }
+
+function buildConfigureOptions(
+  provider: ManageableProvider,
+  ollamaStatus: OllamaStatus,
+): ConfigureOption[] {
+  // Ollama has its own option set — no OAuth, no API key.
+  if (provider === 'ollama') {
+    const options: ConfigureOption[] = []
+    options.push({ kind: 'test_ollama' })
+    options.push({ kind: 'set_ollama_url' })
+    if (hasStoredKey(OLLAMA_BASE_URL_KEY)) {
+      options.push({ kind: 'reset_ollama_url' })
+    }
+    options.push({ kind: 'back' })
+    void ollamaStatus
+    return options
+  }
+
+  // Gemini gets two OAuth options (CLI + Antigravity) instead of one.
+  if (provider === 'gemini') {
+    const gemini = getGeminiDetailedState()
+    const options: ConfigureOption[] = []
+    if (!gemini.cliOAuth) options.push({ kind: 'activate_oauth_cli' })
+    if (!gemini.antigravityOAuth) options.push({ kind: 'activate_oauth_antigravity' })
+    if (!gemini.apiKey) options.push({ kind: 'activate_api_key' })
+    if (gemini.cliOAuth || gemini.antigravityOAuth || gemini.apiKey) {
+      options.push({ kind: 'deactivate' })
+    }
+    options.push({ kind: 'back' })
+    return options
+  }
+
+  const state = getAuthState(provider)
+  const oauth = supportsOAuth(provider)
+
+  const options: ConfigureOption[] = []
+
+  if (oauth && state !== 'oauth') {
+    options.push({ kind: 'activate_oauth' })
+  }
+  if (state !== 'api_key') {
+    options.push({ kind: 'activate_api_key' })
+  }
+  if (state !== 'inactive') {
+    options.push({ kind: 'deactivate' })
+  }
+  options.push({ kind: 'back' })
+
+  return options
+}
+
+function labelConfigureOption(
+  option: ConfigureOption,
+  provider: ManageableProvider,
+): string {
+  switch (option.kind) {
+    case 'activate_oauth': {
+      if (provider === 'ollama') return 'Activate OAuth'
+      const state = getAuthState(provider)
+      return state === 'api_key'
+        ? 'Activate OAuth (this will deactivate your API Key)'
+        : 'Activate OAuth (browser login)'
+    }
+    case 'activate_oauth_cli':
+      return 'Google OAuth — flash/lite models (free tier)'
+    case 'activate_oauth_antigravity':
+      return 'Antigravity OAuth — pro models (3.1 Pro high/low)'
+    case 'activate_api_key': {
+      if (provider === 'ollama') return 'Activate API Key'
+      // For Gemini, API key coexists with OAuth — no mutex warning needed.
+      if (provider === 'gemini') return 'Activate API Key (AI Studio)'
+      const state = getAuthState(provider)
+      return state === 'oauth'
+        ? 'Activate API Key (this will deactivate OAuth)'
+        : 'Activate API Key'
+    }
+    case 'deactivate':
+      return 'Deactivate (clear all credentials)'
+    case 'set_ollama_url':
+      return 'Set custom base URL'
+    case 'reset_ollama_url':
+      return 'Reset base URL to default (http://localhost:11434)'
+    case 'test_ollama':
+      return 'Test connection'
+    case 'back':
+      return '← Back to provider list'
+  }
+}
+
+// ─── Component ──────────────────────────────────────────────────
+
+type OnDone = (
+  result?: string,
+  options?: { display?: CommandResultDisplay },
+) => void
+
+function ProviderManager({ onDone }: { onDone: OnDone }) {
+  const [view, setView] = useState<View>({ kind: 'list', selectedIndex: 0 })
+  // Refresh tick forces re-read of auth state after saves/deletes.
+  const [refreshTick, setRefreshTick] = useState(0)
+  const refresh = () => setRefreshTick(t => t + 1)
+
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
+  const [ollamaUrlInput, setOllamaUrlInput] = useState('')
+  const [ollamaUrlCursorOffset, setOllamaUrlCursorOffset] = useState(0)
+  const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 14)
+
+  // Live reachability status for Ollama, computed when we first render
+  // the list or configure view and refreshed when the user asks for it.
+  // The badge starts at "unknown" and flips after the probe resolves.
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>('unknown')
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 1500)
+    setOllamaStatus('unknown')
+    probeOllama(getOllamaBaseUrl(), controller.signal).then(ok => {
+      if (cancelled) return
+      setOllamaStatus(ok ? 'running' : 'offline')
+    })
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [refreshTick])
+
+  // ─── Handlers ─────────────────────────────────────────────────
+
+  function enterConfigure(provider: ManageableProvider) {
+    setView({ kind: 'configure', provider, selectedIndex: 0 })
+  }
+
+  function backToList() {
+    // Preserve the list selection on the provider the user just configured.
+    const lastProvider =
+      view.kind === 'configure' || view.kind === 'result'
+        ? view.provider
+        : undefined
+    const idx = lastProvider ? MANAGEABLE_PROVIDERS.indexOf(lastProvider) : 0
+    setView({ kind: 'list', selectedIndex: idx >= 0 ? idx : 0 })
+  }
+
+  function runOAuth(provider: KeyedProvider) {
+    setView({ kind: 'oauth_pending', provider })
+    startProviderOAuth(provider)
+      .then(() => {
+        // Signing in via OAuth deactivates any stored API key for this
+        // provider — one credential at a time, per provider. (The OAuth
+        // helpers already save the oauth token; we just clear the key.)
+        // Exception: Gemini allows API key + OAuth to coexist.
+        if (provider !== 'gemini') deleteProviderKey(provider)
+        refresh()
+        setView({
+          kind: 'result',
+          provider,
+          tone: 'success',
+          message: `${PROVIDER_DISPLAY_NAMES[provider]} connected via OAuth. Models from your account are available in /model now.`,
+        })
+      })
+      .catch(err => {
+        setView({
+          kind: 'result',
+          provider,
+          tone: 'error',
+          message: err?.message ?? 'OAuth flow failed',
+        })
+      })
+  }
+
+  function runGeminiOAuth(type: 'cli' | 'antigravity') {
+    setView({ kind: 'oauth_pending', provider: 'gemini' })
+    const label = type === 'cli' ? 'Google OAuth (flash/lite)' : 'Antigravity (pro)'
+    startGeminiOAuthFlow(type)
+      .then(() => {
+        refresh()
+        setView({
+          kind: 'result',
+          provider: 'gemini',
+          tone: 'success',
+          message: `Gemini ${label} connected. Models are now available in /model.`,
+        })
+      })
+      .catch(err => {
+        setView({
+          kind: 'result',
+          provider: 'gemini',
+          tone: 'error',
+          message: err?.message ?? `Gemini ${label} login failed`,
+        })
+      })
+  }
+
+  function handleApiKeySubmit(value: string) {
+    if (view.kind !== 'api_key_input') return
+    const provider = view.provider
+    const key = value.trim()
+    if (!key) return
+
+    const validation = validateKeyFormat(provider, key)
+    if (!validation.valid) {
+      setView({ kind: 'api_key_input', provider, error: validation.error })
+      setApiKeyInput('')
+      setApiKeyCursorOffset(0)
+      return
+    }
+
+    // Mutex: saving the API key deactivates any stored OAuth token
+    // for this provider. Exception: Gemini allows API key + OAuth.
+    saveProviderKey(provider, key)
+    if (provider !== 'gemini') {
+      deleteProviderKey(`${provider}_oauth`)
+    }
+
+    // Make the key visible to the current process too.
+    const envVar = PROVIDER_META[provider]?.envVar
+    if (envVar) process.env[envVar] = key
+
+    setApiKeyInput('')
+    setApiKeyCursorOffset(0)
+    refresh()
+    setView({
+      kind: 'result',
+      provider,
+      tone: 'success',
+      message: `${PROVIDER_DISPLAY_NAMES[provider]} connected via API Key.`,
+    })
+  }
+
+  function handleDeactivate(provider: KeyedProvider) {
+    deleteAllProviderCredentials(provider)
+    // Gemini dual OAuth: also clear CLI + Antigravity keys.
+    if (provider === 'gemini') {
+      deleteProviderKey('gemini_oauth_cli')
+      deleteProviderKey('gemini_oauth_antigravity')
+    }
+    refresh()
+    setView({
+      kind: 'result',
+      provider,
+      tone: 'success',
+      message: `${PROVIDER_DISPLAY_NAMES[provider]} disconnected.`,
+    })
+  }
+
+  // ─── Ollama handlers ──────────────────────────────────────────
+
+  function handleTestOllama() {
+    // Refreshing forces the reachability effect to re-run.
+    setOllamaStatus('unknown')
+    refresh()
+  }
+
+  function handleOllamaUrlSubmit(value: string) {
+    const raw = value.trim()
+    if (!raw) return
+
+    // Accept either a full URL or a host:port shorthand, matching
+    // ollamaCatalog.ts's ollamaBase().
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+    try {
+      const parsed = new URL(withScheme)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('bad protocol')
+      }
+    } catch {
+      setView({
+        kind: 'ollama_url_input',
+        error: 'Not a valid URL. Try "http://localhost:11434" or "my-box:11434".',
       })
       return
     }
-    if (key.upArrow) {
-      setSelectedIndex((i) => (i > 0 ? i - 1 : options.length - 1))
-      return
-    }
-    if (key.downArrow) {
-      setSelectedIndex((i) => (i < options.length - 1 ? i + 1 : 0))
-      return
-    }
-    if (key.return) {
-      const selected = options[selectedIndex]
-      if (!selected) return
 
-      if (selected.value === current) {
-        onDone(
-          `Already using ${chalk.bold(PROVIDER_DISPLAY_NAMES[current])}`,
-          { display: 'system' },
-        )
+    const normalised = withScheme.replace(/\/+$/, '').replace(/\/v1$/i, '')
+    saveProviderKey(OLLAMA_BASE_URL_KEY, normalised)
+    process.env.OLLAMA_BASE_URL = normalised
+
+    setOllamaUrlInput('')
+    setOllamaUrlCursorOffset(0)
+    setOllamaStatus('unknown')
+    refresh()
+    setView({
+      kind: 'result',
+      provider: 'ollama',
+      tone: 'success',
+      message: `Ollama base URL set to ${normalised}. Testing connection…`,
+    })
+  }
+
+  function handleResetOllamaUrl() {
+    deleteProviderKey(OLLAMA_BASE_URL_KEY)
+    // Clear the env override too, so we fall back to the default.
+    delete process.env.OLLAMA_BASE_URL
+    delete process.env.OLLAMA_HOST
+    setOllamaStatus('unknown')
+    refresh()
+    setView({
+      kind: 'result',
+      provider: 'ollama',
+      tone: 'success',
+      message: `Ollama base URL reset to ${OLLAMA_DEFAULT_BASE}.`,
+    })
+  }
+
+  // ─── Input routing ────────────────────────────────────────────
+
+  useInput((input: string, key: {
+    upArrow?: boolean
+    downArrow?: boolean
+    return?: boolean
+    escape?: boolean
+  }) => {
+    // Global: Esc cancels the whole flow from any non-input view.
+    // TextInput-backed views handle their own Esc (api_key_input, ollama_url_input).
+    if (key.escape && view.kind !== 'api_key_input' && view.kind !== 'ollama_url_input') {
+      if (view.kind === 'list') {
+        onDone('Provider setup closed.', { display: 'system' })
         return
       }
-
-      setActiveProvider(selected.value)
-
-      if (!selected.configured && selected.value !== 'firstParty') {
-        onDone(
-          `Switched to ${chalk.bold(selected.label)}. Run ${chalk.cyan('/login')} to set up credentials.`,
-          { display: 'system' },
-        )
-      } else {
-        onDone(
-          `Switched to ${chalk.bold(selected.label)}`,
-          { display: 'system' },
-        )
+      if (view.kind === 'oauth_pending') {
+        // Can't actually cancel the in-flight browser flow, but we can
+        // take the user back to the list — the callback will log its
+        // result regardless and the state machine will rehydrate.
+        backToList()
+        return
       }
+      backToList()
+      return
+    }
+
+    // ollama_url_input: Esc goes back to the ollama configure screen.
+    if (view.kind === 'ollama_url_input' && key.escape) {
+      setOllamaUrlInput('')
+      setOllamaUrlCursorOffset(0)
+      setView({ kind: 'configure', provider: 'ollama', selectedIndex: 0 })
+      return
+    }
+
+    // ─── list view ───
+    if (view.kind === 'list') {
+      if (key.upArrow) {
+        setView({
+          kind: 'list',
+          selectedIndex:
+            view.selectedIndex > 0
+              ? view.selectedIndex - 1
+              : MANAGEABLE_PROVIDERS.length - 1,
+        })
+        return
+      }
+      if (key.downArrow) {
+        setView({
+          kind: 'list',
+          selectedIndex:
+            view.selectedIndex < MANAGEABLE_PROVIDERS.length - 1
+              ? view.selectedIndex + 1
+              : 0,
+        })
+        return
+      }
+      if (key.return) {
+        const provider = MANAGEABLE_PROVIDERS[view.selectedIndex]
+        if (provider) enterConfigure(provider)
+        return
+      }
+      return
+    }
+
+    // ─── configure view ───
+    if (view.kind === 'configure') {
+      const options = buildConfigureOptions(view.provider, ollamaStatus)
+      if (key.upArrow) {
+        setView({
+          ...view,
+          selectedIndex:
+            view.selectedIndex > 0
+              ? view.selectedIndex - 1
+              : options.length - 1,
+        })
+        return
+      }
+      if (key.downArrow) {
+        setView({
+          ...view,
+          selectedIndex:
+            view.selectedIndex < options.length - 1
+              ? view.selectedIndex + 1
+              : 0,
+        })
+        return
+      }
+      if (key.return) {
+        const chosen = options[view.selectedIndex]
+        if (!chosen) return
+        switch (chosen.kind) {
+          case 'activate_oauth':
+            if (view.provider !== 'ollama') runOAuth(view.provider)
+            return
+          case 'activate_oauth_cli':
+            runGeminiOAuth('cli')
+            return
+          case 'activate_oauth_antigravity':
+            runGeminiOAuth('antigravity')
+            return
+          case 'activate_api_key':
+            if (view.provider !== 'ollama') {
+              setView({ kind: 'api_key_input', provider: view.provider })
+            }
+            return
+          case 'deactivate':
+            if (view.provider !== 'ollama') handleDeactivate(view.provider)
+            return
+          case 'set_ollama_url':
+            setOllamaUrlInput('')
+            setOllamaUrlCursorOffset(0)
+            setView({ kind: 'ollama_url_input' })
+            return
+          case 'reset_ollama_url':
+            handleResetOllamaUrl()
+            return
+          case 'test_ollama':
+            handleTestOllama()
+            return
+          case 'back':
+            backToList()
+            return
+        }
+      }
+      return
+    }
+
+    // ─── result view ───
+    if (view.kind === 'result') {
+      if (key.return) backToList()
+      return
     }
   })
 
-  return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Box marginBottom={1}>
-        <Text bold color="claude">
-          Select AI Provider
-        </Text>
-      </Box>
-      {options.map((opt, i) => {
-        const isSelected = i === selectedIndex
-        const isCurrent = opt.value === current
-        const prefix = isSelected ? '>' : ' '
-        const status = opt.configured ? chalk.green(' [configured]') : chalk.yellow(' [not configured]')
-        const currentBadge = isCurrent ? chalk.cyan(' (active)') : ''
+  // ─── Render ───────────────────────────────────────────────────
 
-        return (
-          <Box key={opt.value}>
-            <Text
-              bold={isSelected}
-              color={isSelected ? 'claude' : undefined}
-              dimColor={!isSelected}
-            >
-              {prefix} {opt.label}
-            </Text>
-            <Text dimColor>
-              {' '}({opt.authMethod}){status}{currentBadge}
-            </Text>
-          </Box>
-        )
-      })}
-      <Box marginTop={1}>
-        <Text dimColor>
-          Use arrow keys to navigate, Enter to select, Esc to cancel
-        </Text>
-      </Box>
+  const header = (
+    <Box marginBottom={1}>
+      <Text bold color="claude">
+        🔌 Providers
+      </Text>
     </Box>
   )
+
+  if (view.kind === 'list') {
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text dimColor>
+          Connect the AI accounts you want ClaudeX to use. Multiple providers
+          can be active at once.
+        </Text>
+        <Box marginTop={1} flexDirection="column">
+          {MANAGEABLE_PROVIDERS.map((provider, i) => {
+            const isSelected = i === view.selectedIndex
+            const name = PROVIDER_DISPLAY_NAMES[provider]
+            const prefix = isSelected ? '>' : ' '
+            const badge =
+              provider === 'ollama'
+                ? formatOllamaBadge(ollamaStatus)
+                : provider === 'gemini'
+                  ? formatGeminiBadge()
+                  : formatBadge(getAuthState(provider))
+            return (
+              <Box key={provider}>
+                <Text
+                  bold={isSelected}
+                  color={isSelected ? 'claude' : undefined}
+                  dimColor={!isSelected}
+                >
+                  {prefix} {name.padEnd(16)}
+                </Text>
+                <Text> {badge}</Text>
+              </Box>
+            )
+          })}
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>
+            ↑↓ navigate · Enter to configure · Esc to close
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'configure') {
+    const provider = view.provider
+    const name = PROVIDER_DISPLAY_NAMES[provider]
+    const options = buildConfigureOptions(provider, ollamaStatus)
+    const badge =
+      provider === 'ollama'
+        ? formatOllamaBadge(ollamaStatus)
+        : provider === 'gemini'
+          ? formatGeminiBadge()
+          : formatBadge(getAuthState(provider))
+    const currentUrl = provider === 'ollama' ? getOllamaBaseUrl() : null
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Box>
+          <Text bold>{name}</Text>
+          <Text> {badge}</Text>
+        </Box>
+        {currentUrl && (
+          <Text dimColor>Base URL: {currentUrl}</Text>
+        )}
+        <Box marginTop={1} flexDirection="column">
+          {options.map((option, i) => {
+            const isSelected = i === view.selectedIndex
+            const prefix = isSelected ? '>' : ' '
+            const label = labelConfigureOption(option, provider)
+            return (
+              <Text
+                key={option.kind}
+                bold={isSelected}
+                color={isSelected ? 'claude' : undefined}
+                dimColor={!isSelected}
+              >
+                {prefix} {label}
+              </Text>
+            )
+          })}
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>
+            ↑↓ navigate · Enter to select · Esc to go back
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'ollama_url_input') {
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text bold>Set Ollama base URL</Text>
+        <Text dimColor>
+          Default: <Text color="suggestion">{OLLAMA_DEFAULT_BASE}</Text>
+        </Text>
+        <Text dimColor>
+          Accepts full URLs (http://host:port) or host:port shorthand.
+        </Text>
+        {view.error && (
+          <Box marginTop={1}>
+            <Text color="error">{view.error}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Text>URL: </Text>
+          <TextInput
+            value={ollamaUrlInput}
+            onChange={setOllamaUrlInput}
+            onSubmit={handleOllamaUrlSubmit}
+            placeholder="http://localhost:11434"
+            focus={true}
+            showCursor={true}
+            columns={inputColumns}
+            cursorOffset={ollamaUrlCursorOffset}
+            onChangeCursorOffset={setOllamaUrlCursorOffset}
+          />
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>Enter to submit · Esc to go back</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'api_key_input') {
+    const provider = view.provider
+    const name = PROVIDER_DISPLAY_NAMES[provider]
+    const meta = PROVIDER_META[provider]
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text bold>Enter your {name} API key</Text>
+        {meta && (
+          <Text dimColor>
+            Get one at <Text color="suggestion">{meta.getKeyUrl}</Text>
+          </Text>
+        )}
+        {meta && (
+          <Text dimColor>
+            Expected format: <Text color="warning">{meta.keyPrefix}…</Text>
+          </Text>
+        )}
+        {view.error && (
+          <Box marginTop={1}>
+            <Text color="error">{view.error}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Text>Key: </Text>
+          <TextInput
+            value={apiKeyInput}
+            onChange={setApiKeyInput}
+            onSubmit={handleApiKeySubmit}
+            mask="*"
+            placeholder="Paste your API key here…"
+            focus={true}
+            showCursor={true}
+            columns={inputColumns}
+            cursorOffset={apiKeyCursorOffset}
+            onChangeCursorOffset={setApiKeyCursorOffset}
+          />
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>Enter to submit · Esc to go back</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'oauth_pending') {
+    const name = PROVIDER_DISPLAY_NAMES[view.provider]
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text color="warning">Opening browser for {name}…</Text>
+        <Text dimColor>
+          Sign in to the account you want ClaudeX to use. Waiting for the
+          redirect to finish…
+        </Text>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'result') {
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text color={view.tone === 'success' ? 'success' : 'error'}>
+          {view.tone === 'success' ? '✓ ' : '✗ '}
+          {view.message}
+        </Text>
+        <Box marginTop={1}>
+          <Text dimColor>Enter to return to the provider list</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  return null
 }
 
-export const call: LocalJSXCommandCall = async (onDone) => (
-  <ProviderPicker onDone={onDone} />
+// ─── Entry point ────────────────────────────────────────────────
+
+export const call: LocalJSXCommandCall = async onDone => (
+  <ProviderManager onDone={onDone} />
 )
