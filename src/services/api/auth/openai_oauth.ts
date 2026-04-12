@@ -181,7 +181,8 @@ export async function startOpenAIOAuthFlow(): Promise<{
           requested_token: 'openai-api-key',
           subject_token: firstTokens.id_token,
           subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-          scope: 'openid profile email',
+          // No `scope` — matches Codex CLI's obtain_api_key() exactly.
+          // Adding scope here restricts the API key's permissions.
         }),
       })
       if (exchange.ok) {
@@ -251,7 +252,6 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<string> 
           requested_token: 'openai-api-key',
           subject_token: tokens.id_token,
           subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-          scope: 'openid profile email',
         }),
       })
       if (exchange.ok) {

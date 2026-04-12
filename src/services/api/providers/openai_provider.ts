@@ -402,6 +402,7 @@ export class OpenAIProvider extends BaseProvider {
     if (status === 401) {
       return new Error(
         `${this.name} API error: Authentication failed.\n` +
+        `${errorDetail ? errorDetail + '\n' : ''}` +
         `Your API key may be invalid or expired. Run /login to reconfigure.`,
       )
     }
