@@ -328,9 +328,18 @@ function _waitForAuthCode(
         if (code) {
           res.writeHead(200, { 'Content-Type': 'text/html' })
           res.end(
-            '<h1>Signed in!</h1>' +
-            '<p>You can close this window and return to Claudex.</p>' +
-            '<script>window.close()</script>',
+            '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+            '<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+            'display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f8f9fa}' +
+            '.card{background:#fff;border-radius:16px;padding:48px;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.08);max-width:400px}' +
+            '.check{width:64px;height:64px;border-radius:50%;background:#34a853;display:flex;align-items:center;justify-content:center;margin:0 auto 24px}' +
+            '.check svg{width:32px;height:32px}h1{font-size:22px;color:#202124;margin-bottom:8px}' +
+            'p{color:#5f6368;font-size:15px;line-height:1.5}</style></head><body>' +
+            '<div class="card"><div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M20 6L9 17l-5-5"/></svg></div>' +
+            '<h1>You\'re all set</h1>' +
+            '<p>You can close this tab now.</p></div>' +
+            '<script>setTimeout(function(){window.close()},1500)</script></body></html>',
           )
           clearTimeout(timeout)
           server.close()

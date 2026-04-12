@@ -15,7 +15,7 @@ import {
   saveProviderKey,
   validateKeyFormat,
 } from '../services/api/auth/api_key_manager.js'
-import { startProviderOAuth } from '../services/api/auth/provider_auth.js'
+import { startProviderOAuth, startGeminiOAuthFlow } from '../services/api/auth/provider_auth.js'
 import TextInput from './TextInput.js'
 
 // ─── Provider metadata ───────────────────────────────────────────
@@ -66,7 +66,7 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
   },
 }
 
-type AuthMethod = 'api_key' | 'oauth'
+type AuthMethod = 'api_key' | 'oauth' | 'oauth_cli' | 'oauth_antigravity'
 
 type Props = {
   provider: APIProvider
@@ -86,13 +86,46 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   const name = PROVIDER_DISPLAY_NAMES[provider]
   const supportsOAuth = meta?.supportsOAuth ?? false
 
+  // Gemini has 3 login methods; other OAuth providers have 2.
+  const isGemini = provider === 'gemini'
+  const methodOptions: { method: AuthMethod; label: string }[] = isGemini
+    ? [
+        { method: 'oauth_cli', label: 'Google OAuth (flash/lite models — free tier)' },
+        { method: 'oauth_antigravity', label: 'Antigravity (pro models — 3.1 Pro high/low)' },
+        { method: 'api_key', label: 'API Key' },
+      ]
+    : supportsOAuth
+      ? [
+          { method: 'oauth', label: 'OAuth (Browser Login)' },
+          { method: 'api_key', label: 'API Key' },
+        ]
+      : []
+
   const [state, setState] = useState<FlowState>(
-    supportsOAuth ? { step: 'choose_method' } : { step: 'api_key_input' },
+    methodOptions.length > 0 ? { step: 'choose_method' } : { step: 'api_key_input' },
   )
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
   const [selectedMethod, setSelectedMethod] = useState<number>(0)
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
+
+  function runOAuthFlow(method: AuthMethod) {
+    setState({ step: 'oauth_pending' })
+    const oauthPromise =
+      method === 'oauth_cli' ? startGeminiOAuthFlow('cli')
+        : method === 'oauth_antigravity' ? startGeminiOAuthFlow('antigravity')
+          : startProviderOAuth(provider)
+    oauthPromise
+      .then(() => {
+        // Gemini OAuth coexists with API key; others are exclusive.
+        if (provider !== 'gemini') deleteProviderKey(provider)
+        setState({ step: 'success' })
+        setTimeout(() => onDone(true), 1000)
+      })
+      .catch((err) => {
+        setState({ step: 'error', message: err?.message ?? 'OAuth flow failed' })
+      })
+  }
 
   useInput((input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }) => {
     if (key.escape) {
@@ -101,28 +134,22 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
     }
 
     if (state.step === 'choose_method') {
-      if (key.upArrow || key.downArrow) {
-        setSelectedMethod((i) => (i === 0 ? 1 : 0))
+      const total = methodOptions.length
+      if (key.upArrow) {
+        setSelectedMethod((i) => (i > 0 ? i - 1 : total - 1))
+        return
+      }
+      if (key.downArrow) {
+        setSelectedMethod((i) => (i < total - 1 ? i + 1 : 0))
         return
       }
       if (key.return) {
-        const method: AuthMethod = selectedMethod === 0 ? 'oauth' : 'api_key'
-        if (method === 'oauth') {
-          setState({ step: 'oauth_pending' })
-          startProviderOAuth(provider)
-            .then(() => {
-              // Tokens are already saved by the OAuth flow with proper expiry.
-              // Signing in via OAuth deactivates any stored API key for this
-              // provider — one credential at a time, per provider.
-              deleteProviderKey(provider)
-              setState({ step: 'success' })
-              setTimeout(() => onDone(true), 1000)
-            })
-            .catch((err) => {
-              setState({ step: 'error', message: err?.message ?? 'OAuth flow failed' })
-            })
-        } else {
+        const chosen = methodOptions[selectedMethod]
+        if (!chosen) return
+        if (chosen.method === 'api_key') {
           setState({ step: 'api_key_input' })
+        } else {
+          runOAuthFlow(chosen.method)
         }
       }
     }
@@ -179,12 +206,11 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
         <Box flexDirection="column">
           <Text dimColor>Choose authentication method:</Text>
           <Box marginTop={1} flexDirection="column">
-            <Text bold={selectedMethod === 0} color={selectedMethod === 0 ? 'claude' : undefined}>
-              {selectedMethod === 0 ? '> ' : '  '}OAuth (Browser Login)
-            </Text>
-            <Text bold={selectedMethod === 1} color={selectedMethod === 1 ? 'claude' : undefined}>
-              {selectedMethod === 1 ? '> ' : '  '}API Key
-            </Text>
+            {methodOptions.map((opt, i) => (
+              <Text key={opt.method} bold={selectedMethod === i} color={selectedMethod === i ? 'claude' : undefined}>
+                {selectedMethod === i ? '> ' : '  '}{opt.label}
+              </Text>
+            ))}
           </Box>
           <Box marginTop={1}>
             <Text dimColor>Arrow keys to select, Enter to confirm, Esc to cancel</Text>

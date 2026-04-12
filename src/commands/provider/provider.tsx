@@ -37,10 +37,7 @@ import {
   hasStoredKey,
   loadProviderKey,
   saveProviderKey,
-  validateKeyFormat,
 } from '../../services/api/auth/api_key_manager.js'
-import { startProviderOAuth, startGeminiOAuthFlow } from '../../services/api/auth/provider_auth.js'
-import { PROVIDER_AUTH_SUPPORT } from '../../utils/auth.js'
 import TextInput from '../../components/TextInput.js'
 
 // ─── Config ──────────────────────────────────────────────────────
@@ -75,50 +72,7 @@ type ManageableProvider = (typeof MANAGEABLE_PROVIDERS)[number]
 const OLLAMA_BASE_URL_KEY = 'ollama_base_url'
 const OLLAMA_DEFAULT_BASE = 'http://localhost:11434'
 
-interface ProviderMeta {
-  envVar: string
-  keyPrefix: string
-  getKeyUrl: string
-}
-
-/**
- * Auth/credential metadata for providers that use API keys or OAuth.
- * Ollama is absent on purpose — it has no key to validate or issue.
- */
 type KeyedProvider = Exclude<ManageableProvider, 'ollama'>
-
-const PROVIDER_META: Record<KeyedProvider, ProviderMeta> = {
-  openai: {
-    envVar: 'OPENAI_API_KEY',
-    keyPrefix: 'sk-',
-    getKeyUrl: 'https://platform.openai.com/api-keys',
-  },
-  gemini: {
-    envVar: 'GEMINI_API_KEY',
-    keyPrefix: 'AIza',
-    getKeyUrl: 'https://aistudio.google.com/apikey',
-  },
-  openrouter: {
-    envVar: 'OPENROUTER_API_KEY',
-    keyPrefix: 'sk-or-',
-    getKeyUrl: 'https://openrouter.ai/keys',
-  },
-  groq: {
-    envVar: 'GROQ_API_KEY',
-    keyPrefix: 'gsk_',
-    getKeyUrl: 'https://console.groq.com/keys',
-  },
-  nim: {
-    envVar: 'NIM_API_KEY',
-    keyPrefix: 'nvapi-',
-    getKeyUrl: 'https://build.nvidia.com/settings/api-keys',
-  },
-  deepseek: {
-    envVar: 'DEEPSEEK_API_KEY',
-    keyPrefix: 'sk-',
-    getKeyUrl: 'https://platform.deepseek.com/api_keys',
-  },
-}
 
 // ─── Auth state helpers ──────────────────────────────────────────
 
@@ -145,10 +99,6 @@ function getGeminiDetailedState(): { cliOAuth: boolean; antigravityOAuth: boolea
     antigravityOAuth: hasStoredKey('gemini_oauth_antigravity') || hasStoredKey('gemini_oauth'),
     apiKey: hasStoredKey('gemini'),
   }
-}
-
-function supportsOAuth(provider: APIProvider): boolean {
-  return (PROVIDER_AUTH_SUPPORT[provider] ?? []).includes('oauth')
 }
 
 function formatBadge(state: AuthState): string {
@@ -219,15 +169,9 @@ type View =
   | { kind: 'list'; selectedIndex: number }
   | { kind: 'configure'; provider: ManageableProvider; selectedIndex: number }
   | {
-      kind: 'api_key_input'
-      provider: KeyedProvider
-      error?: string
-    }
-  | {
       kind: 'ollama_url_input'
       error?: string
     }
-  | { kind: 'oauth_pending'; provider: KeyedProvider }
   | {
       kind: 'result'
       provider: ManageableProvider
@@ -236,10 +180,6 @@ type View =
     }
 
 type ConfigureOption =
-  | { kind: 'activate_oauth' }
-  | { kind: 'activate_oauth_cli' }          // Gemini CLI OAuth (flash/lite)
-  | { kind: 'activate_oauth_antigravity' }  // Gemini Antigravity OAuth (pro)
-  | { kind: 'activate_api_key' }
   | { kind: 'deactivate' }
   | { kind: 'set_ollama_url' }
   | { kind: 'reset_ollama_url' }
@@ -250,7 +190,7 @@ function buildConfigureOptions(
   provider: ManageableProvider,
   ollamaStatus: OllamaStatus,
 ): ConfigureOption[] {
-  // Ollama has its own option set — no OAuth, no API key.
+  // Ollama has its own option set.
   if (provider === 'ollama') {
     const options: ConfigureOption[] = []
     options.push({ kind: 'test_ollama' })
@@ -263,64 +203,30 @@ function buildConfigureOptions(
     return options
   }
 
-  // Gemini gets two OAuth options (CLI + Antigravity) instead of one.
+  const options: ConfigureOption[] = []
+
+  // Gemini: check all credential stores.
   if (provider === 'gemini') {
     const gemini = getGeminiDetailedState()
-    const options: ConfigureOption[] = []
-    if (!gemini.cliOAuth) options.push({ kind: 'activate_oauth_cli' })
-    if (!gemini.antigravityOAuth) options.push({ kind: 'activate_oauth_antigravity' })
-    if (!gemini.apiKey) options.push({ kind: 'activate_api_key' })
     if (gemini.cliOAuth || gemini.antigravityOAuth || gemini.apiKey) {
       options.push({ kind: 'deactivate' })
     }
-    options.push({ kind: 'back' })
-    return options
+  } else {
+    const state = getAuthState(provider)
+    if (state !== 'inactive') {
+      options.push({ kind: 'deactivate' })
+    }
   }
 
-  const state = getAuthState(provider)
-  const oauth = supportsOAuth(provider)
-
-  const options: ConfigureOption[] = []
-
-  if (oauth && state !== 'oauth') {
-    options.push({ kind: 'activate_oauth' })
-  }
-  if (state !== 'api_key') {
-    options.push({ kind: 'activate_api_key' })
-  }
-  if (state !== 'inactive') {
-    options.push({ kind: 'deactivate' })
-  }
   options.push({ kind: 'back' })
-
   return options
 }
 
 function labelConfigureOption(
   option: ConfigureOption,
-  provider: ManageableProvider,
+  _provider: ManageableProvider,
 ): string {
   switch (option.kind) {
-    case 'activate_oauth': {
-      if (provider === 'ollama') return 'Activate OAuth'
-      const state = getAuthState(provider)
-      return state === 'api_key'
-        ? 'Activate OAuth (this will deactivate your API Key)'
-        : 'Activate OAuth (browser login)'
-    }
-    case 'activate_oauth_cli':
-      return 'Google OAuth — flash/lite models (free tier)'
-    case 'activate_oauth_antigravity':
-      return 'Antigravity OAuth — pro models (3.1 Pro high/low)'
-    case 'activate_api_key': {
-      if (provider === 'ollama') return 'Activate API Key'
-      // For Gemini, API key coexists with OAuth — no mutex warning needed.
-      if (provider === 'gemini') return 'Activate API Key (AI Studio)'
-      const state = getAuthState(provider)
-      return state === 'oauth'
-        ? 'Activate API Key (this will deactivate OAuth)'
-        : 'Activate API Key'
-    }
     case 'deactivate':
       return 'Deactivate (clear all credentials)'
     case 'set_ollama_url':
@@ -347,8 +253,6 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
   const [refreshTick, setRefreshTick] = useState(0)
   const refresh = () => setRefreshTick(t => t + 1)
 
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
   const [ollamaUrlInput, setOllamaUrlInput] = useState('')
   const [ollamaUrlCursorOffset, setOllamaUrlCursorOffset] = useState(0)
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 14)
@@ -388,92 +292,6 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
         : undefined
     const idx = lastProvider ? MANAGEABLE_PROVIDERS.indexOf(lastProvider) : 0
     setView({ kind: 'list', selectedIndex: idx >= 0 ? idx : 0 })
-  }
-
-  function runOAuth(provider: KeyedProvider) {
-    setView({ kind: 'oauth_pending', provider })
-    startProviderOAuth(provider)
-      .then(() => {
-        // Signing in via OAuth deactivates any stored API key for this
-        // provider — one credential at a time, per provider. (The OAuth
-        // helpers already save the oauth token; we just clear the key.)
-        // Exception: Gemini allows API key + OAuth to coexist.
-        if (provider !== 'gemini') deleteProviderKey(provider)
-        refresh()
-        setView({
-          kind: 'result',
-          provider,
-          tone: 'success',
-          message: `${PROVIDER_DISPLAY_NAMES[provider]} connected via OAuth. Models from your account are available in /model now.`,
-        })
-      })
-      .catch(err => {
-        setView({
-          kind: 'result',
-          provider,
-          tone: 'error',
-          message: err?.message ?? 'OAuth flow failed',
-        })
-      })
-  }
-
-  function runGeminiOAuth(type: 'cli' | 'antigravity') {
-    setView({ kind: 'oauth_pending', provider: 'gemini' })
-    const label = type === 'cli' ? 'Google OAuth (flash/lite)' : 'Antigravity (pro)'
-    startGeminiOAuthFlow(type)
-      .then(() => {
-        refresh()
-        setView({
-          kind: 'result',
-          provider: 'gemini',
-          tone: 'success',
-          message: `Gemini ${label} connected. Models are now available in /model.`,
-        })
-      })
-      .catch(err => {
-        setView({
-          kind: 'result',
-          provider: 'gemini',
-          tone: 'error',
-          message: err?.message ?? `Gemini ${label} login failed`,
-        })
-      })
-  }
-
-  function handleApiKeySubmit(value: string) {
-    if (view.kind !== 'api_key_input') return
-    const provider = view.provider
-    const key = value.trim()
-    if (!key) return
-
-    const validation = validateKeyFormat(provider, key)
-    if (!validation.valid) {
-      setView({ kind: 'api_key_input', provider, error: validation.error })
-      setApiKeyInput('')
-      setApiKeyCursorOffset(0)
-      return
-    }
-
-    // Mutex: saving the API key deactivates any stored OAuth token
-    // for this provider. Exception: Gemini allows API key + OAuth.
-    saveProviderKey(provider, key)
-    if (provider !== 'gemini') {
-      deleteProviderKey(`${provider}_oauth`)
-    }
-
-    // Make the key visible to the current process too.
-    const envVar = PROVIDER_META[provider]?.envVar
-    if (envVar) process.env[envVar] = key
-
-    setApiKeyInput('')
-    setApiKeyCursorOffset(0)
-    refresh()
-    setView({
-      kind: 'result',
-      provider,
-      tone: 'success',
-      message: `${PROVIDER_DISPLAY_NAMES[provider]} connected via API Key.`,
-    })
   }
 
   function handleDeactivate(provider: KeyedProvider) {
@@ -560,17 +378,10 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
     escape?: boolean
   }) => {
     // Global: Esc cancels the whole flow from any non-input view.
-    // TextInput-backed views handle their own Esc (api_key_input, ollama_url_input).
-    if (key.escape && view.kind !== 'api_key_input' && view.kind !== 'ollama_url_input') {
+    // TextInput-backed views handle their own Esc (ollama_url_input).
+    if (key.escape && view.kind !== 'ollama_url_input') {
       if (view.kind === 'list') {
         onDone('Provider setup closed.', { display: 'system' })
-        return
-      }
-      if (view.kind === 'oauth_pending') {
-        // Can't actually cancel the in-flight browser flow, but we can
-        // take the user back to the list — the callback will log its
-        // result regardless and the state machine will rehydrate.
-        backToList()
         return
       }
       backToList()
@@ -642,20 +453,6 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
         const chosen = options[view.selectedIndex]
         if (!chosen) return
         switch (chosen.kind) {
-          case 'activate_oauth':
-            if (view.provider !== 'ollama') runOAuth(view.provider)
-            return
-          case 'activate_oauth_cli':
-            runGeminiOAuth('cli')
-            return
-          case 'activate_oauth_antigravity':
-            runGeminiOAuth('antigravity')
-            return
-          case 'activate_api_key':
-            if (view.provider !== 'ollama') {
-              setView({ kind: 'api_key_input', provider: view.provider })
-            }
-            return
           case 'deactivate':
             if (view.provider !== 'ollama') handleDeactivate(view.provider)
             return
@@ -817,65 +614,6 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
         <Box marginTop={1}>
           <Text dimColor>Enter to submit · Esc to go back</Text>
         </Box>
-      </Box>
-    )
-  }
-
-  if (view.kind === 'api_key_input') {
-    const provider = view.provider
-    const name = PROVIDER_DISPLAY_NAMES[provider]
-    const meta = PROVIDER_META[provider]
-    return (
-      <Box flexDirection="column" paddingLeft={1}>
-        {header}
-        <Text bold>Enter your {name} API key</Text>
-        {meta && (
-          <Text dimColor>
-            Get one at <Text color="suggestion">{meta.getKeyUrl}</Text>
-          </Text>
-        )}
-        {meta && (
-          <Text dimColor>
-            Expected format: <Text color="warning">{meta.keyPrefix}…</Text>
-          </Text>
-        )}
-        {view.error && (
-          <Box marginTop={1}>
-            <Text color="error">{view.error}</Text>
-          </Box>
-        )}
-        <Box marginTop={1}>
-          <Text>Key: </Text>
-          <TextInput
-            value={apiKeyInput}
-            onChange={setApiKeyInput}
-            onSubmit={handleApiKeySubmit}
-            mask="*"
-            placeholder="Paste your API key here…"
-            focus={true}
-            showCursor={true}
-            columns={inputColumns}
-            cursorOffset={apiKeyCursorOffset}
-            onChangeCursorOffset={setApiKeyCursorOffset}
-          />
-        </Box>
-        <Box marginTop={1}>
-          <Text dimColor>Enter to submit · Esc to go back</Text>
-        </Box>
-      </Box>
-    )
-  }
-
-  if (view.kind === 'oauth_pending') {
-    const name = PROVIDER_DISPLAY_NAMES[view.provider]
-    return (
-      <Box flexDirection="column" paddingLeft={1}>
-        {header}
-        <Text color="warning">Opening browser for {name}…</Text>
-        <Text dimColor>
-          Sign in to the account you want ClaudeX to use. Waiting for the
-          redirect to finish…
-        </Text>
       </Box>
     )
   }

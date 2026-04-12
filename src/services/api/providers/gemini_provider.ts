@@ -54,14 +54,8 @@ import { getProviderModelSet } from '../../../utils/model/configs.js'
 
 /** Models available via the Gemini CLI OAuth client (free tier). */
 const GEMINI_CLI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3.1-pro-preview',              name: 'Gemini 3.1 Pro (preview)' },
-  { id: 'gemini-3-pro-preview',                name: 'Gemini 3 Pro (preview)' },
-  { id: 'gemini-3.1-pro-preview-customtools',  name: 'Gemini 3.1 Pro · custom tools (preview)' },
   { id: 'gemini-3-flash-preview',              name: 'Gemini 3 Flash (preview)' },
   { id: 'gemini-3.1-flash-lite-preview',       name: 'Gemini 3.1 Flash Lite (preview)' },
-  { id: 'gemini-3.1-flash-image-preview',      name: 'Gemini 3.1 Flash · image gen (preview)' },
-  { id: 'gemini-3-pro-image-preview',          name: 'Gemini 3 Pro · image gen (preview)' },
-  { id: 'gemini-2.5-pro',                      name: 'Gemini 2.5 Pro' },
   { id: 'gemini-2.5-flash',                    name: 'Gemini 2.5 Flash' },
   { id: 'gemini-2.5-flash-lite',               name: 'Gemini 2.5 Flash Lite' },
 ]
@@ -70,10 +64,6 @@ const GEMINI_CLI_MODELS: ModelInfo[] = [
 const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'gemini-3.1-pro-high',                 name: 'Gemini 3.1 Pro · high thinking' },
   { id: 'gemini-3.1-pro-low',                  name: 'Gemini 3.1 Pro · low thinking' },
-  { id: 'gemini-3-pro-high',                   name: 'Gemini 3 Pro · high thinking' },
-  { id: 'gemini-3-pro-low',                    name: 'Gemini 3 Pro · low thinking' },
-  { id: 'gemini-3-flash',                      name: 'Gemini 3 Flash' },
-  { id: 'gemini-3.1-flash-image',              name: 'Gemini 3.1 Flash · image gen' },
 ]
 
 /**
