@@ -73,6 +73,15 @@ export class NimProvider extends OpenAIProvider {
   }
 
   /**
+   * NIM hosts large frontier models (Kimi K2, Llama 70B+, Qwen) that
+   * support full tool calling. Send the complete tool set and system
+   * prompt so agents, MCP servers, plan mode, and tasks all work.
+   */
+  protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
+    return params
+  }
+
+  /**
    * Override stream to handle NIM-specific features:
    * - Thinking model budget tokens injection
    * - Streaming fallback for models that don't support SSE
