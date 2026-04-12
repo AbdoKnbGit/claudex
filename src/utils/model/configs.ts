@@ -116,7 +116,7 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
       free: {
         opus:   'gpt-5.4-mini',
         sonnet: 'gpt-5.4-mini',
-        haiku:  'gpt-5.4-nano',
+        haiku:  'gpt-5.4-mini',
       },
       pro: {
         opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.4',
@@ -124,9 +124,9 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-mini',
       },
       plus: {
-        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.4-pro',
+        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.4',
         sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.4',
-        haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-nano',
+        haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-mini',
       },
     },
   },

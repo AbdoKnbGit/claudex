@@ -45,27 +45,32 @@ import {
   type OpenAIChatCompletion,
   type OpenAIChatCompletionChunk,
 } from '../adapters/openai_to_anthropic.js'
+import {
+  anthropicToResponsesInput,
+  anthropicToolsToResponsesTools,
+  extractInstructions,
+  responsesStreamToAnthropicEvents,
+  responsesMessageToAnthropic,
+  type ResponsesSSEEvent,
+  type ResponsesApiResponse,
+} from '../adapters/openai_responses.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
 import {
   getOpenAIReasoningLevel,
+  isReasoningLevelExplicit,
   modelSupportsReasoning,
   type OpenAIReasoningLevel,
 } from '../../../utils/model/openaiReasoning.js'
 
-// ─── Curated Codex model list ─────────────────────────────────────
-// Returned by listModels() so /models always shows available models
-// even before making an API call. Matches the GPT-5 Codex family.
+// ─── Curated Codex model list (fallback) ──────────────────────────
+// Used ONLY when the /v1/models fetch fails (e.g. OAuth token can't
+// list models). GPT-5 models use the Responses API (/v1/responses).
 
-const OPENAI_CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5.4',            name: 'GPT-5.4' },
-  { id: 'gpt-5.4-mini',       name: 'GPT-5.4 Mini' },
-  { id: 'gpt-5.4-nano',       name: 'GPT-5.4 Nano' },
-  { id: 'gpt-5.4-pro',        name: 'GPT-5.4 Pro' },
-  { id: 'gpt-5.3-codex',      name: 'GPT-5.3 Codex' },
-  { id: 'gpt-5.2',            name: 'GPT-5.2' },
-  { id: 'o4-mini',            name: 'o4-mini' },
-  { id: 'o3',                 name: 'o3' },
-  { id: 'o3-mini',            name: 'o3-mini' },
+const OPENAI_FALLBACK_MODELS: ModelInfo[] = [
+  { id: 'gpt-5.4',       name: 'GPT-5.4' },
+  { id: 'gpt-5.4-mini',  name: 'GPT-5.4 Mini' },
+  { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' },
+  { id: 'gpt-5.2',       name: 'GPT-5.2' },
 ]
 
 // ─── Payload optimization constants ─────────────────────────────
@@ -137,9 +142,12 @@ export class OpenAIProvider extends BaseProvider {
   ): OpenAIReasoningLevel | undefined {
     if (!modelSupportsReasoning(model)) return undefined
 
-    // Use the globally stored level from the model picker (set via ←/→).
-    // This is the primary control surface for Codex reasoning.
-    return getOpenAIReasoningLevel()
+    // Only send reasoning_effort when the user explicitly chose a level
+    // via ← → in the model picker. Sending it unsolicited to models that
+    // don't support it causes 500 errors on OpenAI's API.
+    if (isReasoningLevelExplicit()) return getOpenAIReasoningLevel()
+
+    return undefined
   }
 
   // ─── Payload optimization ───────────────────────────────────────
@@ -205,6 +213,12 @@ export class OpenAIProvider extends BaseProvider {
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const optimized = this.optimizeParams(params)
     const model = this.resolveModel(optimized.model)
+
+    // GPT-5 Codex models use the Responses API
+    if (this._useResponsesAPI(model)) {
+      return this._streamResponses(optimized, model)
+    }
+
     let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
     if (this.needsMessageCoalescing(model)) {
       messages = coalesceConsecutiveMessages(messages)
@@ -256,6 +270,12 @@ export class OpenAIProvider extends BaseProvider {
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
     const optimized = this.optimizeParams(params)
     const model = this.resolveModel(optimized.model)
+
+    // GPT-5 Codex models use the Responses API
+    if (this._useResponsesAPI(model)) {
+      return this._createResponses(optimized, model)
+    }
+
     let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system)
     if (this.needsMessageCoalescing(model)) {
       messages = coalesceConsecutiveMessages(messages)
@@ -296,10 +316,7 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    // Return curated Codex models first, then append any extra from the API.
-    // This ensures /models always shows something even if the API call fails.
-    const curated = new Map(OPENAI_CODEX_MODELS.map(m => [m.id, m]))
-
+    // Try the real API first — it returns only models the token can access.
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         headers: this._headers(),
@@ -307,17 +324,15 @@ export class OpenAIProvider extends BaseProvider {
       })
       if (response.ok) {
         const data = (await response.json()) as { data: Array<{ id: string }> }
-        for (const m of data.data ?? []) {
-          if (!curated.has(m.id)) {
-            curated.set(m.id, { id: m.id, name: m.id })
-          }
-        }
+        const apiModels = (data.data ?? []).map(m => ({ id: m.id, name: m.id }))
+        if (apiModels.length > 0) return apiModels
       }
     } catch {
-      // API unreachable — curated list is enough
+      // API unreachable or token can't list
     }
 
-    return [...curated.values()]
+    // Fallback: curated list so /models always shows something.
+    return [...OPENAI_FALLBACK_MODELS]
   }
 
   resolveModel(claudeModel: string): string {
@@ -401,6 +416,15 @@ export class OpenAIProvider extends BaseProvider {
       )
     }
 
+    // 500 — Server error (often means model ID doesn't exist)
+    if (status === 500) {
+      return new Error(
+        `${this.name} API error ${status}: Server error.\n` +
+        `${errorDetail || 'The model may not exist or is unavailable.'}\n` +
+        `Try a different model with /model or /models.`,
+      )
+    }
+
     // Default — include status and body
     return new Error(`${this.name} API error ${status}: ${body}`)
   }
@@ -434,6 +458,168 @@ export class OpenAIProvider extends BaseProvider {
       ...this.extraHeaders,
     }
   }
+
+  // ─── Responses API (GPT-5 Codex models) ─────────────────────────
+
+  /** True when the model should use POST /v1/responses instead of /chat/completions. */
+  private _useResponsesAPI(model: string): boolean {
+    return /^gpt-[5-9]/i.test(model)
+  }
+
+  private async _streamResponses(
+    params: ProviderRequestParams,
+    model: string,
+  ): Promise<ProviderStreamResult> {
+    const input = anthropicToResponsesInput(params.messages)
+    const tools = params.tools
+      ? anthropicToolsToResponsesTools(params.tools)
+      : undefined
+    const instructions = extractInstructions(params.system)
+
+    const body: Record<string, unknown> = {
+      model,
+      input,
+      stream: true,
+      store: false,
+    }
+
+    if (instructions) body.instructions = instructions
+    if (tools && tools.length > 0) {
+      body.tools = tools
+      body.tool_choice = 'auto'
+    }
+
+    // Nested reasoning.effort for Responses API
+    const effort = this.resolveReasoningEffort(model, params.thinking)
+    if (effort) body.reasoning = { effort }
+
+    const response = await fetch(`${this.baseUrl}/responses`, {
+      method: 'POST',
+      headers: this._headers(),
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '')
+      throw this.formatAPIError(response.status, errText)
+    }
+
+    if (!response.body) {
+      throw new Error(`${this.name} returned no response body for streaming request`)
+    }
+
+    this._extractRateLimits(response.headers)
+
+    const sseStream = this._parseResponsesSSE(response.body)
+    const anthropicEvents = responsesStreamToAnthropicEvents(sseStream)
+    return buildProviderStreamResult(anthropicEvents)
+  }
+
+  private async _createResponses(
+    params: ProviderRequestParams,
+    model: string,
+  ): Promise<AnthropicMessage> {
+    const input = anthropicToResponsesInput(params.messages)
+    const tools = params.tools
+      ? anthropicToolsToResponsesTools(params.tools)
+      : undefined
+    const instructions = extractInstructions(params.system)
+
+    const body: Record<string, unknown> = {
+      model,
+      input,
+      store: false,
+    }
+
+    if (instructions) body.instructions = instructions
+    if (tools && tools.length > 0) {
+      body.tools = tools
+      body.tool_choice = 'auto'
+    }
+
+    const effort = this.resolveReasoningEffort(model, params.thinking)
+    if (effort) body.reasoning = { effort }
+
+    const response = await fetch(`${this.baseUrl}/responses`, {
+      method: 'POST',
+      headers: this._headers(),
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '')
+      throw this.formatAPIError(response.status, errText)
+    }
+
+    this._extractRateLimits(response.headers)
+
+    const data = (await response.json()) as ResponsesApiResponse
+    return responsesMessageToAnthropic(data)
+  }
+
+  /**
+   * Parse SSE events from the Responses API stream.
+   * The Responses API uses `event:` + `data:` lines with a JSON payload
+   * that includes the event `type` field.
+   */
+  protected async *_parseResponsesSSE(
+    body: ReadableStream<Uint8Array>,
+  ): AsyncGenerator<ResponsesSSEEvent> {
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        let boundary: number
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+          const event = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+
+          let dataStr = ''
+          for (const line of event.split('\n')) {
+            if (line.startsWith('data: ')) {
+              dataStr += line.slice(6)
+            }
+          }
+
+          if (!dataStr || dataStr === '[DONE]') continue
+
+          try {
+            yield JSON.parse(dataStr) as ResponsesSSEEvent
+          } catch {
+            // Skip malformed JSON
+          }
+        }
+      }
+
+      // Process remaining buffer
+      if (buffer.trim()) {
+        let dataStr = ''
+        for (const line of buffer.split('\n')) {
+          if (line.startsWith('data: ')) {
+            dataStr += line.slice(6)
+          }
+        }
+        if (dataStr && dataStr !== '[DONE]') {
+          try {
+            yield JSON.parse(dataStr) as ResponsesSSEEvent
+          } catch {
+            // Skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
+
+  // ─── Chat Completions SSE parser ──────────────────────────────────
 
   protected async *_parseSSE(
     body: ReadableStream<Uint8Array>,

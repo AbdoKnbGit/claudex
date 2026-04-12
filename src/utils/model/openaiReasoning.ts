@@ -18,12 +18,21 @@ const REASONING_LABELS: Record<OpenAIReasoningLevel, string> = {
 
 let _currentLevel: OpenAIReasoningLevel = 'medium'
 
+/** True once the user has explicitly picked a level via ← → in the picker. */
+let _explicitlySet = false
+
 export function getOpenAIReasoningLevel(): OpenAIReasoningLevel {
   return _currentLevel
 }
 
+/** Whether the user has explicitly chosen a reasoning level. */
+export function isReasoningLevelExplicit(): boolean {
+  return _explicitlySet
+}
+
 export function setOpenAIReasoningLevel(level: OpenAIReasoningLevel): void {
   _currentLevel = level
+  _explicitlySet = true
 }
 
 export function cycleOpenAIReasoningLevel(direction: 'left' | 'right'): OpenAIReasoningLevel {
@@ -33,6 +42,7 @@ export function cycleOpenAIReasoningLevel(direction: 'left' | 'right'): OpenAIRe
   } else {
     _currentLevel = REASONING_LEVELS[(idx - 1 + REASONING_LEVELS.length) % REASONING_LEVELS.length]!
   }
+  _explicitlySet = true
   return _currentLevel
 }
 
