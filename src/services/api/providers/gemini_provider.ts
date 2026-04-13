@@ -207,7 +207,7 @@ export class GeminiProvider extends BaseProvider {
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const model = this.resolveModel(params.model)
-    const body = anthropicToGeminiRequest(params)
+    const body = anthropicToGeminiRequest({ ...params, model })
 
     // OAuth path → route through Code Assist with the right executor.
     const oauthToken = this._tokenForModel(model)
@@ -284,7 +284,7 @@ export class GeminiProvider extends BaseProvider {
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
     const model = this.resolveModel(params.model)
-    const body = anthropicToGeminiRequest(params)
+    const body = anthropicToGeminiRequest({ ...params, model })
 
     // OAuth path → route through Code Assist with the right executor.
     const oauthToken = this._tokenForModel(model)

@@ -19,6 +19,11 @@ import { getThoughtSignature } from './gemini_thought_cache.js'
 
 // ─── Gemini types ──────────────────────────────────────────────────
 
+export interface GeminiSafetySettingEntry {
+  category: string
+  threshold: string
+}
+
 export interface GeminiRequest {
   contents: GeminiContent[]
   tools?: Array<{ functionDeclarations: GeminiFunctionDeclaration[] }>
@@ -26,12 +31,15 @@ export interface GeminiRequest {
   generationConfig?: {
     maxOutputTokens?: number
     temperature?: number
+    topP?: number
+    topK?: number
     stopSequences?: string[]
     thinkingConfig?: {
       thinkingBudget?: number
       includeThoughts?: boolean
     }
   }
+  safetySettings?: GeminiSafetySettingEntry[]
   /**
    * Reference to a previously created `cachedContents/...` resource. When
    * set, `systemInstruction` and `tools` MUST be omitted — the cache
@@ -39,6 +47,52 @@ export interface GeminiRequest {
    * on repeated system prompts.
    */
   cachedContent?: string
+}
+
+// ─── Safety Settings ──────────────────────────────────────────────
+// Identical to CLIProxyAPI's DefaultSafetySettings(): all harm categories
+// set to OFF so Gemini doesn't block legitimate code content (error
+// handling code, security tools, shell commands, etc.).
+
+const GEMINI_SAFETY_SETTINGS: GeminiSafetySettingEntry[] = [
+  { category: 'HARM_CATEGORY_HARASSMENT',         threshold: 'OFF' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH',        threshold: 'OFF' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',  threshold: 'OFF' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT',  threshold: 'OFF' },
+  { category: 'HARM_CATEGORY_CIVIC_INTEGRITY',    threshold: 'BLOCK_NONE' },
+]
+
+// ─── Model-Specific Generation Configs ────────────────────────────
+// Matched to the real Gemini CLI's defaultModelConfigs.ts:
+//   chat-base:     temperature: 1, topP: 0.95, topK: 64, includeThoughts: true
+//   chat-base-2.5: thinkingBudget: 8192
+//   chat-base-3:   thinkingBudget: 24576 (HIGH)
+
+/** Default thinking budget for Gemini 2.5 models (matches Gemini CLI). */
+const THINKING_BUDGET_2_5 = 8192
+/** Default thinking budget for Gemini 3.x models (HIGH level). */
+const THINKING_BUDGET_3 = 24576
+
+/**
+ * Get model-specific generation config values. Matches the real Gemini CLI's
+ * per-model config hierarchy so models perform at their intended capability.
+ */
+function getModelGenerationDefaults(model: string): {
+  topP: number
+  topK: number
+  thinkingBudget: number
+} {
+  const m = model.toLowerCase()
+  // Gemini 3.x models — highest thinking budget
+  if (m.includes('gemini-3')) {
+    return { topP: 0.95, topK: 64, thinkingBudget: THINKING_BUDGET_3 }
+  }
+  // Gemini 2.5 models — standard thinking budget
+  if (m.includes('gemini-2.5')) {
+    return { topP: 0.95, topK: 64, thinkingBudget: THINKING_BUDGET_2_5 }
+  }
+  // Older / unknown Gemini models — no thinking, still good sampling
+  return { topP: 0.95, topK: 64, thinkingBudget: 0 }
 }
 
 export interface GeminiContent {
@@ -224,6 +278,10 @@ function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string
 // ─── Conversion ────────────────────────────────────────────────────
 
 export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiRequest {
+  // Resolve the actual Gemini model name (params.model may already be resolved
+  // by the provider, or may still be a Claude alias — handle both).
+  const model = params.model
+
   // Per-request map: track tool_use_id → tool_name because Gemini's
   // functionResponse uses the function name, not an ID.
   const toolIdToName = new Map<string, string>()
@@ -255,20 +313,38 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
     }]
   }
 
-  // Generation config
+  // Safety settings — all categories OFF, matching CLIProxyAPI's defaults.
+  // Without this, Gemini's default safety filters block legitimate code
+  // content (security tools, error handling, shell commands, etc.).
+  request.safetySettings = GEMINI_SAFETY_SETTINGS
+
+  // Generation config — model-specific defaults from the real Gemini CLI.
+  const modelDefaults = getModelGenerationDefaults(model)
   request.generationConfig = {
     maxOutputTokens: params.max_tokens,
-    ...(params.temperature !== undefined && { temperature: params.temperature }),
+    temperature: params.temperature ?? 1,
+    topP: modelDefaults.topP,
+    topK: modelDefaults.topK,
     ...(params.stop_sequences && { stopSequences: params.stop_sequences }),
   }
 
-  // Map Anthropic-style thinking → Gemini thinkingConfig. Only Gemini 2.5+
-  // "thinking" models honor this; older models ignore it. -1 is dynamic.
-  if (params.thinking && params.thinking.type !== 'disabled') {
-    const budget =
-      params.thinking.type === 'enabled' ? params.thinking.budget_tokens : -1
+  // Thinking config — use Anthropic's budget if provided, otherwise use
+  // model-specific defaults from Gemini CLI. Gemini 2.5+ and 3.x models
+  // all support thinking; it makes them dramatically smarter.
+  if (params.thinking && params.thinking.type === 'disabled') {
+    // Explicitly disabled — don't add thinkingConfig.
+  } else if (params.thinking && params.thinking.type === 'enabled') {
+    // Explicit budget from Anthropic thinking config.
     request.generationConfig.thinkingConfig = {
-      thinkingBudget: budget,
+      thinkingBudget: params.thinking.budget_tokens,
+      includeThoughts: true,
+    }
+  } else if (modelDefaults.thinkingBudget > 0) {
+    // No explicit thinking config from Anthropic — use the model's default.
+    // This is what the real Gemini CLI does: always enable thinking with
+    // a model-appropriate budget.
+    request.generationConfig.thinkingConfig = {
+      thinkingBudget: modelDefaults.thinkingBudget,
       includeThoughts: true,
     }
   }
