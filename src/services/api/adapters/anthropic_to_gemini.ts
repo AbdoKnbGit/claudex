@@ -54,45 +54,102 @@ export interface GeminiRequest {
 // set to OFF so Gemini doesn't block legitimate code content (error
 // handling code, security tools, shell commands, etc.).
 
-const GEMINI_SAFETY_SETTINGS: GeminiSafetySettingEntry[] = [
-  { category: 'HARM_CATEGORY_HARASSMENT',         threshold: 'OFF' },
-  { category: 'HARM_CATEGORY_HATE_SPEECH',        threshold: 'OFF' },
-  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',  threshold: 'OFF' },
-  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT',  threshold: 'OFF' },
-  { category: 'HARM_CATEGORY_CIVIC_INTEGRITY',    threshold: 'BLOCK_NONE' },
-]
+// ─── Safety Settings ──────────────────────────────────────────────
+// Mirrors CLIProxyAPI's DefaultSafetySettings(). Without these, Gemini's
+// default filters block legitimate code content (shell commands, security
+// tools, error handling).  Disable with GEMINI_SAFETY=default.
 
-// ─── Model-Specific Generation Configs ────────────────────────────
-// Matched to the real Gemini CLI's defaultModelConfigs.ts:
-//   chat-base:     temperature: 1, topP: 0.95, topK: 64, includeThoughts: true
-//   chat-base-2.5: thinkingBudget: 8192
-//   chat-base-3:   thinkingBudget: 24576 (HIGH)
+function getGeminiSafetySettings(): GeminiSafetySettingEntry[] | undefined {
+  if (process.env.GEMINI_SAFETY === 'default') return undefined
+  return [
+    { category: 'HARM_CATEGORY_HARASSMENT',         threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH',        threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',  threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT',  threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY',    threshold: 'BLOCK_NONE' },
+  ]
+}
 
-/** Default thinking budget for Gemini 2.5 models (matches Gemini CLI). */
-const THINKING_BUDGET_2_5 = 8192
-/** Default thinking budget for Gemini 3.x models (HIGH level). */
-const THINKING_BUDGET_3 = 24576
+// ─── Dynamic Generation Config ────────────────────────────────────
+// Derives thinking budgets and sampling params from the model name
+// rather than hardcoding per model. The logic mirrors the real Gemini
+// CLI's config inheritance: newer/larger models get bigger budgets.
+//
+// All values are overridable via environment variables:
+//   GEMINI_TOP_P        — sampling top_p (default: 0.95)
+//   GEMINI_TOP_K        — sampling top_k (default: 64)
+//   GEMINI_THINKING     — thinking budget override (0 = off, -1 = dynamic)
+//   GEMINI_TEMPERATURE  — temperature override
+
+function _envFloat(key: string): number | undefined {
+  const v = process.env[key]
+  if (!v) return undefined
+  const n = parseFloat(v)
+  return isNaN(n) ? undefined : n
+}
+
+function _envInt(key: string): number | undefined {
+  const v = process.env[key]
+  if (!v) return undefined
+  const n = parseInt(v, 10)
+  return isNaN(n) ? undefined : n
+}
 
 /**
- * Get model-specific generation config values. Matches the real Gemini CLI's
- * per-model config hierarchy so models perform at their intended capability.
+ * Derive a thinking budget from the model name. Larger / newer models
+ * get bigger budgets. This is dynamic: any future "gemini-4-ultra"
+ * would automatically get the highest tier because it matches "gemini-4".
+ *
+ * The budget tiers mirror what the Gemini CLI uses internally.
+ */
+function deriveThinkingBudget(model: string): number {
+  // Env override wins — lets power users control thinking cost.
+  const override = _envInt('GEMINI_THINKING')
+  if (override !== undefined) return override
+
+  const m = model.toLowerCase()
+
+  // Pro models get higher budgets — they have the capacity for deep reasoning.
+  if (m.includes('pro')) {
+    // Gemini 3.x pro → HIGH level (24K)
+    if (m.includes('gemini-3') || m.includes('gemini-4')) return 24576
+    // Gemini 2.5 pro → standard (8K)
+    return 8192
+  }
+
+  // Flash models — moderate thinking, fast output.
+  if (m.includes('flash')) {
+    // Skip "lite" variants — they're optimized for speed, not depth.
+    if (m.includes('lite')) return 0
+    // Gemini 3+ flash → some thinking
+    if (m.includes('gemini-3') || m.includes('gemini-4')) return 8192
+    // Gemini 2.5 flash → moderate
+    return 4096
+  }
+
+  // Unknown model that starts with gemini → give it basic thinking.
+  if (m.startsWith('gemini-')) return 4096
+
+  // Non-Gemini model somehow passed through → no thinking.
+  return 0
+}
+
+/**
+ * Build the full generation defaults for a model. Everything is derived
+ * dynamically from the model name, with env var overrides available.
  */
 function getModelGenerationDefaults(model: string): {
   topP: number
   topK: number
+  temperature: number | undefined
   thinkingBudget: number
 } {
-  const m = model.toLowerCase()
-  // Gemini 3.x models — highest thinking budget
-  if (m.includes('gemini-3')) {
-    return { topP: 0.95, topK: 64, thinkingBudget: THINKING_BUDGET_3 }
+  return {
+    topP: _envFloat('GEMINI_TOP_P') ?? 0.95,
+    topK: _envInt('GEMINI_TOP_K') ?? 64,
+    temperature: _envFloat('GEMINI_TEMPERATURE'),
+    thinkingBudget: deriveThinkingBudget(model),
   }
-  // Gemini 2.5 models — standard thinking budget
-  if (m.includes('gemini-2.5')) {
-    return { topP: 0.95, topK: 64, thinkingBudget: THINKING_BUDGET_2_5 }
-  }
-  // Older / unknown Gemini models — no thinking, still good sampling
-  return { topP: 0.95, topK: 64, thinkingBudget: 0 }
 }
 
 export interface GeminiContent {
@@ -313,38 +370,39 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
     }]
   }
 
-  // Safety settings — all categories OFF, matching CLIProxyAPI's defaults.
-  // Without this, Gemini's default safety filters block legitimate code
-  // content (security tools, error handling, shell commands, etc.).
-  request.safetySettings = GEMINI_SAFETY_SETTINGS
+  // Safety settings — derived from env or default to all-OFF.
+  const safety = getGeminiSafetySettings()
+  if (safety) request.safetySettings = safety
 
-  // Generation config — model-specific defaults from the real Gemini CLI.
-  const modelDefaults = getModelGenerationDefaults(model)
+  // Generation config — dynamically derived from model capabilities
+  // and overridable via env vars. No hardcoded per-model tables.
+  const defaults = getModelGenerationDefaults(model)
   request.generationConfig = {
     maxOutputTokens: params.max_tokens,
-    temperature: params.temperature ?? 1,
-    topP: modelDefaults.topP,
-    topK: modelDefaults.topK,
+    temperature: defaults.temperature ?? params.temperature ?? 1,
+    topP: defaults.topP,
+    topK: defaults.topK,
     ...(params.stop_sequences && { stopSequences: params.stop_sequences }),
   }
 
-  // Thinking config — use Anthropic's budget if provided, otherwise use
-  // model-specific defaults from Gemini CLI. Gemini 2.5+ and 3.x models
-  // all support thinking; it makes them dramatically smarter.
-  if (params.thinking && params.thinking.type === 'disabled') {
-    // Explicitly disabled — don't add thinkingConfig.
-  } else if (params.thinking && params.thinking.type === 'enabled') {
-    // Explicit budget from Anthropic thinking config.
+  // Thinking config:
+  //   1. Anthropic explicit "enabled" with budget → use that budget
+  //   2. Anthropic "adaptive" → use derived budget (model-appropriate)
+  //   3. Anthropic "disabled" → no thinking
+  //   4. No thinking config at all → use derived budget
+  // This ensures Gemini models ALWAYS think at their native level
+  // unless explicitly told not to.
+  if (params.thinking?.type === 'disabled') {
+    // Explicitly off.
+  } else if (params.thinking?.type === 'enabled') {
     request.generationConfig.thinkingConfig = {
       thinkingBudget: params.thinking.budget_tokens,
       includeThoughts: true,
     }
-  } else if (modelDefaults.thinkingBudget > 0) {
-    // No explicit thinking config from Anthropic — use the model's default.
-    // This is what the real Gemini CLI does: always enable thinking with
-    // a model-appropriate budget.
+  } else if (defaults.thinkingBudget > 0) {
+    // Adaptive or unspecified — let the model think at its natural level.
     request.generationConfig.thinkingConfig = {
-      thinkingBudget: modelDefaults.thinkingBudget,
+      thinkingBudget: defaults.thinkingBudget,
       includeThoughts: true,
     }
   }
