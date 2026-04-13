@@ -96,11 +96,17 @@ function _envInt(key: string): number | undefined {
 }
 
 /**
- * Derive a thinking budget from the model name. Larger / newer models
- * get bigger budgets. This is dynamic: any future "gemini-4-ultra"
- * would automatically get the highest tier because it matches "gemini-4".
+ * Derive a thinking budget from the model name. The budget must balance
+ * QUALITY (deeper reasoning) against LATENCY (time-to-first-token).
  *
- * The budget tiers mirror what the Gemini CLI uses internally.
+ * Claude is fast because it uses 100K+ cached tokens and barely thinks
+ * between iterative tool calls. Gemini can't match that cache efficiency,
+ * so we keep thinking budgets MODERATE — enough for good decisions,
+ * not so much that every "Read file" call takes 10 seconds of thinking.
+ *
+ * When the Anthropic query loop sends an explicit thinking budget (for
+ * complex tasks), that OVERRIDES this default. These defaults only apply
+ * when thinking is "adaptive" or unspecified.
  */
 function deriveThinkingBudget(model: string): number {
   // Env override wins — lets power users control thinking cost.
@@ -109,28 +115,25 @@ function deriveThinkingBudget(model: string): number {
 
   const m = model.toLowerCase()
 
-  // Pro models get higher budgets — they have the capacity for deep reasoning.
+  // Pro models — good thinking but not excessive. The query loop will
+  // send higher budgets for complex tasks; this default covers the
+  // iterative tool-calling turns where speed matters most.
   if (m.includes('pro')) {
-    // Gemini 3.x pro → HIGH level (24K)
-    if (m.includes('gemini-3') || m.includes('gemini-4')) return 24576
-    // Gemini 2.5 pro → standard (8K)
-    return 8192
+    if (m.includes('high')) return 16384   // explicit "high" thinking variant
+    if (m.includes('low'))  return 2048    // explicit "low" thinking variant
+    return 8192                             // standard pro → moderate thinking
   }
 
-  // Flash models — moderate thinking, fast output.
+  // Flash models — fast, lean thinking.
   if (m.includes('flash')) {
-    // Skip "lite" variants — they're optimized for speed, not depth.
-    if (m.includes('lite')) return 0
-    // Gemini 3+ flash → some thinking
-    if (m.includes('gemini-3') || m.includes('gemini-4')) return 8192
-    // Gemini 2.5 flash → moderate
-    return 4096
+    if (m.includes('lite')) return 0        // lite = no thinking, max speed
+    return 2048                              // flash → quick thinking
   }
 
-  // Unknown model that starts with gemini → give it basic thinking.
+  // Unknown gemini model → moderate.
   if (m.startsWith('gemini-')) return 4096
 
-  // Non-Gemini model somehow passed through → no thinking.
+  // Non-Gemini → no thinking.
   return 0
 }
 
@@ -386,21 +389,26 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
   }
 
   // Thinking config:
-  //   1. Anthropic explicit "enabled" with budget → use that budget
+  //   1. Anthropic explicit "enabled" with budget → use it (capped to avoid extreme latency)
   //   2. Anthropic "adaptive" → use derived budget (model-appropriate)
   //   3. Anthropic "disabled" → no thinking
   //   4. No thinking config at all → use derived budget
-  // This ensures Gemini models ALWAYS think at their native level
-  // unless explicitly told not to.
+  //
+  // Claude's query loop sends budgets designed for Claude's speed profile
+  // (100K cached tokens, near-zero per-turn cost). Gemini can't match that
+  // cache efficiency, so large budgets cause disproportionate latency.
+  // We cap explicit budgets at 16K unless the user overrides via env.
+  const maxBudget = _envInt('GEMINI_MAX_THINKING') ?? 16384
   if (params.thinking?.type === 'disabled') {
     // Explicitly off.
   } else if (params.thinking?.type === 'enabled') {
+    const budget = Math.min(params.thinking.budget_tokens, maxBudget)
     request.generationConfig.thinkingConfig = {
-      thinkingBudget: params.thinking.budget_tokens,
+      thinkingBudget: budget,
       includeThoughts: true,
     }
   } else if (defaults.thinkingBudget > 0) {
-    // Adaptive or unspecified — let the model think at its natural level.
+    // Adaptive or unspecified — lean thinking for speed.
     request.generationConfig.thinkingConfig = {
       thinkingBudget: defaults.thinkingBudget,
       includeThoughts: true,
