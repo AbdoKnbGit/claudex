@@ -2,12 +2,18 @@
  * Google Gemini native REST provider.
  *
  * Uses the Gemini REST API directly (no SDK dependency).
- * Supports both API key auth (x-goog-api-key) and OAuth Bearer token.
+ * Supports both API key auth (x-goog-api-key header) and OAuth Bearer token.
  *
  * Endpoints:
  *   Streaming:     POST /v1beta/models/{model}:streamGenerateContent?alt=sse
  *   Non-streaming: POST /v1beta/models/{model}:generateContent
- *   Model list:    GET  /v1beta/models?key={key}
+ *   Model list:    GET  /v1beta/models
+ *
+ * Optimizations:
+ *   - API key sent via x-goog-api-key header (not URL param) for security
+ *   - Connection: keep-alive on all requests for connection reuse
+ *   - Sliding-window rate limiter to avoid hitting 429s
+ *   - Context caching with proactive background refresh
  */
 
 import {
@@ -39,6 +45,45 @@ import {
 } from './gemini_code_assist.js'
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
+
+// ─── Rate Limiter ───────────────────────────────────────────────────
+// Simple sliding-window rate limiter. Tracks request timestamps and
+// enforces a maximum RPM (requests per minute). When the limit is
+// approached, inserts a short delay to spread requests evenly instead
+// of bursting and getting 429'd.
+
+const DEFAULT_RPM = 30  // Conservative default; Gemini free tier is 15 RPM
+const _requestTimestamps: number[] = []
+
+/** Sleep for ms. */
+function _sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms))
+}
+
+/**
+ * Wait if needed to stay under the RPM limit. Returns immediately
+ * if the window has capacity. Otherwise waits until the oldest
+ * request in the window expires.
+ */
+async function _throttle(rpm: number = DEFAULT_RPM): Promise<void> {
+  const now = Date.now()
+  const windowMs = 60_000
+
+  // Prune old entries outside the window.
+  while (_requestTimestamps.length > 0 && _requestTimestamps[0]! < now - windowMs) {
+    _requestTimestamps.shift()
+  }
+
+  if (_requestTimestamps.length >= rpm) {
+    // Wait until the oldest request leaves the window.
+    const waitMs = _requestTimestamps[0]! + windowMs - now + 50 // +50ms margin
+    if (waitMs > 0) {
+      await _sleep(waitMs)
+    }
+  }
+
+  _requestTimestamps.push(Date.now())
+}
 
 // Models reachable via the two OAuth executors:
 //
@@ -106,6 +151,8 @@ export class GeminiProvider extends BaseProvider {
   private cliOAuthToken?: string
   /** OAuth token from the Antigravity client (pro models). */
   private antigravityOAuthToken?: string
+  /** RPM limit — auto-detected from rate limit headers or env override. */
+  private rpm: number
 
   constructor(config: ProviderConfig & {
     cliOAuthToken?: string
@@ -122,11 +169,26 @@ export class GeminiProvider extends BaseProvider {
     if (config.oauthToken && !config.antigravityOAuthToken) {
       this.antigravityOAuthToken = config.oauthToken
     }
+    // Allow env override for rate limit (useful for paid tiers).
+    this.rpm = parseInt(process.env.GEMINI_RPM ?? '', 10) || DEFAULT_RPM
   }
 
   /** True if any OAuth token is available. */
   private get hasOAuth(): boolean {
     return !!(this.cliOAuthToken || this.antigravityOAuthToken)
+  }
+
+  /**
+   * Build headers for API-key-path requests. Uses x-goog-api-key header
+   * instead of URL query param — avoids key appearing in server access
+   * logs, proxy caches, and browser history.
+   */
+  private _apiKeyHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': this.apiKey,
+      'Connection': 'keep-alive',
+    }
   }
 
   /**
@@ -150,6 +212,7 @@ export class GeminiProvider extends BaseProvider {
     // OAuth path → route through Code Assist with the right executor.
     const oauthToken = this._tokenForModel(model)
     if (this.hasOAuth && oauthToken) {
+      await _throttle(this.rpm)
       const executor = executorForModel(model)
       const projectId = await ensureCodeAssistReady(oauthToken, executor)
 
@@ -158,8 +221,8 @@ export class GeminiProvider extends BaseProvider {
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
-        ? antigravityApiHeaders(oauthToken)
-        : geminiCLIApiHeaders(oauthToken, model)
+        ? { ...antigravityApiHeaders(oauthToken), 'Connection': 'keep-alive' }
+        : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
       const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
       const ac = new AbortController()
@@ -172,6 +235,7 @@ export class GeminiProvider extends BaseProvider {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '')
+        this._adjustRpmFromError(response.status, response.headers)
         throw this._formatGeminiError(response.status, errText)
       }
 
@@ -184,7 +248,7 @@ export class GeminiProvider extends BaseProvider {
       return buildProviderStreamResult(anthropicEvents, ac)
     }
 
-    // API key path → try to use context caching, then call v1beta.
+    // API key path → rate-limit, then try context caching, then call v1beta.
     if (!this.apiKey) {
       throw new Error(
         'Gemini API error 401: No credentials available.\n' +
@@ -192,18 +256,20 @@ export class GeminiProvider extends BaseProvider {
         'Run /login to sign in again.',
       )
     }
+    await _throttle(this.rpm)
     const cacheName = await this._applyContextCache(model, body)
-    const url = `${this.baseUrl}/models/${model}:streamGenerateContent?key=${encodeURIComponent(this.apiKey)}&alt=sse`
+    const url = `${this.baseUrl}/models/${model}:streamGenerateContent?alt=sse`
     const ac = new AbortController()
     const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._apiKeyHeaders(),
       body: JSON.stringify(body),
       signal: ac.signal,
     })
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      this._adjustRpmFromError(response.status, response.headers)
       if (cacheName && this._isCacheExpiredError(response.status, errText)) {
         invalidateCache(cacheName)
         return this.stream(params)
@@ -211,11 +277,7 @@ export class GeminiProvider extends BaseProvider {
       throw this._formatGeminiError(response.status, errText)
     }
 
-    if (!response.body) {
-      throw new Error('Gemini returned no response body for streaming request')
-    }
-
-    const geminiChunks = parseGeminiSSE(response.body)
+    const geminiChunks = parseGeminiSSE(response.body!)
     const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
     return buildProviderStreamResult(anthropicEvents, ac)
   }
@@ -227,6 +289,7 @@ export class GeminiProvider extends BaseProvider {
     // OAuth path → route through Code Assist with the right executor.
     const oauthToken = this._tokenForModel(model)
     if (this.hasOAuth && oauthToken) {
+      await _throttle(this.rpm)
       const executor = executorForModel(model)
       const projectId = await ensureCodeAssistReady(oauthToken, executor)
 
@@ -235,8 +298,8 @@ export class GeminiProvider extends BaseProvider {
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
-        ? antigravityApiHeaders(oauthToken)
-        : geminiCLIApiHeaders(oauthToken, model)
+        ? { ...antigravityApiHeaders(oauthToken), 'Connection': 'keep-alive' }
+        : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
       const url = `${CODE_ASSIST_BASE}:generateContent`
       const response = await fetch(url, {
@@ -247,6 +310,7 @@ export class GeminiProvider extends BaseProvider {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '')
+        this._adjustRpmFromError(response.status, response.headers)
         throw this._formatGeminiError(response.status, errText)
       }
 
@@ -255,7 +319,7 @@ export class GeminiProvider extends BaseProvider {
       return geminiMessageToAnthropic(data, model)
     }
 
-    // API key path → try to use context caching, then call v1beta.
+    // API key path → rate-limit, then try context caching, then call v1beta.
     if (!this.apiKey) {
       throw new Error(
         'Gemini API error 401: No credentials available.\n' +
@@ -263,16 +327,18 @@ export class GeminiProvider extends BaseProvider {
         'Run /login to sign in again.',
       )
     }
+    await _throttle(this.rpm)
     const cacheName = await this._applyContextCache(model, body)
-    const url = `${this.baseUrl}/models/${model}:generateContent?key=${encodeURIComponent(this.apiKey)}`
+    const url = `${this.baseUrl}/models/${model}:generateContent`
     const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._apiKeyHeaders(),
       body: JSON.stringify(body),
     })
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      this._adjustRpmFromError(response.status, response.headers)
       if (cacheName && this._isCacheExpiredError(response.status, errText)) {
         invalidateCache(cacheName)
         return this.create(params)
@@ -329,9 +395,11 @@ export class GeminiProvider extends BaseProvider {
       return models
     }
 
-    // API key path — v1beta/models is fine here.
-    const url = `${this.baseUrl}/models?key=${encodeURIComponent(this.apiKey)}`
-    const response = await fetch(url)
+    // API key path — use header auth.
+    const url = `${this.baseUrl}/models`
+    const response = await fetch(url, {
+      headers: this._apiKeyHeaders(),
+    })
 
     if (!response.ok) return []
     const data = (await response.json()) as {
@@ -392,11 +460,34 @@ export class GeminiProvider extends BaseProvider {
       return new Error(
         `Gemini API error ${status}: Rate limit or quota exceeded.\n` +
         `${errorDetail}\n` +
+        `Current rate limit: ${this.rpm} RPM. Set GEMINI_RPM env var to adjust.\n` +
         `Wait a moment and retry, or check your quota at console.cloud.google.com.`,
       )
     }
 
     return new Error(`Gemini API error ${status}: ${body}`)
+  }
+
+  /**
+   * Dynamically lower the RPM when we hit 429 errors. This prevents
+   * hammering the API and wasting requests on retries. The RPM recovers
+   * on the next provider construction (each turn creates a fresh provider).
+   */
+  private _adjustRpmFromError(status: number, headers: Headers): void {
+    if (status === 429) {
+      // Halve RPM (floor at 5) to back off aggressively.
+      this.rpm = Math.max(5, Math.floor(this.rpm / 2))
+    }
+    // Try to learn the actual limit from response headers.
+    const limitHeader = headers.get('x-ratelimit-limit-requests')
+      ?? headers.get('x-ratelimit-limit')
+    if (limitHeader) {
+      const parsed = parseInt(limitHeader, 10)
+      if (!isNaN(parsed) && parsed > 0) {
+        // Use 80% of the advertised limit as our ceiling.
+        this.rpm = Math.max(5, Math.floor(parsed * 0.8))
+      }
+    }
   }
 
 }

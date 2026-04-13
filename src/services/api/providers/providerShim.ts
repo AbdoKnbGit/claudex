@@ -42,6 +42,7 @@ import { GroqProvider } from './groq_provider.js'
 import { NimProvider } from './nim_provider.js'
 import { DeepSeekProvider } from './deepseek_provider.js'
 import { OllamaProvider } from './ollama_provider.js'
+import { warmupCodeAssist } from './gemini_code_assist.js'
 
 /**
  * Create a provider instance for the given provider type.
@@ -68,6 +69,9 @@ function createProvider(provider: APIProvider): BaseProvider {
         // (resolveProviderAuth → _getValidOAuthToken).
         const cliToken = _readStoredGeminiToken('gemini_oauth_cli')
         const antigravityToken = _readStoredGeminiToken('gemini_oauth_antigravity')
+        // Pre-warm Code Assist onboarding in background to cut
+        // first-request latency — the project ID gets cached to disk.
+        warmupCodeAssist(cliToken ?? undefined, antigravityToken ?? undefined)
         return new GeminiProvider({
           apiKey: apiKey ?? '',
           baseUrl,
@@ -95,12 +99,21 @@ function createProvider(provider: APIProvider): BaseProvider {
 /**
  * Wraps a ProviderStreamResult so that it looks like an Anthropic SDK
  * `Stream<BetaRawMessageStreamEvent>`, which is what claude.ts iterates.
+ *
+ * Critically, the `controller` is wired to the provider's own abort so
+ * that calling `stream.controller.abort()` in claude.ts actually cancels
+ * the in-flight fetch request — not just a disconnected dummy.
  */
 function wrapAsAnthropicStream(
   providerStream: ProviderStreamResult,
 ): AsyncIterable<AnthropicStreamEvent> & { controller: AbortController } {
   const controller = new AbortController()
   const iterable = providerStream[Symbol.asyncIterator]()
+
+  // Bridge: when claude.ts aborts the controller, propagate to provider.
+  controller.signal.addEventListener('abort', () => {
+    providerStream.abort()
+  }, { once: true })
 
   return {
     controller,
@@ -118,15 +131,46 @@ function wrapAsAnthropicStream(
  *   with `.withResponse()` returning `{ data, request_id, response }`
  * - If params.stream is falsy → returns an AnthropicMessage directly
  *   with `.withResponse()` returning `{ data, request_id, response }`
+ *
+ * Supports opts.signal (AbortSignal) and opts.timeout (ms) from claude.ts.
  */
 function createMethod(p: BaseProvider) {
-  return function create(params: Record<string, unknown>, _opts?: Record<string, unknown>) {
+  return function create(params: Record<string, unknown>, opts?: Record<string, unknown>) {
     const isStreaming = params.stream === true
 
-    // Build the base promise
-    const basePromise = isStreaming
-      ? p.stream(params as any)
-      : p.create(params as any)
+    // Extract signal and timeout from opts (claude.ts passes these).
+    const externalSignal = opts?.signal as AbortSignal | undefined
+    const timeoutMs = opts?.timeout as number | undefined
+
+    // Build the base promise. For non-streaming with timeout, use
+    // AbortSignal.timeout() combined with any external signal.
+    let basePromise: Promise<ProviderStreamResult | AnthropicMessage>
+    if (isStreaming) {
+      basePromise = p.stream(params as any)
+    } else {
+      basePromise = p.create(params as any)
+      // Apply timeout for non-streaming requests (claude.ts passes
+      // timeout: 120000 or 300000 for the non-streaming fallback).
+      if (timeoutMs && timeoutMs > 0) {
+        const timer = setTimeout(() => {}, 0) // no-op, we use race
+        basePromise = Promise.race([
+          basePromise,
+          new Promise<never>((_, reject) => {
+            const t = setTimeout(() => reject(new Error(
+              `Gemini API error 408: Request timed out after ${timeoutMs}ms`,
+            )), timeoutMs)
+            // Clean up if the request finishes first.
+            basePromise.finally(() => clearTimeout(t))
+          }),
+        ])
+        clearTimeout(timer)
+      }
+    }
+
+    // If an external signal is provided and already aborted, reject now.
+    if (externalSignal?.aborted) {
+      basePromise = Promise.reject(new DOMException('Aborted', 'AbortError'))
+    }
 
     // Attach .withResponse() to the promise
     const enhanced = basePromise.then((result: any) => {

@@ -133,6 +133,7 @@ function _antigravityOnboardHeaders(accessToken: string): Record<string, string>
     'User-Agent': API_USER_AGENT,
     'X-Goog-Api-Client': API_CLIENT,
     'Client-Metadata': CLIENT_METADATA,
+    'Connection': 'keep-alive',
   }
 }
 
@@ -145,6 +146,7 @@ function _cliOnboardHeaders(accessToken: string): Record<string, string> {
     'Content-Type': 'application/json',
     'User-Agent': `GeminiCLI/0.31.0 (${os}; ${arch})`,
     'X-Goog-Api-Client': 'google-genai-sdk/1.41.0 gl-node/v22.19.0',
+    'Connection': 'keep-alive',
   }
 }
 
@@ -338,9 +340,10 @@ async function _onboardUser(
       )
     }
 
-    // Not done yet — wait and retry, matching CLIProxyAPI's 2s cadence.
+    // Not done yet — wait and retry. Use 1.5s instead of CLIProxyAPI's 2s
+    // cadence to reduce first-request latency.
     if (attempt < maxAttempts) {
-      await new Promise((r) => setTimeout(r, 2000))
+      await new Promise((r) => setTimeout(r, 1500))
     }
   }
 
@@ -503,6 +506,23 @@ export function unwrapCodeAssistResponse(
   if (!caResponse || typeof caResponse !== 'object') return {}
   const wrapped = caResponse as { response?: GeminiGenerateContentResponse }
   return wrapped.response ?? {}
+}
+
+/**
+ * Pre-warm Code Assist onboarding for both executors. Call this during
+ * boot to eliminate the onboarding round-trip from the first real request.
+ * Non-blocking — fires in the background and caches the project ID.
+ */
+export function warmupCodeAssist(
+  cliToken?: string,
+  antigravityToken?: string,
+): void {
+  if (cliToken) {
+    ensureCodeAssistReady(cliToken, 'cli').catch(() => {})
+  }
+  if (antigravityToken) {
+    ensureCodeAssistReady(antigravityToken, 'antigravity').catch(() => {})
+  }
 }
 
 /**

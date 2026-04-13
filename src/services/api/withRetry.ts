@@ -125,6 +125,24 @@ function isThirdPartyRetryableError(error: unknown): boolean {
   return status === 429 || status === 500 || status === 502 || status === 503 || status === 529
 }
 
+/**
+ * Extract the HTTP status code from a third-party provider error message.
+ * Returns null if not a recognizable third-party error.
+ */
+function getThirdPartyErrorStatus(error: unknown): number | null {
+  if (error instanceof APIError) return null
+  if (!(error instanceof Error)) return null
+  const match = error.message.match(/API error (\d{3})/)
+  return match ? parseInt(match[1]!, 10) : null
+}
+
+/**
+ * Check if a third-party error is a 429 rate limit.
+ */
+function isThirdParty429(error: unknown): boolean {
+  return getThirdPartyErrorStatus(error) === 429
+}
+
 function isStaleConnectionError(error: unknown): boolean {
   if (!(error instanceof APIConnectionError)) {
     return false
@@ -280,24 +298,33 @@ export async function* withRetry<T>(
       // mode still active, so its `continue` never reaches the attempt clamp
       // and the for-loop terminates. Persistent sessions want the chunked
       // keep-alive path instead of fast-mode cache-preservation anyway.
+      //
+      // Handles both first-party (APIError) and third-party (plain Error with
+      // status in message) rate limit responses.
+      const isFirstParty429or529 = error instanceof APIError && (error.status === 429 || is529Error(error))
+      const isThirdPartyRateLimit = isThirdParty429(error)
       if (
         wasFastModeActive &&
         !isPersistentRetryEnabled() &&
-        error instanceof APIError &&
-        (error.status === 429 || is529Error(error))
+        (isFirstParty429or529 || isThirdPartyRateLimit)
       ) {
         // If the 429 is specifically because extra usage (overage) is not
         // available, permanently disable fast mode with a specific message.
-        const overageReason = error.headers?.get(
-          'anthropic-ratelimit-unified-overage-disabled-reason',
-        )
-        if (overageReason !== null && overageReason !== undefined) {
-          handleFastModeOverageRejection(overageReason)
-          retryContext.fastMode = false
-          continue
+        // (First-party Anthropic only — third-party providers don't have this header.)
+        if (error instanceof APIError) {
+          const overageReason = error.headers?.get(
+            'anthropic-ratelimit-unified-overage-disabled-reason',
+          )
+          if (overageReason !== null && overageReason !== undefined) {
+            handleFastModeOverageRejection(overageReason)
+            retryContext.fastMode = false
+            continue
+          }
         }
 
-        const retryAfterMs = getRetryAfterMs(error)
+        // First-party: try to read retry-after from headers.
+        // Third-party: no headers available; use default cooldown.
+        const retryAfterMs = error instanceof APIError ? getRetryAfterMs(error) : null
         if (retryAfterMs !== null && retryAfterMs < SHORT_RETRY_THRESHOLD_MS) {
           // Short retry-after: wait and retry with fast mode still active
           // to preserve prompt cache (same model name on retry).

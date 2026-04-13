@@ -170,14 +170,15 @@ export type ToolSearchMode = 'tst' | 'tst-auto' | 'standard'
  *   (unset)               tst (default: always defer MCP and shouldDefer tools)
  */
 export function getToolSearchMode(): ToolSearchMode {
-  // OpenRouter and NIM route to frontier models that support full tool
-  // calling but don't support Anthropic-specific defer_loading / tool_reference.
-  // Force 'standard' so ALL tools (Agent, MCP, Skills, Plan, Tasks) are
-  // sent with full schemas and the model can actually call them.
-  // Other 3P providers (OpenAI, Gemini, Groq, etc.) are unaffected — their
-  // optimizeParams() already filters tools to a core set before this matters.
+  // Third-party providers don't support Anthropic-specific defer_loading /
+  // tool_reference beta features. Force 'standard' so ALL tools (Agent, MCP,
+  // Skills, Plan, Tasks) are sent with full schemas and the model can call them.
+  // Without this, deferred tools appear as empty name-only stubs that the
+  // model can see but never invoke — breaking ToolSearch, Agents, and MCP.
   const provider = getAPIProvider()
-  if (provider === 'openrouter' || provider === 'nim') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'ollama'
+    || provider === 'gemini' || provider === 'openai' || provider === 'groq'
+    || provider === 'deepseek') {
     return 'standard'
   }
 

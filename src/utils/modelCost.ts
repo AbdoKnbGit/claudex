@@ -22,6 +22,8 @@ import {
   getDefaultMainLoopModelSetting,
   type ModelShortName,
 } from './model/model.js'
+import { getAPIProvider } from './model/providers.js'
+import { getProviderModelSet } from './model/configs.js'
 
 // @see https://platform.claude.com/docs/en/about-claude/pricing
 export type ModelCosts = {
@@ -88,6 +90,90 @@ export const COST_HAIKU_45 = {
 
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
+// ─── Gemini cost tiers ──────────────────────────────────────────────
+// Google Gemini pricing (per Mtok). Cache reads are 25% of input cost,
+// cache writes are the same as input cost. Web search not applicable.
+
+/** Gemini 2.5 Flash / 3.x Flash: cheapest tier. */
+const COST_GEMINI_FLASH: ModelCosts = {
+  inputTokens: 0.15,
+  outputTokens: 0.6,
+  promptCacheWriteTokens: 0.15,
+  promptCacheReadTokens: 0.0375,
+  webSearchRequests: 0,
+}
+
+/** Gemini 2.5 Flash Lite / 3.x Flash Lite: ultra-cheap. */
+const COST_GEMINI_FLASH_LITE: ModelCosts = {
+  inputTokens: 0.075,
+  outputTokens: 0.3,
+  promptCacheWriteTokens: 0.075,
+  promptCacheReadTokens: 0.01875,
+  webSearchRequests: 0,
+}
+
+/** Gemini 2.5 Pro / 3.x Pro: premium tier. */
+const COST_GEMINI_PRO: ModelCosts = {
+  inputTokens: 1.25,
+  outputTokens: 10,
+  promptCacheWriteTokens: 1.25,
+  promptCacheReadTokens: 0.3125,
+  webSearchRequests: 0,
+}
+
+/** Free OAuth tier — cost is zero (quota-limited instead). */
+const COST_GEMINI_FREE: ModelCosts = {
+  inputTokens: 0,
+  outputTokens: 0,
+  promptCacheWriteTokens: 0,
+  promptCacheReadTokens: 0,
+  webSearchRequests: 0,
+}
+
+/**
+ * Resolve Gemini model cost by prefix matching. Handles two cases:
+ *   1. Model is already a Gemini name (e.g. "gemini-2.5-flash")
+ *   2. Model is a Claude name (e.g. "claude-opus-4-6") but the active
+ *      provider is Gemini — resolve to the mapped Gemini model first
+ *
+ * Returns null if neither case applies.
+ */
+function getGeminiModelCosts(model: string): ModelCosts | null {
+  let m = model.toLowerCase()
+
+  // If the model is a Claude name but we're using Gemini provider,
+  // resolve it to the actual Gemini model name for cost lookup.
+  if (!m.startsWith('gemini-')) {
+    try {
+      const provider = getAPIProvider()
+      if (provider !== 'gemini') return null
+      const models = getProviderModelSet('gemini')
+      if (m.includes('opus'))       m = models.opus.toLowerCase()
+      else if (m.includes('haiku')) m = models.haiku.toLowerCase()
+      else                          m = models.sonnet.toLowerCase()
+    } catch {
+      return null
+    }
+  }
+
+  if (!m.startsWith('gemini-')) return null
+
+  // Flash Lite variants (cheapest)
+  if (m.includes('flash-lite') || m.includes('flash_lite')) {
+    return COST_GEMINI_FLASH_LITE
+  }
+  // Flash variants
+  if (m.includes('flash')) {
+    return COST_GEMINI_FLASH
+  }
+  // Pro variants
+  if (m.includes('pro')) {
+    return COST_GEMINI_PRO
+  }
+  // Fallback for unrecognized Gemini models → flash pricing (conservative)
+  return COST_GEMINI_FLASH
+}
+
 /**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
@@ -142,6 +228,10 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 }
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
+  // Check Gemini models first — they use prefix matching, not canonical names.
+  const geminiCosts = getGeminiModelCosts(model)
+  if (geminiCosts) return geminiCosts
+
   const shortName = getCanonicalName(model)
 
   // Check if this is an Opus 4.6 model with fast mode active.

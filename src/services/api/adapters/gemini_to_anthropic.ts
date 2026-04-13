@@ -349,6 +349,10 @@ export async function* geminiStreamToAnthropicEvents(
 /**
  * Parse a Gemini SSE stream (ReadableStream<Uint8Array>) into
  * an async iterable of GeminiStreamChunk objects.
+ *
+ * SSE events are delimited by double newlines. Each event is a
+ * "data: {json}" line. JSON payloads can be split across TCP chunks
+ * so we keep a buffer and only commit lines that end with a blank line.
  */
 export async function* parseGeminiSSE(
   body: ReadableStream<Uint8Array>,
@@ -364,14 +368,16 @@ export async function* parseGeminiSSE(
 
       buffer += decoder.decode(value, { stream: true })
 
-      // SSE format: "data: {json}\n\n"
-      const lines = buffer.split('\n')
-      buffer = ''
+      // SSE events are separated by "\n\n". Only process complete events;
+      // keep the trailing partial in `buffer` for the next read.
+      const segments = buffer.split('\n\n')
+      buffer = segments.pop() ?? ''  // last segment is incomplete
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]!.trim()
+      for (const segment of segments) {
+        for (const rawLine of segment.split('\n')) {
+          const line = rawLine.trim()
+          if (!line.startsWith('data: ')) continue
 
-        if (line.startsWith('data: ')) {
           const jsonStr = line.slice(6)
           if (jsonStr === '[DONE]') return
 
@@ -379,10 +385,23 @@ export async function* parseGeminiSSE(
             const chunk = JSON.parse(jsonStr) as GeminiStreamChunk
             yield chunk
           } catch {
-            // Incomplete JSON — push back to buffer
-            buffer = lines.slice(i).join('\n')
-            break
+            // Malformed JSON in a complete SSE event — skip it.
           }
+        }
+      }
+    }
+
+    // Flush any trailing data left in the buffer at end-of-stream.
+    if (buffer.trim()) {
+      for (const rawLine of buffer.split('\n')) {
+        const line = rawLine.trim()
+        if (!line.startsWith('data: ')) continue
+        const jsonStr = line.slice(6)
+        if (jsonStr === '[DONE]') return
+        try {
+          yield JSON.parse(jsonStr) as GeminiStreamChunk
+        } catch {
+          // ignore
         }
       }
     }

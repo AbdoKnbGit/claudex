@@ -77,8 +77,8 @@ export interface GeminiFunctionDeclaration {
 const UNSUPPORTED_GEMINI_SCHEMA_FIELDS = new Set([
   // JSON Schema identifiers & references
   '$schema', '$id', '$ref', '$comment', '$defs', 'definitions',
-  // Composition keywords (Gemini has no union/intersection support)
-  'allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else',
+  // Composition keywords — handled by flattenComposition() before stripping
+  'not', 'if', 'then', 'else',
   // Object validation keywords Gemini rejects
   'additionalProperties', 'patternProperties', 'propertyNames',
   'minProperties', 'maxProperties', 'unevaluatedProperties',
@@ -94,14 +94,91 @@ const UNSUPPORTED_GEMINI_SCHEMA_FIELDS = new Set([
 ])
 
 /**
+ * Flatten JSON Schema composition keywords (anyOf, oneOf, allOf) that
+ * Gemini cannot handle natively. Strategy:
+ *
+ *   - anyOf / oneOf with a null type → extract the non-null branch + nullable
+ *   - anyOf / oneOf without null → take the first branch
+ *   - allOf → shallow-merge all branches into one schema
+ *
+ * This runs BEFORE the normal sanitize pass so the flattened result can
+ * be cleaned of unsupported fields normally.
+ */
+function flattenComposition(schema: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...schema }
+
+  // Handle type arrays like ["string", "null"] → type: "string", nullable: true
+  if (Array.isArray(result.type)) {
+    const types = result.type as string[]
+    const nonNull = types.filter(t => t !== 'null')
+    if (types.includes('null')) {
+      result.nullable = true
+    }
+    result.type = nonNull.length === 1 ? nonNull[0] : nonNull[0] ?? 'string'
+  }
+
+  // anyOf / oneOf → pick first non-null variant, set nullable if null present
+  for (const keyword of ['anyOf', 'oneOf'] as const) {
+    const variants = result[keyword] as Record<string, unknown>[] | undefined
+    if (!Array.isArray(variants) || variants.length === 0) continue
+
+    const nonNull = variants.filter(v => v.type !== 'null')
+    const hasNull = variants.some(v => v.type === 'null')
+    const picked = nonNull[0] ?? variants[0]!
+
+    // Merge the picked variant's fields into result
+    delete result[keyword]
+    if (hasNull) result.nullable = true
+    for (const [k, v] of Object.entries(picked)) {
+      if (v !== undefined && !(k in result && k !== keyword)) {
+        result[k] = v
+      }
+    }
+  }
+
+  // allOf → shallow-merge all branches
+  if (Array.isArray(result.allOf)) {
+    const branches = result.allOf as Record<string, unknown>[]
+    delete result.allOf
+    for (const branch of branches) {
+      for (const [k, v] of Object.entries(branch)) {
+        if (v === undefined) continue
+        if (k === 'properties' && result.properties) {
+          // Merge properties objects
+          result.properties = {
+            ...(result.properties as Record<string, unknown>),
+            ...(v as Record<string, unknown>),
+          }
+        } else if (k === 'required' && result.required) {
+          // Merge required arrays
+          result.required = [
+            ...new Set([
+              ...(result.required as string[]),
+              ...(v as string[]),
+            ]),
+          ]
+        } else if (!(k in result)) {
+          result[k] = v
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+/**
  * Recursively strip fields that Gemini does not support from a JSON Schema object.
- * Also removes undefined values that cannot be serialized to JSON.
+ * Also handles composition keywords (anyOf/oneOf/allOf) by flattening them,
+ * type arrays by extracting the non-null type, and empty required arrays.
  * Returns a new object — does not mutate the original.
  */
 function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
+  // First pass: flatten composition keywords
+  const flattened = flattenComposition(schema)
   const result: Record<string, unknown> = {}
 
-  for (const [key, value] of Object.entries(schema)) {
+  for (const [key, value] of Object.entries(flattened)) {
     // Strip unsupported fields and undefined values
     if (UNSUPPORTED_GEMINI_SCHEMA_FIELDS.has(key)) continue
     if (value === undefined) continue
@@ -122,8 +199,10 @@ function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string
       // Recurse into array item schema
       result[key] = sanitizeSchemaForGemini(value as Record<string, unknown>)
     } else if (key === 'required' && Array.isArray(value)) {
-      // Keep required array as-is (list of field names)
-      result[key] = value
+      // Gemini rejects empty required arrays — only include if non-empty.
+      if (value.length > 0) {
+        result[key] = value
+      }
     } else if (Array.isArray(value)) {
       // Recurse into arrays of schemas (e.g. items as tuple)
       result[key] = value.map(item =>
@@ -132,7 +211,7 @@ function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string
           : item,
       )
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      // Recurse into any nested schema object (e.g. additionalItems)
+      // Recurse into any nested schema object
       result[key] = sanitizeSchemaForGemini(value as Record<string, unknown>)
     } else {
       result[key] = value

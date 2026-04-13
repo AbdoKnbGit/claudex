@@ -77,6 +77,16 @@ export class OllamaProvider extends OpenAIProvider {
   }
 
   /**
+   * Ollama runs locally — no TPM limits, no reason to strip tools.
+   * Send the full tool set so agents, MCP servers, plan mode, and
+   * tasks all work. Users with small models can set
+   * OLLAMA_NO_OPTIMIZE=false or PROVIDER_MAX_SYSTEM_CHARS to tune.
+   */
+  protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
+    return params
+  }
+
+  /**
    * Override to handle Ollama-specific behavior:
    *   - Pre-flight health check on /api/tags so we fail fast (< 5s) with
    *     an actionable error message when the daemon isn't running,

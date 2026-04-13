@@ -45,6 +45,8 @@ import { isFastModeEnabled } from './utils/fastMode.js'
 import { formatDuration, formatNumber } from './utils/format.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
 import { getCanonicalName } from './utils/model/model.js'
+import { getAPIProvider, isThirdPartyProvider } from './utils/model/providers.js'
+import { getProviderModelSet } from './utils/model/configs.js'
 import { calculateUSDCost } from './utils/modelCost.js'
 import {
   getPendingTurnPhase,
@@ -183,6 +185,29 @@ function formatCost(cost: number, maxDecimalPlaces: number = 4): string {
   return `$${cost > 0.5 ? round(cost, 100).toFixed(2) : cost.toFixed(maxDecimalPlaces)}`
 }
 
+/**
+ * Resolve display name for a model in cost output. For third-party
+ * providers (Gemini, OpenAI, etc.) we show the actual provider model
+ * name instead of the Claude model alias.
+ */
+function resolveDisplayModelName(model: string): string {
+  try {
+    const provider = getAPIProvider()
+    if (!isThirdPartyProvider(provider)) return getCanonicalName(model)
+    // Resolve Claude aliases to the provider's actual model name.
+    const m = model.toLowerCase()
+    const models = getProviderModelSet(provider)
+    if (m.includes('opus'))       return models.opus
+    if (m.includes('haiku'))      return models.haiku
+    if (m.includes('sonnet'))     return models.sonnet
+    // If it doesn't look like a Claude alias, it's already a provider model.
+    if (!m.includes('claude'))    return model
+    return models.sonnet // default mapping
+  } catch {
+    return getCanonicalName(model)
+  }
+}
+
 function formatModelUsage(): string {
   const modelUsageMap = getModelUsage()
   if (Object.keys(modelUsageMap).length === 0) {
@@ -192,7 +217,7 @@ function formatModelUsage(): string {
   // Accumulate usage by short name
   const usageByShortName: { [shortName: string]: ModelUsage } = {}
   for (const [model, usage] of Object.entries(modelUsageMap)) {
-    const shortName = getCanonicalName(model)
+    const shortName = resolveDisplayModelName(model)
     if (!usageByShortName[shortName]) {
       usageByShortName[shortName] = {
         inputTokens: 0,
