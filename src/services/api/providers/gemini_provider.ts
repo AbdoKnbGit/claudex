@@ -405,6 +405,7 @@ export class GeminiProvider extends BaseProvider {
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const optimized = this._optimizeParams(params)
     const model = this.resolveModel(optimized.model)
+    this._lastModelUsed = model
     const body = anthropicToGeminiRequest({ ...optimized, model })
 
     // OAuth path → route through Code Assist with the right executor.
@@ -482,8 +483,11 @@ export class GeminiProvider extends BaseProvider {
         invalidateCache(cacheName)
         return this.stream(params)
       }
-      // Auto-retry on 429: parse retry delay from error body and wait
-      if (response.status === 429 && this._retryCount429 < 2) {
+      // Auto-retry on per-minute 429 rate limits (NOT quota exhaustion).
+      // Quota exhaustion (weekly cap) should fail immediately — retrying
+      // just wastes requests against a limit that won't reset for days.
+      const isQuotaExhausted = /exhaust|quota will reset after \d+h/i.test(errText)
+      if (response.status === 429 && !isQuotaExhausted && this._retryCount429 < 2) {
         this._retryCount429++
         const delay = this._parseRetryDelay(errText)
         if (delay > 0 && delay <= 60_000) {
@@ -704,6 +708,9 @@ export class GeminiProvider extends BaseProvider {
   /** Guard against infinite 429 retry loops. */
   private _retryCount429 = 0
 
+  /** Last model used — for error messages. */
+  private _lastModelUsed: string | null = null
+
   /** Parse retry delay from Gemini 429 error body (e.g., "retry in 16.35s"). */
   private _parseRetryDelay(body: string): number {
     const match = body.match(/retry in ([\d.]+)s/i)
@@ -742,7 +749,23 @@ export class GeminiProvider extends BaseProvider {
     }
 
     if (status === 429) {
-      // Extract retry delay from error body if available
+      // Distinguish quota exhaustion (weekly/daily cap) from per-minute rate limit.
+      // Quota exhaustion: "exhausted your capacity" / "quota will reset after Xh"
+      // Rate limit: "retry in Xs" / short cooldown
+      const isQuotaExhausted = /exhaust|quota will reset after \d+h/i.test(body)
+      if (isQuotaExhausted) {
+        const resetMatch = body.match(/reset after (\d+h\d+m\d+s|\d+h\d+m|\d+h)/i)
+        const resetHint = resetMatch ? ` Resets in ${resetMatch[1]}.` : ''
+        return new Error(
+          `Gemini quota exhausted for ${this._lastModelUsed ?? 'this model'}.${resetHint}\n` +
+          `${errorDetail}\n` +
+          `This is a Google-side limit, not a ClaudeX issue. Options:\n` +
+          `  - Switch to a different model via /models\n` +
+          `  - Wait for quota to reset\n` +
+          `  - Use a different provider via /provider`,
+        )
+      }
+      // Per-minute rate limit — retryable
       const retryMatch = body.match(/retry in ([\d.]+)s/i)
       const retryHint = retryMatch ? `\nRetry in ~${Math.ceil(parseFloat(retryMatch[1]))}s.` : ''
       const tierHint = this.hasOAuth
