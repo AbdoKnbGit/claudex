@@ -611,8 +611,15 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
 ): Promise<MessageUpdateLazy[]> {
-  // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  // Validate input types with zod (surprisingly, the model is not great at generating valid input).
+  // Use .strip() mode: silently drop unknown properties instead of rejecting.
+  // Third-party models (Gemini, DeepSeek, etc.) frequently hallucinate extra
+  // params from their native tool schemas (e.g., multiSelect on AskUserQuestion).
+  // Stripping is safe — unknown props can't affect tool behavior.
+  const strippedSchema = tool.inputSchema instanceof Object && 'strip' in tool.inputSchema
+    ? (tool.inputSchema as any).strip()
+    : tool.inputSchema
+  const parsedInput = strippedSchema.safeParse(input)
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(
       tool.name,

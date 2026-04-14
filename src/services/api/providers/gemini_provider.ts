@@ -54,7 +54,13 @@ import { getProviderModelSet } from '../../../utils/model/configs.js'
 // approached, inserts a short delay to spread requests evenly instead
 // of bursting and getting 429'd.
 
-const DEFAULT_RPM = 30  // Conservative default; Gemini free tier is 15 RPM
+// Free-tier RPM limits per model family (as of 2026-04):
+//   flash-lite: 5 RPM, flash: 10 RPM, pro: 5 RPM
+// OAuth (Code Assist) tier is higher — 30+ RPM.
+// Default to a safe free-tier value. OAuth users get auto-upgraded
+// in the constructor when we detect they have a token.
+const DEFAULT_RPM_FREE = 5     // Safe for all free-tier models
+const DEFAULT_RPM_OAUTH = 30   // Code Assist / Antigravity tier
 const _requestTimestamps: number[] = []
 
 /** Sleep for ms. */
@@ -67,7 +73,7 @@ function _sleep(ms: number): Promise<void> {
  * if the window has capacity. Otherwise waits until the oldest
  * request in the window expires.
  */
-async function _throttle(rpm: number = DEFAULT_RPM): Promise<void> {
+async function _throttle(rpm: number = DEFAULT_RPM_FREE): Promise<void> {
   const now = Date.now()
   const windowMs = 60_000
 
@@ -246,8 +252,10 @@ export class GeminiProvider extends BaseProvider {
     if (config.oauthToken && !config.antigravityOAuthToken) {
       this.antigravityOAuthToken = config.oauthToken
     }
-    // Allow env override for rate limit (useful for paid tiers).
-    this.rpm = parseInt(process.env.GEMINI_RPM ?? '', 10) || DEFAULT_RPM
+    // Rate limit: env override > auto-detect from auth tier > safe default.
+    // OAuth users (Code Assist / Antigravity) get higher RPM than API key free tier.
+    const defaultRpm = this.hasOAuth ? DEFAULT_RPM_OAUTH : DEFAULT_RPM_FREE
+    this.rpm = parseInt(process.env.GEMINI_RPM ?? '', 10) || defaultRpm
   }
 
   /**
@@ -396,8 +404,19 @@ export class GeminiProvider extends BaseProvider {
         invalidateCache(cacheName)
         return this.stream(params)
       }
+      // Auto-retry on 429: parse retry delay from error body and wait
+      if (response.status === 429 && this._retryCount429 < 2) {
+        this._retryCount429++
+        const delay = this._parseRetryDelay(errText)
+        if (delay > 0 && delay <= 60_000) {
+          await _sleep(delay)
+          return this.stream(params)
+        }
+      }
+      this._retryCount429 = 0
       throw this._formatGeminiError(response.status, errText)
     }
+    this._retryCount429 = 0
 
     const geminiChunks = parseGeminiSSE(response.body!)
     const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
@@ -604,6 +623,16 @@ export class GeminiProvider extends BaseProvider {
   private _staleRetryCount = 0
   private _maxStaleRetries = 1
 
+  /** Guard against infinite 429 retry loops. */
+  private _retryCount429 = 0
+
+  /** Parse retry delay from Gemini 429 error body (e.g., "retry in 16.35s"). */
+  private _parseRetryDelay(body: string): number {
+    const match = body.match(/retry in ([\d.]+)s/i)
+    if (match) return Math.ceil(parseFloat(match[1]) * 1000) + 500 // +500ms margin
+    return 20_000 // Default: 20s if we can't parse
+  }
+
   /**
    * Format Gemini API errors. All error messages include the numeric status
    * code in the format "Gemini API error NNN: ..." so the app's withRetry
@@ -635,11 +664,15 @@ export class GeminiProvider extends BaseProvider {
     }
 
     if (status === 429) {
+      // Extract retry delay from error body if available
+      const retryMatch = body.match(/retry in ([\d.]+)s/i)
+      const retryHint = retryMatch ? `\nRetry in ~${Math.ceil(parseFloat(retryMatch[1]))}s.` : ''
+      const tierHint = this.hasOAuth
+        ? ''
+        : '\nTip: Use /login to authenticate with Google for higher rate limits (free).'
       return new Error(
-        `Gemini API error ${status}: Rate limit or quota exceeded.\n` +
-        `${errorDetail}\n` +
-        `Current rate limit: ${this.rpm} RPM. Set GEMINI_RPM env var to adjust.\n` +
-        `Wait a moment and retry, or check your quota at console.cloud.google.com.`,
+        `Gemini rate limit hit (${this.rpm} RPM).${retryHint}${tierHint}\n` +
+        `${errorDetail}`,
       )
     }
 
