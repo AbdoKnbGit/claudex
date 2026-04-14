@@ -93,6 +93,22 @@ interface CodeAssistCache {
 let _cachedCli: CodeAssistCache | null = null
 let _cachedAntigravity: CodeAssistCache | null = null
 
+/**
+ * Clear the cached project ID for an executor. Called when we get a 403
+ * "does not have permission" error — the cached project is stale and the
+ * next call will re-onboard to get a fresh project ID.
+ */
+export function clearCodeAssistCache(executor?: GeminiExecutor): void {
+  if (!executor || executor === 'cli') {
+    _cachedCli = null
+    try { const f = _cacheFileFor('cli'); if (existsSync(f)) writeFileSync(f, '{}') } catch {}
+  }
+  if (!executor || executor === 'antigravity') {
+    _cachedAntigravity = null
+    try { const f = _cacheFileFor('antigravity'); if (existsSync(f)) writeFileSync(f, '{}') } catch {}
+  }
+}
+
 function _cacheFileFor(executor: GeminiExecutor): string {
   return executor === 'cli' ? CACHE_FILE_CLI : CACHE_FILE_ANTIGRAVITY
 }

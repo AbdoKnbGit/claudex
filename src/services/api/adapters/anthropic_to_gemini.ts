@@ -71,14 +71,26 @@ function getGeminiSafetySettings(): GeminiSafetySettingEntry[] | undefined {
 }
 
 // ─── Dynamic Generation Config ────────────────────────────────────
-// Derives thinking budgets and sampling params from the model name
-// rather than hardcoding per model. The logic mirrors the real Gemini
-// CLI's config inheritance: newer/larger models get bigger budgets.
 //
-// All values are overridable via environment variables:
-//   GEMINI_TOP_P        — sampling top_p (default: 0.95)
-//   GEMINI_TOP_K        — sampling top_k (default: 64)
-//   GEMINI_THINKING     — thinking budget override (0 = off, -1 = dynamic)
+// KEY INSIGHT from studying how Claude and Gemini CLI work:
+//
+// Claude's secret: `type: 'adaptive'` — NO fixed budget. The MODEL
+// decides how much to think per turn. Simple tool calls = barely any
+// thinking. Complex reasoning = lots of thinking. This is why Claude
+// is fast on iterative tool loops.
+//
+// Gemini's equivalent: `thinkingBudget: -1` (dynamic mode). The model
+// decides per-turn how much thinking to use. Same concept, same benefit.
+//
+// Previous approach (fixed 8K/24K budgets) forced the model to think
+// the same amount on "Read file.ts" as on "design the architecture".
+// Dynamic mode fixes this — the model spends 0 tokens thinking when
+// it just needs to call the next tool, and 10K+ when it needs to reason.
+//
+// All values overridable via env:
+//   GEMINI_TOP_P        — sampling (default: 0.95)
+//   GEMINI_TOP_K        — sampling (default: 64)
+//   GEMINI_THINKING     — thinking budget (0=off, -1=dynamic, N=fixed)
 //   GEMINI_TEMPERATURE  — temperature override
 
 function _envFloat(key: string): number | undefined {
@@ -96,62 +108,34 @@ function _envInt(key: string): number | undefined {
 }
 
 /**
- * Derive a thinking budget from the model name. The budget must balance
- * QUALITY (deeper reasoning) against LATENCY (time-to-first-token).
- *
- * Claude is fast because it uses 100K+ cached tokens and barely thinks
- * between iterative tool calls. Gemini can't match that cache efficiency,
- * so we keep thinking budgets MODERATE — enough for good decisions,
- * not so much that every "Read file" call takes 10 seconds of thinking.
- *
- * When the Anthropic query loop sends an explicit thinking budget (for
- * complex tasks), that OVERRIDES this default. These defaults only apply
- * when thinking is "adaptive" or unspecified.
+ * Determine if a model supports thinking at all.
+ * Flash-lite variants are speed-optimized and don't have thinking.
  */
-function deriveThinkingBudget(model: string): number {
-  // Env override wins — lets power users control thinking cost.
-  const override = _envInt('GEMINI_THINKING')
-  if (override !== undefined) return override
-
+function modelSupportsDynamicThinking(model: string): boolean {
   const m = model.toLowerCase()
-
-  // Pro models — good thinking but not excessive. The query loop will
-  // send higher budgets for complex tasks; this default covers the
-  // iterative tool-calling turns where speed matters most.
-  if (m.includes('pro')) {
-    if (m.includes('high')) return 16384   // explicit "high" thinking variant
-    if (m.includes('low'))  return 2048    // explicit "low" thinking variant
-    return 8192                             // standard pro → moderate thinking
-  }
-
-  // Flash models — fast, lean thinking.
-  if (m.includes('flash')) {
-    if (m.includes('lite')) return 0        // lite = no thinking, max speed
-    return 2048                              // flash → quick thinking
-  }
-
-  // Unknown gemini model → moderate.
-  if (m.startsWith('gemini-')) return 4096
-
-  // Non-Gemini → no thinking.
-  return 0
+  if (!m.startsWith('gemini-')) return false
+  // Lite variants are speed-first, no thinking
+  if (m.includes('lite')) return false
+  // Gemini 2.5+ and 3.x all support thinking
+  if (m.includes('gemini-2.5') || m.includes('gemini-3') || m.includes('gemini-4')) return true
+  // Older/unknown — don't assume thinking
+  return false
 }
 
 /**
- * Build the full generation defaults for a model. Everything is derived
- * dynamically from the model name, with env var overrides available.
+ * Build the full generation defaults for a model.
  */
 function getModelGenerationDefaults(model: string): {
   topP: number
   topK: number
   temperature: number | undefined
-  thinkingBudget: number
+  supportsDynamicThinking: boolean
 } {
   return {
     topP: _envFloat('GEMINI_TOP_P') ?? 0.95,
     topK: _envInt('GEMINI_TOP_K') ?? 64,
     temperature: _envFloat('GEMINI_TEMPERATURE'),
-    thinkingBudget: deriveThinkingBudget(model),
+    supportsDynamicThinking: modelSupportsDynamicThinking(model),
   }
 }
 
@@ -378,7 +362,7 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
   if (safety) request.safetySettings = safety
 
   // Generation config — dynamically derived from model capabilities
-  // and overridable via env vars. No hardcoded per-model tables.
+  // and overridable via env vars.
   const defaults = getModelGenerationDefaults(model)
   request.generationConfig = {
     maxOutputTokens: params.max_tokens,
@@ -388,29 +372,43 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
     ...(params.stop_sequences && { stopSequences: params.stop_sequences }),
   }
 
-  // Thinking config:
-  //   1. Anthropic explicit "enabled" with budget → use it (capped to avoid extreme latency)
-  //   2. Anthropic "adaptive" → use derived budget (model-appropriate)
-  //   3. Anthropic "disabled" → no thinking
-  //   4. No thinking config at all → use derived budget
+  // ─── Thinking Config ──────────────────────────────────────────────
   //
-  // Claude's query loop sends budgets designed for Claude's speed profile
-  // (100K cached tokens, near-zero per-turn cost). Gemini can't match that
-  // cache efficiency, so large budgets cause disproportionate latency.
-  // We cap explicit budgets at 16K unless the user overrides via env.
-  const maxBudget = _envInt('GEMINI_MAX_THINKING') ?? 16384
-  if (params.thinking?.type === 'disabled') {
-    // Explicitly off.
-  } else if (params.thinking?.type === 'enabled') {
-    const budget = Math.min(params.thinking.budget_tokens, maxBudget)
-    request.generationConfig.thinkingConfig = {
-      thinkingBudget: budget,
-      includeThoughts: true,
+  // This is the most critical setting for both QUALITY and SPEED.
+  //
+  // How Claude does it: `type: 'adaptive'` — no budget. The model
+  // decides per-turn. Quick tool calls → 0 thinking tokens. Complex
+  // reasoning → thousands. This is why Claude iterates tools fast.
+  //
+  // Gemini equivalent: `thinkingBudget: -1` (dynamic mode). Same
+  // concept — the model allocates thinking tokens based on task
+  // complexity. A "Read file" call uses ~0 thinking, a "design this
+  // architecture" call uses 10K+.
+  //
+  // Priority:
+  //   1. GEMINI_THINKING env var → explicit override (0=off, -1=dynamic, N=fixed)
+  //   2. Anthropic 'disabled' → no thinking
+  //   3. Model supports dynamic thinking → use -1 (dynamic)
+  //   4. Model doesn't support thinking → skip thinkingConfig
+  const envThinking = _envInt('GEMINI_THINKING')
+
+  if (envThinking !== undefined) {
+    // Explicit env override — user knows what they want.
+    if (envThinking !== 0) {
+      request.generationConfig.thinkingConfig = {
+        thinkingBudget: envThinking,
+        includeThoughts: true,
+      }
     }
-  } else if (defaults.thinkingBudget > 0) {
-    // Adaptive or unspecified — lean thinking for speed.
+  } else if (params.thinking?.type === 'disabled') {
+    // Explicitly off — respect it.
+  } else if (defaults.supportsDynamicThinking) {
+    // Model supports thinking → use DYNAMIC mode (-1).
+    // This mirrors Claude's adaptive thinking: the model decides
+    // how much to think per turn. Fast for tool calls, deep for
+    // complex reasoning. Best of both worlds.
     request.generationConfig.thinkingConfig = {
-      thinkingBudget: defaults.thinkingBudget,
+      thinkingBudget: -1,
       includeThoughts: true,
     }
   }

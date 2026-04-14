@@ -39,9 +39,11 @@ interface CacheMiss {
   retryAfter: number // epoch ms — don't retry until after this
 }
 
-// Gemini's default TTL is 5 minutes; we expire one second earlier so we
-// never reference a cache that just died on the server side.
-const CACHE_TTL_MS = 5 * 60 * 1000 - 1000
+// Server-side TTL is set to 600s (10 min) for breathing room. We expire
+// locally at 5 min (300s) so we never reference a server cache that just
+// died — the extra 5 min server-side gives the refresh cycle time to
+// create a replacement before the old one expires.
+const CACHE_TTL_MS = 5 * 60 * 1000
 
 // Proactively refresh the cache when less than this much TTL remains.
 // This prevents the gap where the old cache expires before the new one
@@ -57,8 +59,10 @@ const MISS_COOLDOWN_ERROR_MS = 15_000
 
 // Minimum payload size before we even attempt to cache. Gemini rejects
 // small caches with a hard error; skipping the round trip saves latency.
-// 4 KB chars ≈ ~1 K tokens, comfortably over the smallest tier's floor.
-const MIN_CACHE_SIZE_CHARS = 4096
+// 8 KB chars ≈ ~2 K tokens. Raised from 4096 to avoid micro-caches that
+// cost more in round-trips than they save. With the stable/volatile split,
+// the stable portion is always large enough for meaningful caching.
+const MIN_CACHE_SIZE_CHARS = 8192
 
 /**
  * Models that support context caching. Covers the full Gemini 2.5+ and
@@ -140,7 +144,7 @@ async function _createCacheOnServer(
   try {
     const body: Record<string, unknown> = {
       model: `models/${model}`,
-      ttl: '300s',
+      ttl: '600s',
     }
     if (systemInstruction) body.systemInstruction = systemInstruction
     if (tools) body.tools = tools

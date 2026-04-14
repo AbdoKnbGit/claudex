@@ -24,6 +24,7 @@ import {
   type ProviderConfig,
   type ProviderRequestParams,
   type ProviderStreamResult,
+  type SystemBlock,
 } from './base_provider.js'
 import { anthropicToGeminiRequest } from '../adapters/anthropic_to_gemini.js'
 import {
@@ -42,6 +43,7 @@ import {
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
   antigravityApiHeaders,
+  clearCodeAssistCache,
 } from './gemini_code_assist.js'
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
@@ -143,6 +145,81 @@ function _enrichGeminiModelName(id: string, displayName: string): string {
   return displayName
 }
 
+// ─── Gemini Payload Optimization ─────────────────────────────────
+// We do NOT filter tools. Claude Code's deferred tool system in
+// claude.ts already handles smart loading: tools with shouldDefer=true
+// are excluded unless discovered via ToolSearch. Filtering here would
+// double-filter and cripple the model (no agents, no tasks, no MCP).
+//
+// For API-key users, gemini_cache.ts caches systemInstruction + tools
+// via cachedContent after the first request → 0.25x cost on subsequent
+// turns. Filtering would break the cache (different tool set = miss).
+//
+// What we optimize for flash/lite only:
+//   - System prompt trim (Claude's verbose instructions → 8K cap)
+//   - max_tokens cap (prevent over-reservation)
+// Pro models: zero modification, full payload.
+
+const GEMINI_MAX_SYSTEM_CHARS = 8000
+const GEMINI_MAX_OUTPUT_TOKENS = 8192
+
+// ─── System Instruction Splitter ─────────────────────────────────
+// The system prompt contains a boundary marker that separates static
+// content (instructions, tool descriptions, CLAUDE.md) from volatile
+// per-turn content (git status, current date, working dir, env info).
+//
+// For caching to work, we MUST hash only the stable part. Otherwise
+// the SHA-256 key changes every turn and the cache never hits.
+
+const DYNAMIC_BOUNDARY = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
+
+// Fallback patterns for volatile content when the boundary marker
+// is absent (e.g. older system prompt versions, custom prompts).
+const VOLATILE_PATTERNS = [
+  /# currentDate\n[^\n]+/,          // Today's date is 2026-04-13
+  /gitStatus:.*?(?=\n\n|\n#|$)/s,   // Git status block
+  /<env>[\s\S]*?<\/env>/,           // Environment block
+  /Current branch:.*(?:\n.*){0,10}/, // Branch + recent commits
+]
+
+/**
+ * Split system instruction text into stable (cacheable) and volatile
+ * (per-turn) portions. Uses the SYSTEM_PROMPT_DYNAMIC_BOUNDARY marker
+ * when present, falls back to pattern matching.
+ */
+function splitSystemInstruction(text: string): {
+  stable: string
+  volatile: string
+} {
+  // Primary: split at the explicit boundary marker
+  const idx = text.indexOf(DYNAMIC_BOUNDARY)
+  if (idx !== -1) {
+    const stable = text.slice(0, idx).trimEnd()
+    const volatile = text.slice(idx + DYNAMIC_BOUNDARY.length).trimStart()
+    return { stable, volatile }
+  }
+
+  // Fallback: extract known volatile patterns from the end of the prompt
+  let volatile = ''
+  let remaining = text
+  for (const pattern of VOLATILE_PATTERNS) {
+    const match = remaining.match(pattern)
+    if (match && match.index !== undefined) {
+      // Only extract if it's in the last 30% of the text (volatile content
+      // is always near the end — don't strip tool descriptions mid-prompt)
+      if (match.index > remaining.length * 0.7) {
+        volatile += (volatile ? '\n\n' : '') + match[0]
+        remaining = remaining.slice(0, match.index) + remaining.slice(match.index + match[0].length)
+      }
+    }
+  }
+
+  return {
+    stable: remaining.trimEnd(),
+    volatile: volatile.trim(),
+  }
+}
+
 export class GeminiProvider extends BaseProvider {
   readonly name = 'gemini'
   private apiKey: string
@@ -171,6 +248,40 @@ export class GeminiProvider extends BaseProvider {
     }
     // Allow env override for rate limit (useful for paid tiers).
     this.rpm = parseInt(process.env.GEMINI_RPM ?? '', 10) || DEFAULT_RPM
+  }
+
+  /**
+   * Optimize request params before converting to Gemini format.
+   * Pro models (1M context) skip optimization. Flash/Lite get trimmed.
+   */
+  private _optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
+    if (process.env.PROVIDER_NO_OPTIMIZE === 'true') return params
+    const model = this.resolveModel(params.model)
+    // Pro models: zero modification. Full system prompt, all tools, no cap.
+    if (model.includes('pro')) return params
+
+    // Flash/Lite: trim system prompt + cap output tokens.
+    // Tools are NOT filtered — the deferred system in claude.ts already
+    // handles smart loading, and gemini_cache.ts caches them after turn 1.
+    return {
+      ...params,
+      system: this._trimSystem(params.system),
+      max_tokens: Math.min(params.max_tokens, GEMINI_MAX_OUTPUT_TOKENS),
+    }
+  }
+
+  private _trimSystem(system?: string | SystemBlock[]): string | SystemBlock[] | undefined {
+    if (!system) return system
+    const fullText = typeof system === 'string'
+      ? system
+      : system.map(s => s.text).join('\n\n')
+    if (fullText.length <= GEMINI_MAX_SYSTEM_CHARS) return system
+    let cutPoint = GEMINI_MAX_SYSTEM_CHARS
+    const lastBreak = fullText.lastIndexOf('\n\n', cutPoint)
+    if (lastBreak > GEMINI_MAX_SYSTEM_CHARS * 0.7) cutPoint = lastBreak
+    const trimmed = fullText.slice(0, cutPoint)
+    if (typeof system === 'string') return trimmed
+    return [{ type: 'text' as const, text: trimmed }]
   }
 
   /** True if any OAuth token is available. */
@@ -206,8 +317,9 @@ export class GeminiProvider extends BaseProvider {
   }
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
-    const model = this.resolveModel(params.model)
-    const body = anthropicToGeminiRequest({ ...params, model })
+    const optimized = this._optimizeParams(params)
+    const model = this.resolveModel(optimized.model)
+    const body = anthropicToGeminiRequest({ ...optimized, model })
 
     // OAuth path → route through Code Assist with the right executor.
     const oauthToken = this._tokenForModel(model)
@@ -236,6 +348,16 @@ export class GeminiProvider extends BaseProvider {
       if (!response.ok) {
         const errText = await response.text().catch(() => '')
         this._adjustRpmFromError(response.status, response.headers)
+
+        // Auto-recover from stale project ID: if Code Assist returns 403
+        // with a permission error, the cached project is invalid. Clear it
+        // and retry once — the retry will re-onboard and get a fresh project.
+        if (response.status === 403 && this._isStaleProjectError(errText) && this._staleRetryCount < this._maxStaleRetries) {
+          this._staleRetryCount++
+          clearCodeAssistCache(executor)
+          return this.stream(params)
+        }
+
         throw this._formatGeminiError(response.status, errText)
       }
 
@@ -283,8 +405,9 @@ export class GeminiProvider extends BaseProvider {
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
-    const model = this.resolveModel(params.model)
-    const body = anthropicToGeminiRequest({ ...params, model })
+    const optimized = this._optimizeParams(params)
+    const model = this.resolveModel(optimized.model)
+    const body = anthropicToGeminiRequest({ ...optimized, model })
 
     // OAuth path → route through Code Assist with the right executor.
     const oauthToken = this._tokenForModel(model)
@@ -311,6 +434,14 @@ export class GeminiProvider extends BaseProvider {
       if (!response.ok) {
         const errText = await response.text().catch(() => '')
         this._adjustRpmFromError(response.status, response.headers)
+
+        // Auto-recover from stale project ID (same as streaming path).
+        if (response.status === 403 && this._isStaleProjectError(errText) && this._staleRetryCount < this._maxStaleRetries) {
+          this._staleRetryCount++
+          clearCodeAssistCache(executor)
+          return this.create(params)
+        }
+
         throw this._formatGeminiError(response.status, errText)
       }
 
@@ -356,6 +487,14 @@ export class GeminiProvider extends BaseProvider {
    * `systemInstruction` and `tools` and sets `cachedContent`. Returns
    * the cache name so the caller can invalidate it on 404/expired.
    *
+   * CRITICAL FIX: The system prompt contains volatile per-turn data
+   * (git status, current date, working dir). If we hash the full
+   * systemInstruction, the key changes every turn → cache NEVER hits.
+   *
+   * Solution: split systemInstruction at the SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+   * marker. Cache only the stable prefix (instructions + tool schemas).
+   * Inject the volatile suffix as a user message in contents[].
+   *
    * API-key path only. OAuth (Code Assist) is skipped because the
    * proxy's cachedContents endpoint is not verified.
    */
@@ -364,17 +503,41 @@ export class GeminiProvider extends BaseProvider {
     body: ReturnType<typeof anthropicToGeminiRequest>,
   ): Promise<string | null> {
     if (!this.apiKey) return null
+    if (!body.systemInstruction) return null
+
+    // Split system instruction into stable (cacheable) and volatile (per-turn).
+    const fullText = body.systemInstruction.parts.map(p => p.text).join('\n\n')
+    const { stable, volatile } = splitSystemInstruction(fullText)
+
+    // Only cache the stable portion — its hash is consistent across turns.
+    const stableInstruction = stable
+      ? { parts: [{ text: stable }] }
+      : null
+
     const cacheName = await getOrCreateCache({
       model,
       baseUrl: this.baseUrl,
       apiKey: this.apiKey,
-      systemInstruction: body.systemInstruction,
+      systemInstruction: stableInstruction,
       tools: body.tools,
     })
     if (!cacheName) return null
+
+    // Cache hit: replace systemInstruction + tools with cache reference.
     delete body.systemInstruction
     delete body.tools
     body.cachedContent = cacheName
+
+    // Inject volatile context (git status, date, env) as a leading user
+    // message. Gemini doesn't allow systemInstruction + cachedContent
+    // together, but leading user parts work fine for context injection.
+    if (volatile) {
+      body.contents.unshift({
+        role: 'user',
+        parts: [{ text: volatile }],
+      })
+    }
+
     return cacheName
   }
 
@@ -425,6 +588,21 @@ export class GeminiProvider extends BaseProvider {
     if (claudeModel.includes('haiku')) return models.haiku
     return models.sonnet
   }
+
+  /**
+   * Detect stale Code Assist project errors. These happen when the cached
+   * project ID has lost permissions or was deleted server-side. The fix is
+   * to clear the cache and re-onboard.
+   */
+  private _isStaleProjectError(errText: string): boolean {
+    return errText.includes('cloudaicompanion') ||
+      errText.includes('does not have permission') ||
+      errText.includes('project might not exist')
+  }
+
+  /** Guard against infinite retry loops on stale project recovery. */
+  private _staleRetryCount = 0
+  private _maxStaleRetries = 1
 
   /**
    * Format Gemini API errors. All error messages include the numeric status
