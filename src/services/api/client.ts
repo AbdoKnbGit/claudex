@@ -73,6 +73,32 @@ import {
  * 4. Fallback region (us-east5)
  */
 
+/**
+ * Auto-correct the provider when the selected model clearly belongs
+ * to a different provider. Prevents routing Gemini models to OpenAI,
+ * or OpenAI models to Gemini, etc.
+ */
+function _autoCorrectProvider(
+  current: import('../../utils/model/providers.js').APIProvider,
+  model: string,
+): import('../../utils/model/providers.js').APIProvider {
+  const m = model.toLowerCase()
+  // Gemini models → must use the Gemini provider
+  if (m.startsWith('gemini-') || m.startsWith('gemma-')) {
+    return current === 'gemini' ? current : 'gemini'
+  }
+  // OpenAI models → must use the OpenAI provider
+  if (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('codex-')) {
+    return current === 'openai' ? current : 'openai'
+  }
+  // DeepSeek models → DeepSeek provider
+  if (m.includes('deepseek')) {
+    return current === 'deepseek' ? current : 'deepseek'
+  }
+  // Everything else: trust the user's /provider selection
+  return current
+}
+
 function createStderrLogger(): ClientOptions['logger'] {
   return {
     error: (msg, ...args) =>
@@ -145,7 +171,18 @@ export async function getAnthropicClient({
   // Route to the provider shim BEFORE checking Bedrock/Vertex/Foundry.
   // The shim duck-types the Anthropic SDK interface so withRetry,
   // streaming, and MCP tool loops all work unchanged.
-  const currentProvider = getAPIProvider()
+  //
+  // Auto-correct provider when the model clearly belongs to another.
+  // Prevents "openai API error 404: gemini-3.1-pro-low does not exist"
+  // when the user picks a Gemini model while /provider is set to openai.
+  let currentProvider = getAPIProvider()
+  if (model && isThirdPartyProvider(currentProvider)) {
+    const corrected = _autoCorrectProvider(currentProvider, model)
+    if (corrected !== currentProvider) {
+      logForDebugging(`[API:route] Auto-corrected provider ${currentProvider} → ${corrected} for model ${model}`)
+      currentProvider = corrected
+    }
+  }
   if (isThirdPartyProvider(currentProvider)) {
     const authCheck = validateProviderAuth(currentProvider)
     if (!authCheck.valid) {

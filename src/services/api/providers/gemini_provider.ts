@@ -113,10 +113,18 @@ const GEMINI_CLI_MODELS: ModelInfo[] = [
   { id: 'gemini-2.5-flash-lite',               name: 'Gemini 2.5 Flash Lite' },
 ]
 
-/** Models available via the Antigravity OAuth client (pro tier). */
+/**
+ * Models available via the Antigravity OAuth client (pro/premium tier).
+ * These use the Antigravity quota pool with higher rate limits.
+ * MUST stay in sync with ANTIGRAVITY_MODEL_SET in gemini_code_assist.ts.
+ */
 const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'gemini-3.1-pro-high',                 name: 'Gemini 3.1 Pro · high thinking' },
   { id: 'gemini-3.1-pro-low',                  name: 'Gemini 3.1 Pro · low thinking' },
+  { id: 'gemini-3-pro-high',                   name: 'Gemini 3 Pro · high thinking' },
+  { id: 'gemini-3-pro-low',                    name: 'Gemini 3 Pro · low thinking' },
+  { id: 'gemini-3-flash',                      name: 'Gemini 3 Flash' },
+  { id: 'gemini-3.1-flash-image',              name: 'Gemini 3.1 Flash · image' },
 ]
 
 /**
@@ -268,18 +276,22 @@ export class GeminiProvider extends BaseProvider {
   /**
    * Optimize request params to control token usage.
    *
-   * Pro:        No modification. Full payload.
-   * Flash:      Trimmed system prompt, capped output.
-   * Flash-Lite: Aggressive — short prompt, core tools only,
-   *             truncated history, capped tool results.
+   * Antigravity (pro, flash, etc.): No modification. Full payload.
+   *   These have good quota through Antigravity — don't trim.
+   * Free-tier Flash:  Trimmed system prompt, capped output.
+   * Free-tier Lite:   Aggressive — short prompt, core tools only,
+   *                   truncated history, capped tool results.
    */
   private _optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
     if (process.env.PROVIDER_NO_OPTIMIZE === 'true') return params
     const model = this.resolveModel(params.model)
     const lower = model.toLowerCase()
 
-    // Pro models: full payload, no modification
+    // Antigravity models: full payload, no modification.
+    // These go through the Antigravity quota pool with high rate limits.
+    // Includes pro, flash, and image models on Antigravity.
     if (lower.includes('pro')) return params
+    if (executorForModel(model) === 'antigravity') return params
 
     const isLite = lower.includes('lite')
     const maxSystemChars = isLite ? GEMINI_MAX_SYSTEM_CHARS_LITE : GEMINI_MAX_SYSTEM_CHARS_FLASH
