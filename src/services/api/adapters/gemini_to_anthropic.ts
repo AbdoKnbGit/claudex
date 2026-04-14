@@ -186,7 +186,7 @@ export async function* geminiStreamToAnthropicEvents(
           stop_reason: null,
           stop_sequence: null,
           usage: {
-            input_tokens: 0,
+            input_tokens: inputTokens,
             output_tokens: 0,
             ...(cacheReadTokens > 0
               ? {

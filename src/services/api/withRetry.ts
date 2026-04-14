@@ -407,10 +407,14 @@ export async function* withRetry<T>(
         }
       }
 
-      // Only retry if the error indicates we should
+      // Only retry if the error indicates we should.
+      // Third-party 429s get a much shorter fuse — the provider already
+      // retried internally, so 2 more attempts here is plenty. Without this
+      // cap, free-tier Gemini (5 RPM) causes 7+ minute retry waterfalls.
       const persistent =
         isPersistentRetryEnabled() && isTransientCapacityError(error)
-      if (attempt > maxRetries && !persistent) {
+      const thirdPartyMaxRetries = isThirdParty429(error) ? 2 : maxRetries
+      if (attempt > thirdPartyMaxRetries && !persistent) {
         throw new CannotRetryError(error, retryContext)
       }
 
