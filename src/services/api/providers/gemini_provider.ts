@@ -152,22 +152,29 @@ function _enrichGeminiModelName(id: string, displayName: string): string {
 }
 
 // ─── Gemini Payload Optimization ─────────────────────────────────
-// We do NOT filter tools. Claude Code's deferred tool system in
-// claude.ts already handles smart loading: tools with shouldDefer=true
-// are excluded unless discovered via ToolSearch. Filtering here would
-// double-filter and cripple the model (no agents, no tasks, no MCP).
 //
-// For API-key users, gemini_cache.ts caches systemInstruction + tools
-// via cachedContent after the first request → 0.25x cost on subsequent
-// turns. Filtering would break the cache (different tool set = miss).
+// Token usage is the #1 cost driver. The full Claude Code payload
+// (system prompt + 40 tools + growing history) can hit 100K+ input
+// tokens per request — burning free-tier quotas in minutes.
 //
-// What we optimize for flash/lite only:
-//   - System prompt trim (Claude's verbose instructions → 8K cap)
-//   - max_tokens cap (prevent over-reservation)
-// Pro models: zero modification, full payload.
+// Optimization tiers:
+//   Pro:        No modification. Full payload, all tools. 1M context.
+//   Flash:      Trimmed system prompt, all tools, capped output.
+//   Flash-Lite: Aggressive — short prompt, core tools ONLY, truncated
+//               history, capped tool results. Every token counts.
 
-const GEMINI_MAX_SYSTEM_CHARS = 8000
-const GEMINI_MAX_OUTPUT_TOKENS = 8192
+const GEMINI_MAX_SYSTEM_CHARS_FLASH = 6000
+const GEMINI_MAX_SYSTEM_CHARS_LITE = 3000
+const GEMINI_MAX_OUTPUT_TOKENS_FLASH = 8192
+const GEMINI_MAX_OUTPUT_TOKENS_LITE = 4096
+const GEMINI_MAX_HISTORY_MESSAGES_LITE = 10  // Keep only last N messages for lite
+const GEMINI_MAX_TOOL_RESULT_CHARS = 4000    // Cap individual tool results in history
+
+// Core tools that lite models get — everything else is stripped.
+// These are enough for basic coding tasks without burning tokens.
+const CORE_TOOL_NAMES = new Set([
+  'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep',
+])
 
 // ─── System Instruction Splitter ─────────────────────────────────
 // The system prompt contains a boundary marker that separates static
@@ -259,37 +266,96 @@ export class GeminiProvider extends BaseProvider {
   }
 
   /**
-   * Optimize request params before converting to Gemini format.
-   * Pro models (1M context) skip optimization. Flash/Lite get trimmed.
+   * Optimize request params to control token usage.
+   *
+   * Pro:        No modification. Full payload.
+   * Flash:      Trimmed system prompt, capped output.
+   * Flash-Lite: Aggressive — short prompt, core tools only,
+   *             truncated history, capped tool results.
    */
   private _optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
     if (process.env.PROVIDER_NO_OPTIMIZE === 'true') return params
     const model = this.resolveModel(params.model)
-    // Pro models: zero modification. Full system prompt, all tools, no cap.
-    if (model.includes('pro')) return params
+    const lower = model.toLowerCase()
 
-    // Flash/Lite: trim system prompt + cap output tokens.
-    // Tools are NOT filtered — the deferred system in claude.ts already
-    // handles smart loading, and gemini_cache.ts caches them after turn 1.
-    return {
+    // Pro models: full payload, no modification
+    if (lower.includes('pro')) return params
+
+    const isLite = lower.includes('lite')
+    const maxSystemChars = isLite ? GEMINI_MAX_SYSTEM_CHARS_LITE : GEMINI_MAX_SYSTEM_CHARS_FLASH
+    const maxOutputTokens = isLite ? GEMINI_MAX_OUTPUT_TOKENS_LITE : GEMINI_MAX_OUTPUT_TOKENS_FLASH
+
+    let result: ProviderRequestParams = {
       ...params,
-      system: this._trimSystem(params.system),
-      max_tokens: Math.min(params.max_tokens, GEMINI_MAX_OUTPUT_TOKENS),
+      system: this._trimSystem(params.system, maxSystemChars),
+      max_tokens: Math.min(params.max_tokens, maxOutputTokens),
     }
+
+    // Lite models: filter to core tools only (saves ~20K tokens)
+    if (isLite && result.tools) {
+      result = {
+        ...result,
+        tools: result.tools.filter(t => CORE_TOOL_NAMES.has(t.name)),
+      }
+    }
+
+    // Lite models: truncate conversation history (saves 10-80K tokens)
+    if (isLite && result.messages.length > GEMINI_MAX_HISTORY_MESSAGES_LITE) {
+      result = {
+        ...result,
+        messages: result.messages.slice(-GEMINI_MAX_HISTORY_MESSAGES_LITE),
+      }
+    }
+
+    // All flash/lite: cap tool result sizes in history
+    result = {
+      ...result,
+      messages: this._truncateToolResults(result.messages),
+    }
+
+    return result
   }
 
-  private _trimSystem(system?: string | SystemBlock[]): string | SystemBlock[] | undefined {
+  /** Trim system prompt to maxChars, breaking at paragraph boundaries. */
+  private _trimSystem(
+    system: string | SystemBlock[] | undefined,
+    maxChars: number,
+  ): string | SystemBlock[] | undefined {
     if (!system) return system
     const fullText = typeof system === 'string'
       ? system
       : system.map(s => s.text).join('\n\n')
-    if (fullText.length <= GEMINI_MAX_SYSTEM_CHARS) return system
-    let cutPoint = GEMINI_MAX_SYSTEM_CHARS
+    if (fullText.length <= maxChars) return system
+    let cutPoint = maxChars
     const lastBreak = fullText.lastIndexOf('\n\n', cutPoint)
-    if (lastBreak > GEMINI_MAX_SYSTEM_CHARS * 0.7) cutPoint = lastBreak
+    if (lastBreak > maxChars * 0.7) cutPoint = lastBreak
     const trimmed = fullText.slice(0, cutPoint)
     if (typeof system === 'string') return trimmed
     return [{ type: 'text' as const, text: trimmed }]
+  }
+
+  /**
+   * Truncate large tool results in conversation history.
+   * A single `cat` of a big file can add 20K+ tokens to every
+   * subsequent request. Cap each result to keep history lean.
+   */
+  private _truncateToolResults(
+    messages: ProviderRequestParams['messages'],
+  ): ProviderRequestParams['messages'] {
+    return messages.map(msg => {
+      if (typeof msg.content === 'string') return msg
+      const newContent = msg.content.map(block => {
+        if (block.type !== 'tool_result') return block
+        const text = typeof block.content === 'string' ? block.content : ''
+        if (text.length <= GEMINI_MAX_TOOL_RESULT_CHARS) return block
+        return {
+          ...block,
+          content: text.slice(0, GEMINI_MAX_TOOL_RESULT_CHARS) +
+            `\n\n[... truncated ${text.length - GEMINI_MAX_TOOL_RESULT_CHARS} chars to save tokens]`,
+        }
+      })
+      return { ...msg, content: newContent }
+    })
   }
 
   /** True if any OAuth token is available. */
