@@ -18,6 +18,7 @@ import type {
   ProviderMessage,
   ProviderTool,
   SystemBlock,
+  ProviderRequestParams,
 } from '../services/api/providers/base_provider.js'
 
 // ─── Lane Interface ──────────────────────────────────────────────
@@ -46,7 +47,7 @@ export interface Lane {
   /**
    * Run the complete agent loop for one user turn.
    *
-   * This is the core of the lane. It:
+   * This is the core of the lane for future "lane-owns-loop" mode. It:
    * 1. Assembles the request in the lane's native format
    * 2. Calls the model's API directly (no shim, no translation)
    * 3. Processes the response using the lane's native patterns
@@ -57,6 +58,27 @@ export interface Lane {
    * The caller does NOT manage the tool loop — the lane does.
    */
   run(context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult>
+
+  /**
+   * Stream ONE native API call as a provider replacement.
+   *
+   * This is the provider-shim-compatible entry point: the caller (claude.ts)
+   * owns the turn-orchestration loop and calls this once per assistant turn.
+   * The lane:
+   *   1. Takes pre-assembled system + messages + tools (caller-built)
+   *   2. Maps Anthropic-format tools → the lane's native tool schemas
+   *   3. Issues ONE API call in the lane's native format
+   *   4. Yields Anthropic-IR events for text/thinking/tool_use blocks
+   *   5. Returns — does not execute tools internally
+   *
+   * The model still sees its home environment (native tool names, native
+   * prompt delivery, native cache, native auth, native reasoning knobs).
+   * Tool execution happens in the outer loop with the shared implementations.
+   *
+   * Optional because not every lane has been ported yet. Lanes that don't
+   * implement this can only be used via run() (lane-owns-loop mode).
+   */
+  streamAsProvider?(params: LaneProviderCallParams): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage>
 
   /**
    * List models available through this lane.
@@ -81,10 +103,28 @@ export interface Lane {
   dispose(): void
 }
 
+// ─── Lane Provider-Call Params ───────────────────────────────────
+//
+// Input shape for streamAsProvider(). Matches ProviderRequestParams
+// shape so the provider-shim bridge can forward without reshaping.
+// The lane consumes these directly for a single API call.
+
+export interface LaneProviderCallParams {
+  model: string
+  messages: ProviderMessage[]
+  system: string | SystemBlock[]
+  tools: ProviderTool[]
+  max_tokens: number
+  temperature?: number
+  stop_sequences?: string[]
+  thinking?: ProviderRequestParams['thinking']
+  signal: AbortSignal
+}
+
 // ─── Lane Run Context ────────────────────────────────────────────
 //
-// Everything the lane needs from the shared layer to run a turn.
-// Passed by the dispatcher on each invocation.
+// Everything the lane needs from the shared layer for the future
+// "lane-owns-loop" mode. Passed by the dispatcher on each invocation.
 
 export interface LaneRunContext {
   /** Model to use (already resolved by the user via /model) */

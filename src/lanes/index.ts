@@ -30,6 +30,7 @@ export type {
 } from './types.js'
 
 export { shouldUseNativeLane, runNativeLane } from './bridge.js'
+export { LaneBackedProvider } from './provider-bridge.js'
 
 import { initGeminiLane } from './gemini/index.js'
 import { initCodexLane } from './codex/index.js'
@@ -50,6 +51,10 @@ export function initLanes(opts?: {
   // Gemini
   geminiApiKey?: string
   geminiOAuthToken?: string
+  /** Dual-OAuth: token for the Gemini CLI executor (free tier). */
+  geminiCliOAuthToken?: string
+  /** Dual-OAuth: token for the Antigravity executor (3.x pro/flash). */
+  geminiAntigravityOAuthToken?: string
   // OpenAI / Codex
   openaiApiKey?: string
   openaiBaseUrl?: string
@@ -57,17 +62,23 @@ export function initLanes(opts?: {
   deepseekApiKey?: string
   // Groq
   groqApiKey?: string
+  // Mistral
+  mistralApiKey?: string
   // NVIDIA NIM
   nimApiKey?: string
   // Ollama
   ollamaBaseUrl?: string
   // OpenRouter
   openrouterApiKey?: string
+  // Qwen (DashScope)
+  qwenApiKey?: string
 }): void {
   // ── Gemini lane (Gemini models) ──
   initGeminiLane({
     apiKey: opts?.geminiApiKey,
     oauthToken: opts?.geminiOAuthToken,
+    cliOAuthToken: opts?.geminiCliOAuthToken,
+    antigravityOAuthToken: opts?.geminiAntigravityOAuthToken,
   })
 
   // ── Codex lane (OpenAI GPT-5, Codex, o-series) ──
@@ -76,12 +87,14 @@ export function initLanes(opts?: {
     baseUrl: opts?.openaiBaseUrl,
   })
 
-  // ── OpenAI-compat lane (DeepSeek, Groq, NIM, Ollama, OpenRouter) ──
+  // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama, OpenRouter, Qwen) ──
   initOpenAICompatLane({
     deepseek: opts?.deepseekApiKey ? { apiKey: opts.deepseekApiKey } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
+    mistral: opts?.mistralApiKey ? { apiKey: opts.mistralApiKey } : undefined,
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,
     ollama: opts?.ollamaBaseUrl ? { baseUrl: opts.ollamaBaseUrl } : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
+    qwen: opts?.qwenApiKey ? { apiKey: opts.qwenApiKey } : undefined,
   })
 }

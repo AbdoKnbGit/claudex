@@ -209,10 +209,9 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['pattern'],
     },
     adaptInput(native) {
-      return {
-        pattern: native.pattern,
-        ...(native.dir_path && { path: native.dir_path }),
-      }
+      const out: Record<string, unknown> = { pattern: native.pattern }
+      if (native.dir_path) out.path = native.dir_path
+      return out
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -253,13 +252,12 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['pattern'],
     },
     adaptInput(native) {
-      return {
-        pattern: native.pattern,
-        ...(native.dir_path && { path: native.dir_path }),
-        ...(native.include_pattern && { glob: native.include_pattern }),
-        ...(native.names_only && { output_mode: 'files_with_matches' }),
-        ...(native.total_max_matches && { head_limit: native.total_max_matches }),
-      }
+      const out: Record<string, unknown> = { pattern: native.pattern }
+      if (native.dir_path) out.path = native.dir_path
+      if (native.include_pattern) out.glob = native.include_pattern
+      if (native.names_only) out.output_mode = 'files_with_matches'
+      if (native.total_max_matches) out.head_limit = native.total_max_matches
+      return out
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -309,11 +307,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['prompt'],
     },
     adaptInput(native) {
-      // Shared WebFetch expects { url, prompt } — extract URL from prompt
-      const urlMatch = (native.prompt as string).match(/https?:\/\/[^\s]+/)
+      // Shared WebFetch expects { url, prompt } — extract URL from prompt.
+      // Tolerate a missing/empty prompt (invariants tests pass {}).
+      const prompt = typeof native.prompt === 'string' ? native.prompt : ''
+      const urlMatch = prompt.match(/https?:\/\/[^\s]+/)
       return {
-        url: urlMatch ? urlMatch[0] : native.prompt,
-        prompt: native.prompt,
+        url: urlMatch ? urlMatch[0] : prompt,
+        prompt,
       }
     },
     adaptOutput(output) {
@@ -387,8 +387,9 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['questions'],
     },
     adaptInput(native) {
-      // Shared AskUserQuestion expects a single question string
-      const questions = native.questions as Array<{ question: string }>
+      // Shared AskUserQuestion expects a single question string.
+      // Tolerate a missing/empty questions array (invariants tests pass {}).
+      const questions = (native.questions as Array<{ question: string }> | undefined) ?? []
       return { question: questions.map(q => q.question).join('\n') }
     },
     adaptOutput(output) {

@@ -271,7 +271,7 @@ function flattenComposition(schema: Record<string, unknown>): Record<string, unk
  * type arrays by extracting the non-null type, and empty required arrays.
  * Returns a new object — does not mutate the original.
  */
-function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
+export function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
   // First pass: flatten composition keywords
   const flattened = flattenComposition(schema)
   const result: Record<string, unknown> = {}

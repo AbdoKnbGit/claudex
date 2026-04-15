@@ -22,14 +22,14 @@ import { registerLane } from '../dispatcher.js'
 export function initOpenAICompatLane(providers?: {
   deepseek?: { apiKey: string; baseUrl?: string }
   groq?: { apiKey: string; baseUrl?: string }
+  mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
   ollama?: { baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
+  qwen?: { apiKey: string; baseUrl?: string }
 }): void {
-  // Register each provider that has auth configured
   const p = providers ?? {}
 
-  // DeepSeek
   const dsKey = p.deepseek?.apiKey ?? process.env.DEEPSEEK_API_KEY
   if (dsKey) {
     openaiCompatLane.registerProvider(
@@ -38,7 +38,6 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
-  // Groq
   const groqKey = p.groq?.apiKey ?? process.env.GROQ_API_KEY
   if (groqKey) {
     openaiCompatLane.registerProvider(
@@ -47,7 +46,14 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
-  // NVIDIA NIM
+  const mistralKey = p.mistral?.apiKey ?? process.env.MISTRAL_API_KEY
+  if (mistralKey) {
+    openaiCompatLane.registerProvider(
+      'mistral', mistralKey,
+      p.mistral?.baseUrl ?? 'https://api.mistral.ai/v1',
+    )
+  }
+
   const nimKey = p.nim?.apiKey ?? process.env.NIM_API_KEY
   if (nimKey) {
     openaiCompatLane.registerProvider(
@@ -56,11 +62,9 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
-  // Ollama (local, no API key needed)
   const ollamaUrl = p.ollama?.baseUrl ?? process.env.OLLAMA_HOST ?? 'http://localhost:11434/v1'
   openaiCompatLane.registerProvider('ollama', '', ollamaUrl)
 
-  // OpenRouter
   const orKey = p.openrouter?.apiKey ?? process.env.OPENROUTER_API_KEY
   if (orKey) {
     openaiCompatLane.registerProvider(
@@ -69,6 +73,15 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
-  // Register with dispatcher
+  // Qwen via DashScope's OpenAI-compatible endpoint. Accepts either
+  // QWEN_API_KEY or DASHSCOPE_API_KEY — users set whichever they prefer.
+  const qwenKey = p.qwen?.apiKey ?? process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY
+  if (qwenKey) {
+    openaiCompatLane.registerProvider(
+      'qwen', qwenKey,
+      p.qwen?.baseUrl ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    )
+  }
+
   registerLane(openaiCompatLane)
 }

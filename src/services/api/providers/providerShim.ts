@@ -43,12 +43,112 @@ import { NimProvider } from './nim_provider.js'
 import { DeepSeekProvider } from './deepseek_provider.js'
 import { OllamaProvider } from './ollama_provider.js'
 import { warmupCodeAssist } from './gemini_code_assist.js'
+import { initLanes, getLane } from '../../../lanes/index.js'
+import { LaneBackedProvider } from '../../../lanes/provider-bridge.js'
+
+// Lazy-init lanes once per process. Reads env-vars AND stored credentials
+// (the ones /login writes to provider-keys.json) so users who authenticated
+// interactively get lane-routing without having to export env vars.
+let _lanesInitialized = false
+function _ensureLanesInitialized(): void {
+  if (_lanesInitialized) return
+  _lanesInitialized = true
+  try {
+    // Dual Gemini OAuth: the CLI token covers free-tier flash/lite models,
+    // Antigravity covers Gemini 3.x pro/flash. Stored separately so both can
+    // coexist — the lane routes per-model via executorForModel.
+    const cliOAuthToken = _readStoredGeminiToken('gemini_oauth_cli') ?? undefined
+    const antigravityOAuthToken = _readStoredGeminiToken('gemini_oauth_antigravity') ?? undefined
+    initLanes({
+      geminiApiKey: getProviderApiKey('gemini') ?? undefined,
+      geminiCliOAuthToken: cliOAuthToken,
+      geminiAntigravityOAuthToken: antigravityOAuthToken,
+      openaiApiKey: getProviderApiKey('openai') ?? undefined,
+      openaiBaseUrl: process.env.OPENAI_BASE_URL ?? getProviderBaseUrl('openai'),
+      deepseekApiKey: getProviderApiKey('deepseek') ?? undefined,
+      groqApiKey: getProviderApiKey('groq') ?? undefined,
+      mistralApiKey: process.env.MISTRAL_API_KEY,
+      nimApiKey: getProviderApiKey('nim') ?? undefined,
+      ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? getProviderBaseUrl('ollama'),
+      openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
+      qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
+    })
+  } catch {
+    // Lane init failure must not break the legacy provider path.
+    // The dispatcher will report the lane as unhealthy and the shim
+    // falls through to the existing provider implementation.
+  }
+}
+
+// Map each shim provider name to the native lane it should route to.
+// - Anthropic-native providers (claude-*) don't dispatch through a lane.
+// - `openai` → codex lane (Responses API, apply_patch).
+// - `gemini` → gemini lane.
+// - DeepSeek / Groq / NIM / Ollama / OpenRouter → openai-compat lane.
+function _laneNameForProvider(provider: APIProvider): string {
+  switch (provider) {
+    case 'openai': return 'codex'
+    case 'gemini': return 'gemini'
+    case 'deepseek':
+    case 'groq':
+    case 'nim':
+    case 'ollama':
+    case 'openrouter':
+      return 'openai-compat'
+    default:
+      return provider as string
+  }
+}
+
+// Native lanes are ON by default — each model sees its home environment
+// (native tools, native prompt, native cache, native streaming). The lane
+// auto-disables itself when it can't serve the request (e.g. OAuth-only
+// Gemini users fall through to legacy gemini_provider until OAuth is
+// ported into the lane), so this flip is safe for all auth paths.
+//
+// Explicit opt-out for debugging:
+//   CLAUDEX_NATIVE_LANES=off             → every lane disabled, legacy path
+//   CLAUDEX_NATIVE_LANES=legacy          → same as off
+//   CLAUDEX_NATIVE_LANES=-gemini,-codex  → disable specific lanes
+//   CLAUDEX_NATIVE_LANES=gemini          → legacy default (named allow-list)
+function _nativeLaneEnabledFor(provider: APIProvider): boolean {
+  const raw = process.env.CLAUDEX_NATIVE_LANES
+  if (!raw) return true  // default ON
+  const normalized = raw.toLowerCase().trim()
+  if (normalized === 'off' || normalized === 'legacy' || normalized === '0' || normalized === 'false') {
+    return false
+  }
+  if (normalized === 'all' || normalized === '1' || normalized === 'true') return true
+  const laneName = _laneNameForProvider(provider)
+  const tokens = normalized.split(/[,\s]+/).filter(Boolean)
+  // Entries prefixed with `-` opt specific lanes OUT of the default-on set.
+  const disabled = new Set(tokens.filter(t => t.startsWith('-')).map(t => t.slice(1)))
+  if (disabled.has(laneName) || disabled.has(provider)) return false
+  const enabled = tokens.filter(t => !t.startsWith('-'))
+  // No allow-list entries → default ON for any lane not explicitly disabled.
+  if (enabled.length === 0) return true
+  return enabled.includes(laneName) || enabled.includes(provider)
+}
 
 /**
  * Create a provider instance for the given provider type.
  * Resolves auth method (API key vs OAuth) and injects the right credentials.
  */
 function createProvider(provider: APIProvider): BaseProvider {
+  _ensureLanesInitialized()
+
+  // Native-lane opt-in. When set, use the LaneBackedProvider so the model
+  // sees its home environment (native tools, native prompt, native cache,
+  // native API). Otherwise fall through to the legacy shim path.
+  if (_nativeLaneEnabledFor(provider)) {
+    const laneName = _laneNameForProvider(provider)
+    const lane = getLane(laneName)
+    if (lane && lane.isHealthy()) {
+      return new LaneBackedProvider(lane)
+    }
+    // Lane not registered / unhealthy → legacy path below.
+  }
+
   const authMethod = getProviderAuthMethod(provider)
   const apiKey = getProviderApiKey(provider) ?? ''
   const baseUrl = getProviderBaseUrl(provider)

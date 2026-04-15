@@ -48,6 +48,52 @@ import {
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
 
+/**
+ * Parse a Gemini 429 error body to extract the reset duration in seconds.
+ *
+ * Gemini exposes reset duration in multiple spots on the 429 payload:
+ *   - Free-text: "retry in 12.5s", "reset after 1h2m3s", "reset after 45s"
+ *   - Embedded QuotaFailure violation: "retryDelay": "12s"
+ *   - ErrorInfo metadata:           "retryDelay": "12s"
+ *
+ * Returns the duration in seconds, or null if nothing parseable is present.
+ * Callers use > 300s (5 min) as the threshold separating a per-minute rate
+ * limit from real daily/weekly quota exhaustion.
+ */
+function _parseGeminiResetDuration(body: string): number | null {
+  if (!body) return null
+
+  // "retry in 12.5s" / "retry after 12s"
+  const retryIn = body.match(/retry (?:in|after) ([\d.]+)\s*s/i)
+  if (retryIn) {
+    const v = parseFloat(retryIn[1])
+    if (!isNaN(v)) return v
+  }
+
+  // "retryDelay": "12s" (JSON string form)
+  const retryDelayJson = body.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/i)
+  if (retryDelayJson) {
+    const v = parseFloat(retryDelayJson[1])
+    if (!isNaN(v)) return v
+  }
+
+  // "reset after 1h2m3s" / "reset after 2h" / "reset after 45s" / "reset after 10m"
+  const resetAfter = body.match(/reset after ((?:\d+h)?(?:\d+m)?(?:\d+s)?)/i)
+  if (resetAfter && resetAfter[1]) {
+    const dur = resetAfter[1]
+    const h = dur.match(/(\d+)h/)
+    const m = dur.match(/(\d+)m/)
+    const s = dur.match(/(\d+)s/)
+    let total = 0
+    if (h) total += parseInt(h[1], 10) * 3600
+    if (m) total += parseInt(m[1], 10) * 60
+    if (s) total += parseInt(s[1], 10)
+    if (total > 0) return total
+  }
+
+  return null
+}
+
 // ─── Rate Limiter ───────────────────────────────────────────────────
 // Simple sliding-window rate limiter. Tracks request timestamps and
 // enforces a maximum RPM (requests per minute). When the limit is
@@ -403,6 +449,11 @@ export class GeminiProvider extends BaseProvider {
   }
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
+    // Fresh user turn → reset transient retry counters. Without this, a
+    // session that hits a 403 on turn 1 has an exhausted budget on turn 2
+    // and self-recovery silently stops working.
+    this._staleRetryCount = 0
+
     const optimized = this._optimizeParams(params)
     const model = this.resolveModel(optimized.model)
     this._lastModelUsed = model
@@ -483,22 +534,11 @@ export class GeminiProvider extends BaseProvider {
         invalidateCache(cacheName)
         return this.stream(params)
       }
-      // Auto-retry on per-minute 429 rate limits (NOT quota exhaustion).
-      // Quota exhaustion (weekly cap) should fail immediately — retrying
-      // just wastes requests against a limit that won't reset for days.
-      const isQuotaExhausted = /exhaust|quota will reset after \d+h/i.test(errText)
-      if (response.status === 429 && !isQuotaExhausted && this._retryCount429 < 2) {
-        this._retryCount429++
-        const delay = this._parseRetryDelay(errText)
-        if (delay > 0 && delay <= 60_000) {
-          await _sleep(delay)
-          return this.stream(params)
-        }
-      }
-      this._retryCount429 = 0
+      // Let withRetry (outer layer) handle 429s. It caps third-party 429s at
+      // 2 attempts with exponential backoff — stacking another retry loop
+      // here caused 3m+ hangs when per-minute buckets cascaded.
       throw this._formatGeminiError(response.status, errText)
     }
-    this._retryCount429 = 0
 
     const geminiChunks = parseGeminiSSE(response.body!)
     const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
@@ -701,22 +741,23 @@ export class GeminiProvider extends BaseProvider {
       errText.includes('project might not exist')
   }
 
-  /** Guard against infinite retry loops on stale project recovery. */
+  /**
+   * Guard against infinite retry loops on stale project recovery.
+   *
+   * Bumped from 1 → 3: when the user re-logs into a different Google
+   * account, the locally cached projectId belongs to the previous
+   * account and the new tokens 403 against it. The first retry clears
+   * the local cache, but `loadCodeAssist` may still echo the stale
+   * project back from Google's side — we then need to fall through to
+   * `onboardUser` to bind a fresh project, which can take another
+   * round-trip. Three retries leaves enough budget for the full path
+   * (clear-cache → loadCodeAssist → onboardUser → request).
+   */
   private _staleRetryCount = 0
-  private _maxStaleRetries = 1
-
-  /** Guard against infinite 429 retry loops. */
-  private _retryCount429 = 0
+  private _maxStaleRetries = 3
 
   /** Last model used — for error messages. */
   private _lastModelUsed: string | null = null
-
-  /** Parse retry delay from Gemini 429 error body (e.g., "retry in 16.35s"). */
-  private _parseRetryDelay(body: string): number {
-    const match = body.match(/retry in ([\d.]+)s/i)
-    if (match) return Math.ceil(parseFloat(match[1]) * 1000) + 500 // +500ms margin
-    return 20_000 // Default: 20s if we can't parse
-  }
 
   /**
    * Format Gemini API errors. All error messages include the numeric status
@@ -749,32 +790,49 @@ export class GeminiProvider extends BaseProvider {
     }
 
     if (status === 429) {
-      // Distinguish quota exhaustion (weekly/daily cap) from per-minute rate limit.
-      // Quota exhaustion: "exhausted your capacity" / "quota will reset after Xh"
-      // Rate limit: "retry in Xs" / short cooldown
-      const isQuotaExhausted = /exhaust|quota will reset after \d+h/i.test(body)
-      if (isQuotaExhausted) {
+      // Distinguish quota exhaustion (hours/days) from per-minute rate limit.
+      // Google says "exhausted your capacity" on EVERY 429 — even 2-second
+      // cooldowns — so we can't use that word. Only the RESET DURATION matters:
+      //   - seconds/minutes → normal rate limit, retryable
+      //   - hours           → real quota exhaustion, don't retry
+      const resetSeconds = _parseGeminiResetDuration(body)
+      const isRealExhaustion = resetSeconds !== null && resetSeconds > 300 // >5 min = real exhaustion
+      if (isRealExhaustion) {
         const resetMatch = body.match(/reset after (\d+h\d+m\d+s|\d+h\d+m|\d+h)/i)
         const resetHint = resetMatch ? ` Resets in ${resetMatch[1]}.` : ''
+        // Include the "quota exhausted" signal the withRetry filter uses to
+        // skip retries (`/quota exhausted|exhausted your capacity|quota will reset after \d+h/i`).
         return new Error(
-          `Gemini quota exhausted for ${this._lastModelUsed ?? 'this model'}.${resetHint}\n` +
+          `Gemini API error 429: quota exhausted for ${this._lastModelUsed ?? 'this model'}.${resetHint}\n` +
           `${errorDetail}\n` +
-          `This is a Google-side limit, not a ClaudeX issue. Options:\n` +
+          `This is a Google-side daily/weekly limit. Options:\n` +
           `  - Switch to a different model via /models\n` +
           `  - Wait for quota to reset\n` +
           `  - Use a different provider via /provider`,
         )
       }
-      // Per-minute rate limit — retryable
-      const retryMatch = body.match(/retry in ([\d.]+)s/i)
+      // Per-minute rate limit — retryable. Include "API error 429" in the
+      // message so withRetry's isThirdPartyRetryableError matches. Attach a
+      // Headers-shaped retry-after so withRetry honors Gemini's actual
+      // reset hint instead of falling back to blind exponential backoff.
+      const retryMatch = body.match(/retry in ([\d.]+)s/i) || body.match(/reset after (\d+)s/i)
       const retryHint = retryMatch ? `\nRetry in ~${Math.ceil(parseFloat(retryMatch[1]))}s.` : ''
       const tierHint = this.hasOAuth
         ? ''
         : '\nTip: Use /login to authenticate with Google for higher rate limits (free).'
-      return new Error(
-        `Gemini rate limit hit (${this.rpm} RPM).${retryHint}${tierHint}\n` +
+      const err = new Error(
+        `Gemini API error 429: Rate limit hit (${this.rpm} RPM).${retryHint}${tierHint}\n` +
         `${errorDetail}`,
       )
+      // Expose the reset duration on `.headers.get('retry-after')` so the
+      // outer withRetry wrapper sleeps for the real delay instead of 0.5s.
+      if (retryMatch) {
+        const retryAfterSec = Math.ceil(parseFloat(retryMatch[1]))
+        ;(err as Error & { headers: { get(k: string): string | null } }).headers = {
+          get(k: string) { return k.toLowerCase() === 'retry-after' ? String(retryAfterSec) : null },
+        }
+      }
+      return err
     }
 
     return new Error(`Gemini API error ${status}: ${body}`)

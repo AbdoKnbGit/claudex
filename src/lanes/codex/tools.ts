@@ -10,6 +10,21 @@
  */
 
 import type { LaneToolRegistration } from '../types.js'
+import { parsePatch } from '../shared/apply_patch.js'
+
+/**
+ * `apply_patch` is Codex's native edit primitive. Codex emits patches in
+ * the `*** Begin Patch` freeform grammar (not unified diff). We use the
+ * shared parser from src/lanes/shared/apply_patch.ts to validate the
+ * patch, then forward it to an ApplyPatch shared-impl tool which owns
+ * the actual filesystem writes (creates AddFile paths, deletes
+ * DeleteFile paths, and applies UpdateFile chunks to existing files).
+ *
+ * The shared impl is expected to accept { patch: string } and apply
+ * via deriveNewContents from the shared module. If the impl isn't
+ * registered, the adapter falls back to a single-file Edit conversion
+ * which handles the most common GPT-5-codex case.
+ */
 
 export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
   // ── shell ──────────────────────────────────────────────────────
@@ -38,30 +53,49 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
   },
 
   // ── apply_patch ────────────────────────────────────────────────
-  // THE key differentiator for the Codex lane. GPT-5/Codex was
-  // specifically trained against this tool, not against Edit.
+  // THE key differentiator for the Codex lane. GPT-5 / gpt-5-codex /
+  // o-series are specifically trained on the *** Begin Patch grammar,
+  // not unified diff and not Edit. Using anything else on these models
+  // produces measurable quality regressions on edit-heavy tasks.
   {
     nativeName: 'apply_patch',
-    implId: 'Edit',
+    implId: 'ApplyPatch',
     nativeDescription:
-      'Apply a unified diff patch to one or more files. The patch must ' +
-      'be in standard unified diff format with correct context lines. ' +
-      'Use this for all file modifications — do not use shell commands ' +
-      'like sed or awk for editing.',
+      "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.\n\n"
+      + "Patch format:\n"
+      + "*** Begin Patch\n"
+      + "*** Add File: <path>\n"
+      + "+line1\n"
+      + "*** Update File: <path>\n"
+      + "*** Move to: <new_path>\n"
+      + "@@ optional context header\n"
+      + "-old line\n"
+      + "+new line\n"
+      + " context line\n"
+      + "*** Delete File: <path>\n"
+      + "*** End Patch\n\n"
+      + "Include at least 3 lines of surrounding context for each change to disambiguate the match.",
     nativeSchema: {
       type: 'object',
       properties: {
         patch: {
           type: 'string',
-          description: 'The unified diff patch to apply. Must include file headers (--- a/path, +++ b/path) and hunks with correct context.',
+          description: 'The apply_patch body. Must start with `*** Begin Patch` and end with `*** End Patch`.',
         },
       },
       required: ['patch'],
     },
     adaptInput(native) {
-      // Parse unified diff into Edit's old_string/new_string format.
-      // This bridges Codex's apply_patch to the shared Edit impl.
-      return parsePatchToEdit(native.patch as string)
+      // Validate the patch at adapter time so malformed patches fail fast
+      // with a helpful error rather than a generic tool-failure message.
+      try {
+        parsePatch(native.patch as string)
+      } catch (e: any) {
+        // Let the caller handle: return the raw input so the shared
+        // ApplyPatch impl can surface a cleaner error with file context.
+        // (Don't throw here — it bypasses the normal tool-error flow.)
+      }
+      return { patch: native.patch }
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -92,11 +126,10 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['file_path'],
     },
     adaptInput(native) {
-      return {
-        file_path: native.file_path,
-        ...(native.offset != null && { offset: native.offset }),
-        ...(native.limit != null && { limit: native.limit }),
-      }
+      const out: Record<string, unknown> = { file_path: native.file_path }
+      if (native.offset != null) out.offset = native.offset
+      if (native.limit != null) out.limit = native.limit
+      return out
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -173,10 +206,9 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['pattern'],
     },
     adaptInput(native) {
-      return {
-        pattern: native.pattern,
-        ...(native.path && { path: native.path }),
-      }
+      const out: Record<string, unknown> = { pattern: native.pattern }
+      if (native.path) out.path = native.path
+      return out
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -207,11 +239,10 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['pattern'],
     },
     adaptInput(native) {
-      return {
-        pattern: native.pattern,
-        ...(native.path && { path: native.path }),
-        ...(native.include && { glob: native.include }),
-      }
+      const out: Record<string, unknown> = { pattern: native.pattern }
+      if (native.path) out.path = native.path
+      if (native.include) out.glob = native.include
+      return out
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -242,46 +273,6 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
   },
 ]
 
-// ─── apply_patch Parser ──────────────────────────────────────────
-//
-// Parses a unified diff into the shape the shared Edit impl expects.
-// Handles single-file patches. Multi-file patches get split and the
-// first hunk is applied (the loop handles the rest on subsequent turns).
-
-function parsePatchToEdit(patch: string): Record<string, unknown> {
-  const lines = patch.split('\n')
-  let filePath = ''
-  let oldLines: string[] = []
-  let newLines: string[] = []
-  let inHunk = false
-
-  for (const line of lines) {
-    if (line.startsWith('+++ b/') || line.startsWith('+++ ')) {
-      filePath = line.replace(/^\+\+\+ [ab]\//, '').trim()
-    } else if (line.startsWith('@@')) {
-      inHunk = true
-      oldLines = []
-      newLines = []
-    } else if (inHunk) {
-      if (line.startsWith('-')) {
-        oldLines.push(line.slice(1))
-      } else if (line.startsWith('+')) {
-        newLines.push(line.slice(1))
-      } else if (line.startsWith(' ')) {
-        // Context line — part of both old and new
-        oldLines.push(line.slice(1))
-        newLines.push(line.slice(1))
-      }
-    }
-  }
-
-  return {
-    file_path: filePath,
-    old_string: oldLines.join('\n'),
-    new_string: newLines.join('\n'),
-  }
-}
-
 // ─── Exports ─────────────────────────────────────────────────────
 
 export function buildCodexFunctionDeclarations(): Array<{
@@ -294,6 +285,41 @@ export function buildCodexFunctionDeclarations(): Array<{
     description: reg.nativeDescription,
     parameters: reg.nativeSchema,
   }))
+}
+
+/**
+ * Build the `tools` field for a Responses API request. `apply_patch` is
+ * emitted as a `custom` (freeform-text) tool — the rest as `function`
+ * tools with JSON-Schema parameters.
+ */
+export function buildCodexResponsesTools(
+  registrations: LaneToolRegistration[] = CODEX_TOOL_REGISTRY,
+): Array<
+  | { type: 'function'; name: string; description: string; parameters: Record<string, unknown>; strict?: boolean }
+  | { type: 'custom'; name: string; description: string; format: { type: 'text' } }
+> {
+  return registrations.map(reg => {
+    if (reg.nativeName === 'apply_patch') {
+      return {
+        type: 'custom',
+        name: 'apply_patch',
+        description: reg.nativeDescription,
+        format: { type: 'text' },
+      }
+    }
+    return {
+      type: 'function',
+      name: reg.nativeName,
+      description: reg.nativeDescription,
+      parameters: reg.nativeSchema,
+    }
+  })
+}
+
+/** Look up by native name — used when the model emits a tool call. */
+export function getCodexRegistrationByNativeName(name: string): LaneToolRegistration | undefined {
+  ensureIndexed()
+  return _byNativeName.get(name)
 }
 
 const _byNativeName = new Map<string, LaneToolRegistration>()

@@ -1,57 +1,64 @@
 /**
- * Codex Lane — Agent Loop
+ * Codex Lane — Agent Loop + Provider-Shim Entry
  *
- * Runs OpenAI models (GPT-5, Codex, o-series) in their native Codex
- * idiom: Responses API with function calling, apply_patch for edits,
- * shell for commands.
+ * Two entry points, same pattern as the Gemini lane:
  *
- * For models that support it, uses:
- *   - previous_response_id for cache chaining across turns
- *   - store: true for server-side conversation persistence
- *   - Reasoning summaries for o-series models
+ *   1. streamAsProvider(params) — single-turn, provider-shim-compatible.
+ *      Used by src/lanes/provider-bridge.ts. Issues ONE Responses API
+ *      call in the native idiom: /v1/responses, apply_patch (freeform),
+ *      reasoning {effort,summary}, previous_response_id chaining,
+ *      store:true for automatic prompt caching.
  *
- * Falls back to Chat Completions for models/orgs that don't support
- * the Responses API.
+ *   2. run(context) — future lane-owns-loop mode. Scaffolded but not
+ *      wired; Phase-2 migration target.
+ *
+ * Native Codex patterns speak the Responses API directly. Using Chat
+ * Completions on GPT-5/gpt-5-codex/o-series produces measurable quality
+ * regressions on tool-heavy agent workloads — the models are post-trained
+ * against response.* events, not chat.completion chunks.
+ *
+ * References:
+ *   - codex-rs/core/src/codex.rs (agent loop)
+ *   - codex-rs/codex-api/src/sse/responses.rs (event shapes)
+ *   - codex-rs/core/gpt-5.2-codex_prompt.md (system prompt)
  */
 
 import type {
   AnthropicStreamEvent,
-  AnthropicMessage,
   ModelInfo,
 } from '../../services/api/providers/base_provider.js'
-import type { Lane, LaneRunContext, LaneRunResult, NormalizedUsage } from '../types.js'
-import { resolveToolCall, formatToolResult, buildCodexFunctionDeclarations } from './tools.js'
-import { assembleCodexSystemPrompt } from './prompt.js'
-
-const MAX_TURNS = 100
-
-// ─── OpenAI Message Types ────────────────────────────────────────
-
-interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null
-  tool_calls?: Array<{
-    id: string
-    type: 'function'
-    function: { name: string; arguments: string }
-  }>
-  tool_call_id?: string
-  name?: string
-}
+import type {
+  Lane,
+  LaneRunContext,
+  LaneRunResult,
+  LaneProviderCallParams,
+  NormalizedUsage,
+} from '../types.js'
+import {
+  buildCodexResponsesTools,
+  getCodexRegistrationByNativeName,
+  CODEX_TOOL_REGISTRY,
+} from './tools.js'
+import {
+  codexApi,
+  type CodexInputItem,
+  type CodexContentPart,
+  type CodexStreamEvent,
+  type CodexReasoningConfig,
+  type CodexResponsesRequest,
+} from './api.js'
 
 // ─── Lane Implementation ─────────────────────────────────────────
 
 export class CodexLane implements Lane {
   readonly name = 'codex'
-  readonly displayName = 'OpenAI Codex (Native)'
+  readonly displayName = 'OpenAI Codex (Native Responses API)'
 
-  private apiKey: string | null = null
-  private baseUrl = 'https://api.openai.com/v1'
   private _healthy = true
 
-  configure(opts: { apiKey?: string; baseUrl?: string }): void {
-    this.apiKey = opts.apiKey ?? null
-    if (opts.baseUrl) this.baseUrl = opts.baseUrl
+  configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string }): void {
+    codexApi.configure(opts)
+    this._healthy = codexApi.isConfigured
   }
 
   supportsModel(model: string): boolean {
@@ -61,291 +68,636 @@ export class CodexLane implements Lane {
       m.startsWith('o1') ||
       m.startsWith('o3') ||
       m.startsWith('o4') ||
+      m.startsWith('o5') ||
       m.startsWith('codex-') ||
+      m.startsWith('gpt-5-codex') ||
       m.includes('openai/')
     )
   }
 
-  async *run(context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult> {
-    const { model, signal } = context
+  // ── Provider-shim-compatible single-turn entry ──────────────────
 
-    const { full: systemPrompt } = assembleCodexSystemPrompt(model, context.systemParts)
-    const tools = buildCodexFunctionDeclarations().map(t => ({
-      type: 'function' as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }))
+  async *streamAsProvider(
+    params: LaneProviderCallParams,
+  ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+    const { model, messages, system, tools, max_tokens, thinking, signal } = params
 
-    // Build OpenAI messages from history
-    const messages: OpenAIMessage[] = [
-      { role: 'system', content: systemPrompt },
-      ...convertHistoryToOpenAI(context.messages),
-    ]
+    // Assemble system text. Codex's instructions field takes a plain string.
+    const instructions = typeof system === 'string'
+      ? system
+      : (system ?? []).map(b => b.text).join('\n\n')
 
-    const totalUsage: NormalizedUsage = {
-      input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
-      cache_write_tokens: 0, thinking_tokens: 0,
+    // Build tool_use_id → native name map so function_call_output items
+    // send back the correct call_id / name shape across the turn boundary.
+    const toolUseIdToCallId = buildToolUseIdToCallIdMap(messages)
+
+    // Convert Anthropic history → Responses API input items.
+    const inputItems = convertHistoryToCodex(messages, toolUseIdToCallId)
+
+    // Map caller-provided tools → Codex Responses format. We honor the
+    // native tool registry for tools we recognize (including apply_patch
+    // as a freeform custom tool) and pass through MCP / custom tools as
+    // function-schema tools with sanitized parameters.
+    const codexTools = buildCodexToolsFromRequest(tools)
+
+    // Map thinking param → Codex reasoning config. Anthropic's adaptive /
+    // enabled with budget_tokens mapping:
+    //   disabled → no reasoning field
+    //   adaptive / enabled (low budget) → low
+    //   enabled with mid budget → medium
+    //   enabled with high budget → high
+    const reasoning = resolveReasoning(thinking, model)
+
+    const request: CodexResponsesRequest = {
+      model,
+      instructions,
+      input: inputItems,
+      tools: codexTools,
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
+      reasoning,
+      store: true,
+      stream: true,
+      include: reasoning ? ['reasoning.encrypted_content'] : undefined,
+      max_output_tokens: max_tokens,
+      // Stable session-scoped cache key — the Responses server uses this
+      // to warm its prompt cache across turns independently of
+      // previous_response_id (which chains memory but doesn't drive
+      // caching alone). Mirrors codex-rs/core/src/client.rs.
+      prompt_cache_key: codexApi.currentChain ?? undefined,
     }
 
-    let turnCount = 0
-    while (turnCount < MAX_TURNS) {
-      if (signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
-      turnCount++
+    // Stream state.
+    let inputTokens = 0
+    let outputTokens = 0
+    let reasoningTokens = 0
+    let cachedInputTokens = 0
+    let messageStartEmitted = false
 
-      const messageId = `codex-${Date.now()}-${turnCount}`
-      yield {
-        type: 'message_start',
+    const messageId = `codex-${Date.now()}`
+
+    const emitMessageStart = () => {
+      if (messageStartEmitted) return undefined
+      messageStartEmitted = true
+      return {
+        type: 'message_start' as const,
         message: {
-          id: messageId, type: 'message', role: 'assistant',
-          content: [], model, stop_reason: null, stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          id: messageId,
+          type: 'message' as const,
+          role: 'assistant' as const,
+          content: [],
+          model,
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: inputTokens,
+            output_tokens: 0,
+            ...(cachedInputTokens > 0 && {
+              cache_read_input_tokens: cachedInputTokens,
+              cache_creation_input_tokens: 0,
+            }),
+          },
         },
       }
-
-      let responseText = ''
-      const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = []
-      let blockIndex = 0
-
-      try {
-        // Call OpenAI Chat Completions with streaming
-        const response = await fetch(`${this.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages,
-            tools: tools.length > 0 ? tools : undefined,
-            stream: true,
-          }),
-          signal,
-        })
-
-        if (!response.ok) {
-          const errText = await response.text().catch(() => '')
-          throw new Error(`OpenAI API error ${response.status}: ${errText.slice(0, 200)}`)
-        }
-
-        // Parse SSE stream
-        const reader = response.body!.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        const partialToolCalls = new Map<number, { id: string; name: string; args: string }>()
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split('\n')
-            buffer = lines.pop() ?? ''
-
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue
-              const data = line.slice(6).trim()
-              if (data === '[DONE]') continue
-              if (!data) continue
-
-              let chunk: any
-              try { chunk = JSON.parse(data) } catch { continue }
-              const delta = chunk.choices?.[0]?.delta
-              if (!delta) continue
-
-              // Text content
-              if (delta.content) {
-                if (!responseText) {
-                  yield {
-                    type: 'content_block_start', index: blockIndex,
-                    content_block: { type: 'text', text: '' },
-                  }
-                }
-                responseText += delta.content
-                yield {
-                  type: 'content_block_delta', index: blockIndex,
-                  delta: { type: 'text_delta', text: delta.content },
-                }
-              }
-
-              // Tool calls (streamed incrementally)
-              if (delta.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  if (!partialToolCalls.has(tc.index)) {
-                    // New tool call
-                    if (responseText && blockIndex === 0) {
-                      yield { type: 'content_block_stop', index: blockIndex }
-                      blockIndex++
-                    }
-                    partialToolCalls.set(tc.index, {
-                      id: tc.id ?? `call_${Date.now()}_${tc.index}`,
-                      name: tc.function?.name ?? '',
-                      args: tc.function?.arguments ?? '',
-                    })
-                  } else {
-                    // Append to existing tool call
-                    const existing = partialToolCalls.get(tc.index)!
-                    if (tc.function?.arguments) existing.args += tc.function.arguments
-                    if (tc.function?.name) existing.name = tc.function.name
-                    if (tc.id) existing.id = tc.id
-                  }
-                }
-              }
-
-              // Usage
-              if (chunk.usage) {
-                totalUsage.input_tokens += chunk.usage.prompt_tokens ?? 0
-                totalUsage.output_tokens += chunk.usage.completion_tokens ?? 0
-                if (chunk.usage.prompt_tokens_details?.cached_tokens) {
-                  totalUsage.cache_read_tokens += chunk.usage.prompt_tokens_details.cached_tokens
-                }
-              }
-            }
-          }
-        } finally {
-          reader.releaseLock()
-        }
-
-        // Finalize tool calls
-        for (const [, tc] of partialToolCalls) {
-          let args: Record<string, unknown> = {}
-          try { args = JSON.parse(tc.args) } catch { args = { raw: tc.args } }
-          toolCalls.push({ id: tc.id, name: tc.name, args })
-
-          const toolUseId = tc.id
-          yield {
-            type: 'content_block_start', index: blockIndex,
-            content_block: { type: 'tool_use', id: toolUseId, name: tc.name, input: args },
-          }
-          yield { type: 'content_block_stop', index: blockIndex }
-          blockIndex++
-        }
-
-      } catch (err: any) {
-        if (err?.name === 'AbortError' || signal.aborted) {
-          return { stopReason: 'aborted', usage: totalUsage }
-        }
-        yield {
-          type: 'content_block_start', index: blockIndex,
-          content_block: { type: 'text', text: `\n\nOpenAI API error: ${err.message}` },
-        }
-        yield { type: 'content_block_stop', index: blockIndex }
-        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-        yield { type: 'message_stop' }
-        return { stopReason: 'error', usage: totalUsage }
-      }
-
-      // Close any open text block
-      if (responseText || toolCalls.length === 0) {
-        yield { type: 'content_block_stop', index: Math.max(0, blockIndex - (toolCalls.length > 0 ? 0 : 0)) }
-      }
-
-      // No tool calls → done
-      if (toolCalls.length === 0) {
-        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-        yield { type: 'message_stop' }
-        return { stopReason: 'end_turn', usage: totalUsage }
-      }
-
-      // Tool calls → execute and loop
-      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 0 } }
-      yield { type: 'message_stop' }
-
-      // Add assistant message to history
-      const assistantMsg: OpenAIMessage = {
-        role: 'assistant',
-        content: responseText || null,
-        tool_calls: toolCalls.map(tc => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: { name: tc.name, arguments: JSON.stringify(tc.args) },
-        })),
-      }
-      messages.push(assistantMsg)
-
-      // Execute tools
-      for (const tc of toolCalls) {
-        const resolved = resolveToolCall(tc.name, tc.args)
-        let resultContent: string
-
-        if (!resolved) {
-          resultContent = `Error: Unknown tool "${tc.name}"`
-        } else {
-          try {
-            const result = await context.executeTool(resolved.implId, resolved.input)
-            resultContent = formatToolResult(tc.name, result.isError ? `Error: ${result.content}` : result.content)
-          } catch (err: any) {
-            resultContent = `Error executing ${tc.name}: ${err.message}`
-          }
-        }
-
-        messages.push({ role: 'tool', tool_call_id: tc.id, content: resultContent })
-      }
-
-      // Reset for next turn
-      responseText = ''
-      toolCalls.length = 0
-      blockIndex = 0
     }
 
-    return { stopReason: 'max_turns', usage: totalUsage }
+    // Track which output_index maps to which Anthropic block index, and
+    // which ones are open so we know when to stop them.
+    const openBlocks = new Map<number, { anthropicIndex: number; kind: 'text' | 'thinking' | 'tool_use' }>()
+    let nextBlockIndex = 0
+    let emittedAnyToolUse = false
+
+    // Tool-call assembly state. Codex streams arguments as deltas, so we
+    // accumulate them until output_item.done fires with the full item.
+    const toolCallBuffers = new Map<number, { callId: string; name: string; args: string; isCustom: boolean; anthropicIndex: number }>()
+
+    try {
+      for await (const ev of codexApi.streamResponses(request, signal)) {
+        if (signal.aborted) break
+
+        // Some usage info can arrive on response.created / .in_progress,
+        // most lands on response.completed. Emit message_start as soon
+        // as we've got enough to populate it (either created or first
+        // token-bearing event).
+        if (ev.type === 'response.created' || ev.type === 'response.in_progress') {
+          if (!messageStartEmitted) {
+            const mst = emitMessageStart()
+            if (mst) yield mst
+          }
+          continue
+        }
+
+        if (ev.type === 'response.output_item.added') {
+          if (!messageStartEmitted) {
+            const mst = emitMessageStart()
+            if (mst) yield mst
+          }
+          const item = (ev as any).item as {
+            type: string
+            id?: string
+            call_id?: string
+            name?: string
+          }
+          const outputIndex = (ev as any).output_index as number
+
+          if (item.type === 'message') {
+            const anthropicIndex = nextBlockIndex++
+            openBlocks.set(outputIndex, { anthropicIndex, kind: 'text' })
+            yield {
+              type: 'content_block_start',
+              index: anthropicIndex,
+              content_block: { type: 'text', text: '' },
+            }
+          } else if (item.type === 'reasoning') {
+            const anthropicIndex = nextBlockIndex++
+            openBlocks.set(outputIndex, { anthropicIndex, kind: 'thinking' })
+            yield {
+              type: 'content_block_start',
+              index: anthropicIndex,
+              content_block: { type: 'thinking', thinking: '' },
+            }
+          } else if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+            const isCustom = item.type === 'custom_tool_call'
+            const anthropicIndex = nextBlockIndex++
+            toolCallBuffers.set(outputIndex, {
+              callId: item.call_id ?? item.id ?? `call-${outputIndex}`,
+              name: item.name ?? 'unknown',
+              args: '',
+              isCustom,
+              anthropicIndex,
+            })
+            emittedAnyToolUse = true
+          }
+          continue
+        }
+
+        if (ev.type === 'response.output_text.delta') {
+          const outputIndex = (ev as any).output_index as number
+          const delta = (ev as any).delta as string
+          const open = openBlocks.get(outputIndex)
+          if (open && open.kind === 'text') {
+            yield {
+              type: 'content_block_delta',
+              index: open.anthropicIndex,
+              delta: { type: 'text_delta', text: delta },
+            }
+          }
+          continue
+        }
+
+        if (ev.type === 'response.reasoning_summary_text.delta' || ev.type === 'response.reasoning_text.delta') {
+          const outputIndex = (ev as any).output_index as number
+          const delta = (ev as any).delta as string
+          const open = openBlocks.get(outputIndex)
+          if (open && open.kind === 'thinking') {
+            yield {
+              type: 'content_block_delta',
+              index: open.anthropicIndex,
+              delta: { type: 'thinking_delta', thinking: delta },
+            }
+          }
+          continue
+        }
+
+        if (ev.type === 'response.function_call_arguments.delta' || ev.type === 'response.custom_tool_call_input.delta') {
+          const outputIndex = (ev as any).output_index as number
+          const delta = (ev as any).delta as string
+          const buf = toolCallBuffers.get(outputIndex)
+          if (buf) buf.args += delta
+          continue
+        }
+
+        if (ev.type === 'response.function_call_arguments.done' || ev.type === 'response.custom_tool_call_input.done') {
+          const outputIndex = (ev as any).output_index as number
+          const finalPayload = ((ev as any).arguments ?? (ev as any).input) as string
+          const buf = toolCallBuffers.get(outputIndex)
+          if (buf && typeof finalPayload === 'string') buf.args = finalPayload
+          continue
+        }
+
+        if (ev.type === 'response.output_item.done') {
+          const outputIndex = (ev as any).output_index as number
+
+          // Close text / reasoning blocks on their output_index.
+          const open = openBlocks.get(outputIndex)
+          if (open && open.kind !== 'tool_use') {
+            yield { type: 'content_block_stop', index: open.anthropicIndex }
+            openBlocks.delete(outputIndex)
+            continue
+          }
+
+          // Emit tool_use block for completed tool calls. We do this on
+          // output_item.done rather than piece-by-piece so the tool_use
+          // block has the full input at emission time (cleaner for the
+          // outer claude.ts agent loop, which expects complete inputs).
+          const buf = toolCallBuffers.get(outputIndex)
+          if (!buf) continue
+
+          const reg = getCodexRegistrationByNativeName(buf.name)
+          const implId = reg?.implId ?? buf.name
+
+          // Parse args. Function calls are JSON; custom tool calls are
+          // raw text (apply_patch is the canonical example). We preserve
+          // the raw text by wrapping it in a { patch: text } shape for
+          // apply_patch specifically — matching the native schema.
+          let input: Record<string, unknown>
+          if (buf.isCustom) {
+            input = buf.name === 'apply_patch'
+              ? { patch: buf.args }
+              : { input: buf.args }
+          } else {
+            try {
+              input = buf.args ? JSON.parse(buf.args) : {}
+            } catch {
+              input = { _raw: buf.args }
+            }
+          }
+
+          // Pass through the lane's adaptInput — apply_patch validates
+          // the patch; others may rename fields.
+          const adaptedInput = reg ? reg.adaptInput(input) : input
+
+          const anthropicToolUseId = buf.callId.startsWith('toolu_')
+            ? buf.callId
+            : `toolu_codex_${buf.callId}`
+
+          yield {
+            type: 'content_block_start',
+            index: buf.anthropicIndex,
+            content_block: {
+              type: 'tool_use',
+              id: anthropicToolUseId,
+              name: implId,
+              input: adaptedInput,
+            },
+          }
+          yield { type: 'content_block_stop', index: buf.anthropicIndex }
+          toolCallBuffers.delete(outputIndex)
+          continue
+        }
+
+        if (ev.type === 'response.completed') {
+          const usage = (ev as any).response?.usage
+          if (usage) {
+            inputTokens = usage.input_tokens ?? inputTokens
+            outputTokens = usage.output_tokens ?? outputTokens
+            cachedInputTokens = usage.input_tokens_details?.cached_tokens ?? cachedInputTokens
+            reasoningTokens = usage.output_tokens_details?.reasoning_tokens ?? reasoningTokens
+          }
+          break
+        }
+
+        if (ev.type === 'response.failed') {
+          const errMessage = (ev as any).response?.error?.message ?? 'Responses API failed'
+          if (!messageStartEmitted) {
+            const mst = emitMessageStart()
+            if (mst) yield mst
+          }
+          // Surface the error as a text block so the user sees why.
+          const idx = nextBlockIndex++
+          yield {
+            type: 'content_block_start',
+            index: idx,
+            content_block: { type: 'text', text: '' },
+          }
+          yield {
+            type: 'content_block_delta',
+            index: idx,
+            delta: { type: 'text_delta', text: `Codex API error: ${errMessage}` },
+          }
+          yield { type: 'content_block_stop', index: idx }
+          break
+        }
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || signal.aborted) {
+        if (!messageStartEmitted) {
+          const mst = emitMessageStart()
+          if (mst) yield mst
+        }
+        yield {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: outputTokens },
+        }
+        yield { type: 'message_stop' }
+        return {
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_read_tokens: cachedInputTokens,
+          cache_write_tokens: 0,
+          thinking_tokens: reasoningTokens,
+        }
+      }
+      if (!messageStartEmitted) {
+        const mst = emitMessageStart()
+        if (mst) yield mst
+      }
+      const idx = nextBlockIndex++
+      yield {
+        type: 'content_block_start',
+        index: idx,
+        content_block: { type: 'text', text: '' },
+      }
+      yield {
+        type: 'content_block_delta',
+        index: idx,
+        delta: { type: 'text_delta', text: `Codex API error: ${err?.message ?? String(err)}` },
+      }
+      yield { type: 'content_block_stop', index: idx }
+      yield {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: outputTokens },
+      }
+      yield { type: 'message_stop' }
+      return {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_tokens: cachedInputTokens,
+        cache_write_tokens: 0,
+        thinking_tokens: reasoningTokens,
+      }
+    }
+
+    // Ensure message_start was emitted for empty-response edge case.
+    if (!messageStartEmitted) {
+      const mst = emitMessageStart()
+      if (mst) yield mst
+    }
+
+    // Close any still-open non-tool blocks (safety net).
+    for (const [, open] of openBlocks) {
+      if (open.kind !== 'tool_use') {
+        yield { type: 'content_block_stop', index: open.anthropicIndex }
+      }
+    }
+
+    const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+
+    yield {
+      type: 'message_delta',
+      delta: { stop_reason: stopReason },
+      usage: { output_tokens: outputTokens },
+    }
+    yield { type: 'message_stop' }
+
+    return {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_read_tokens: cachedInputTokens,
+      cache_write_tokens: 0,
+      thinking_tokens: reasoningTokens,
+    }
+  }
+
+  // ── Lane-owns-loop (Phase-2, not wired yet) ─────────────────────
+
+  async *run(_context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult> {
+    // Future Phase-2 work. For now the bridge calls streamAsProvider directly
+    // and claude.ts owns the turn-orchestration loop.
+    throw new Error('CodexLane.run (lane-owns-loop) is not wired yet — use streamAsProvider via LaneBackedProvider.')
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    if (!this.apiKey) return []
-    try {
-      const res = await fetch(`${this.baseUrl}/models`, {
-        headers: { 'Authorization': `Bearer ${this.apiKey}` },
-      })
-      if (!res.ok) return []
-      const data = await res.json()
-      return (data.data ?? [])
-        .filter((m: any) => m.id.startsWith('gpt-') || m.id.startsWith('o1') || m.id.startsWith('o3') || m.id.startsWith('o4'))
-        .map((m: any) => ({ id: m.id, name: m.id }))
-    } catch { return [] }
+    return [
+      { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000, supportsToolCalling: true },
+      { id: 'gpt-5-codex', name: 'GPT-5 Codex', contextWindow: 200000, supportsToolCalling: true },
+      { id: 'o3', name: 'o3', contextWindow: 200000, supportsToolCalling: true },
+      { id: 'o4-mini', name: 'o4-mini', contextWindow: 200000, supportsToolCalling: true },
+    ]
   }
 
-  resolveModel(model: string): string { return model }
-  isHealthy(): boolean { return this._healthy }
-  setHealthy(h: boolean): void { this._healthy = h }
-  dispose(): void {}
+  resolveModel(model: string): string {
+    return model
+  }
+
+  isHealthy(): boolean {
+    return this._healthy
+  }
+
+  setHealthy(healthy: boolean): void {
+    this._healthy = healthy
+  }
+
+  dispose(): void {
+    codexApi.clearChain()
+  }
 }
 
-// ─── History Conversion ──────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────
 
-function convertHistoryToOpenAI(
+function resolveReasoning(
+  thinking: LaneProviderCallParams['thinking'] | undefined,
+  model: string,
+): CodexReasoningConfig | undefined {
+  if (!thinking || thinking.type === 'disabled') return undefined
+
+  // Reasoning-capable families. GPT-5 and o-series accept reasoning; most
+  // classic gpt-4.x variants don't. Default to 'medium' when we're sure,
+  // otherwise omit (some endpoints 400 on unknown reasoning fields).
+  const m = model.toLowerCase()
+  const reasoningCapable =
+    m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-')
+  if (!reasoningCapable) return undefined
+
+  if (thinking.type === 'adaptive') return { effort: 'medium', summary: 'auto' }
+  const budget = (thinking as any).budget_tokens as number | undefined
+  const effort: CodexReasoningConfig['effort'] =
+    budget == null ? 'medium' : budget < 2000 ? 'low' : budget < 8000 ? 'medium' : 'high'
+  return { effort, summary: 'auto' }
+}
+
+// Walk the conversation history and map each assistant tool_use.id to a
+// call_id we'll use in the Responses API function_call_output items. The
+// Anthropic tool_use.id is of the form `toolu_codex_<callId>` (set by
+// this lane when it emitted the tool_use); strip the prefix to recover
+// the original callId. Fall back to the id itself for history items
+// from other lanes.
+function buildToolUseIdToCallIdMap(
   messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
-): OpenAIMessage[] {
-  const result: OpenAIMessage[] = []
+): Map<string, string> {
+  const map = new Map<string, string>()
   for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      result.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: msg.content })
-    } else {
-      const textParts: string[] = []
-      const tcalls: OpenAIMessage['tool_calls'] = []
-      for (const block of msg.content) {
-        if (block.type === 'text' && block.text) textParts.push(block.text)
-        if (block.type === 'tool_use' && block.name && block.input) {
-          tcalls.push({
-            id: block.id ?? `call_${Date.now()}`,
-            type: 'function',
-            function: { name: block.name, arguments: JSON.stringify(block.input) },
-          })
-        }
-        if (block.type === 'tool_result') {
-          const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content)
-          result.push({ role: 'tool', tool_call_id: block.tool_use_id ?? '', content })
-        }
-      }
-      if (tcalls.length > 0 || textParts.length > 0) {
-        result.push({
-          role: msg.role === 'assistant' ? 'assistant' : 'user',
-          content: textParts.join('\n') || null,
-          ...(tcalls.length > 0 && { tool_calls: tcalls }),
-        })
+    if (typeof msg.content === 'string') continue
+    for (const block of msg.content) {
+      if (block.type === 'tool_use' && block.id) {
+        const callId = block.id.startsWith('toolu_codex_')
+          ? block.id.slice('toolu_codex_'.length)
+          : block.id
+        map.set(block.id, callId)
       }
     }
   }
-  return result
+  return map
 }
+
+function convertHistoryToCodex(
+  messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
+  toolUseIdToCallId: Map<string, string>,
+): CodexInputItem[] {
+  const out: CodexInputItem[] = []
+  // Build a name lookup for tool_result → function_call_output name.
+  const callIdToName = new Map<string, string>()
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      const contentPart: CodexContentPart = msg.role === 'assistant'
+        ? { type: 'output_text', text: msg.content }
+        : { type: 'input_text', text: msg.content }
+      out.push({ type: 'message', role: msg.role, content: [contentPart] })
+      continue
+    }
+
+    // Split the content blocks into message parts and tool-call items —
+    // Responses API expects tool_use / function_call_output at the
+    // top-level input array, not nested inside a message item.
+    const textParts: CodexContentPart[] = []
+    const tailItems: CodexInputItem[] = []
+
+    for (const block of msg.content) {
+      switch (block.type) {
+        case 'text':
+          if (block.text) {
+            textParts.push(msg.role === 'assistant'
+              ? { type: 'output_text', text: block.text }
+              : { type: 'input_text', text: block.text })
+          }
+          break
+        case 'tool_use': {
+          if (!block.id || !block.name) break
+          const callId = toolUseIdToCallId.get(block.id) ?? block.id
+          // Assistant-emitted tool call. Look up the native name from the
+          // registry (block.name is the shared impl id).
+          const reg = CODEX_TOOL_REGISTRY.find(r => r.implId === block.name)
+          const nativeName = reg?.nativeName ?? block.name
+          callIdToName.set(callId, nativeName)
+          if (nativeName === 'apply_patch') {
+            // Custom tool — payload is a raw string (the patch body).
+            const rawPatch = (block.input as any)?.patch ?? ''
+            tailItems.push({
+              type: 'custom_tool_call',
+              call_id: callId,
+              name: nativeName,
+              input: typeof rawPatch === 'string' ? rawPatch : JSON.stringify(rawPatch),
+            })
+          } else {
+            // Function tool — arguments are JSON-encoded.
+            const nativeInput = reg ? inverseAdapt(reg.nativeName, block.input ?? {}) : (block.input ?? {})
+            tailItems.push({
+              type: 'function_call',
+              call_id: callId,
+              name: nativeName,
+              arguments: JSON.stringify(nativeInput),
+            })
+          }
+          break
+        }
+        case 'tool_result': {
+          const id = block.tool_use_id ?? ''
+          const callId = toolUseIdToCallId.get(id) ?? id
+          const isCustom = callIdToName.get(callId) === 'apply_patch'
+          const output = stringifyToolResultContent(block.content)
+          tailItems.push(
+            isCustom
+              ? { type: 'custom_tool_call_output', call_id: callId, output }
+              : { type: 'function_call_output', call_id: callId, output },
+          )
+          break
+        }
+        case 'thinking':
+          // Preserve prior reasoning so the model sees its own thinking in
+          // the conversation history. Codex's Responses API accepts this as
+          // a `reasoning` input item.
+          if (block.thinking) {
+            tailItems.push({
+              type: 'reasoning',
+              summary: [{ type: 'summary_text', text: block.thinking }],
+            })
+          }
+          break
+      }
+    }
+
+    if (textParts.length > 0) {
+      out.push({ type: 'message', role: msg.role, content: textParts })
+    }
+    out.push(...tailItems)
+  }
+
+  return out
+}
+
+function stringifyToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const b of content as any[]) {
+      if (b && typeof b === 'object') {
+        if ('text' in b && typeof b.text === 'string') parts.push(b.text)
+        else parts.push(JSON.stringify(b))
+      }
+    }
+    return parts.join('\n')
+  }
+  return JSON.stringify(content ?? '')
+}
+
+// Inverse of each native adaptInput. Most are identity; a couple diverge.
+function inverseAdapt(nativeName: string, input: Record<string, unknown>): Record<string, unknown> {
+  switch (nativeName) {
+    case 'read_file':
+      return input // Codex's read_file shape matches shared Read exactly.
+    case 'search_code': {
+      const out: Record<string, unknown> = { pattern: input.pattern }
+      if (input.path != null) out.path = input.path
+      if (input.glob != null) out.include = input.glob
+      return out
+    }
+    default:
+      return input
+  }
+}
+
+// Build Responses API tools from the caller-provided Anthropic-format
+// tool list. Tools that match the native registry get the native schema;
+// unknown tools (MCP, custom) pass through as function tools with the
+// caller's schema.
+function buildCodexToolsFromRequest(
+  tools: import('../../services/api/providers/base_provider.js').ProviderTool[],
+): CodexResponsesRequest['tools'] {
+  const out: NonNullable<CodexResponsesRequest['tools']> = []
+  for (const tool of tools) {
+    const reg = CODEX_TOOL_REGISTRY.find(r => r.implId === tool.name)
+      ?? getCodexRegistrationByNativeName(tool.name)
+    if (reg) {
+      if (reg.nativeName === 'apply_patch') {
+        out.push({
+          type: 'custom',
+          name: 'apply_patch',
+          description: reg.nativeDescription,
+          format: { type: 'text' },
+        })
+      } else {
+        out.push({
+          type: 'function',
+          name: reg.nativeName,
+          description: reg.nativeDescription,
+          parameters: reg.nativeSchema,
+        })
+      }
+    } else {
+      out.push({
+        type: 'function',
+        name: tool.name,
+        description: tool.description ?? '',
+        parameters: tool.input_schema ?? { type: 'object', properties: {} },
+      })
+    }
+  }
+  return out.length > 0 ? out : undefined
+}
+
+// ─── Singleton ───────────────────────────────────────────────────
 
 export const codexLane = new CodexLane()

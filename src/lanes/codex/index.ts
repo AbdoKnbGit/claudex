@@ -6,15 +6,27 @@
  */
 
 export { codexLane, CodexLane } from './loop.js'
-export { CODEX_TOOL_REGISTRY, buildCodexFunctionDeclarations } from './tools.js'
+export {
+  CODEX_TOOL_REGISTRY,
+  buildCodexFunctionDeclarations,
+  buildCodexResponsesTools,
+  getCodexRegistrationByNativeName,
+} from './tools.js'
 export { assembleCodexSystemPrompt } from './prompt.js'
+export { codexApi, CodexApiClient, CodexApiError } from './api.js'
 
 import { codexLane } from './loop.js'
 import { registerLane } from '../dispatcher.js'
 
-export function initCodexLane(opts?: { apiKey?: string; baseUrl?: string }): void {
+export function initCodexLane(opts?: {
+  apiKey?: string
+  baseUrl?: string
+  chatgptAccessToken?: string
+}): void {
   const apiKey = opts?.apiKey ?? process.env.OPENAI_API_KEY
-  codexLane.configure({ apiKey, baseUrl: opts?.baseUrl })
+  const baseUrl = opts?.baseUrl ?? process.env.OPENAI_BASE_URL
+  const chatgptAccessToken = opts?.chatgptAccessToken ?? process.env.OPENAI_CHATGPT_ACCESS_TOKEN
+  codexLane.configure({ apiKey, baseUrl, chatgptAccessToken })
   registerLane(codexLane)
-  codexLane.setHealthy(!!apiKey)
+  codexLane.setHealthy(!!(apiKey || chatgptAccessToken))
 }

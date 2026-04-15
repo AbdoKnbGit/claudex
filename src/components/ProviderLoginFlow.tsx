@@ -220,48 +220,54 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   })
 
   // ─── API key submission handler ──────────────────────────────────
+  //
+  // Save is unconditional — for every provider, every key shape, every
+  // model tier. Format checks (prefix rules) and the /models network
+  // test are both advisory: they never block the save. Rationale:
+  //   - Provider prefix rules drift (NVIDIA ships non-nvapi- keys for
+  //     certain models; DeepSeek Coder tokens vary; proxies re-issue
+  //     keys with their own schemes).
+  //   - /models 401/403 can fail on a perfectly valid key when the key
+  //     is plan-tier-restricted or scoped to a subset of endpoints.
+  //   - A saved-but-flagged key is strictly better UX than a rejected
+  //     key; the user sees the warning and either keeps it or retries.
   function handleApiKeySubmit(value: string) {
     const key = value.trim()
     if (!key) return
 
-    const validation = validateKeyFormat(provider, key)
-    if (!validation.valid) {
-      setState({ step: 'api_key_input', error: validation.error })
-      setApiKeyInput('')
-      setApiKeyCursorOffset(0)
-      return
-    }
-
     setState({ step: 'validating' })
 
-    // Test the key against the API before saving.
-    _testApiKey(provider, key).then((testResult) => {
-      if (!testResult.ok) {
-        setState({ step: 'api_key_input', error: testResult.error })
-        setApiKeyInput('')
-        setApiKeyCursorOffset(0)
-        return
-      }
-
-      // Store the key. Saving an API key deactivates any stored OAuth
-      // token for this provider — one credential at a time.
+    const persistAndFinish = (warnings: string[]) => {
       saveProviderKey(provider, key)
       deleteProviderKey(`${provider}_oauth`)
-      // Gemini: also clear dual OAuth keys
       if (provider === 'gemini') {
         deleteProviderKey('gemini_oauth_cli')
         deleteProviderKey('gemini_oauth_antigravity')
       }
-
-      // Also set as environment variable for the current session
       const envVar = meta?.envVar
-      if (envVar) {
-        process.env[envVar] = key
+      if (envVar) process.env[envVar] = key
+      if (warnings.length > 0) {
+        setState({
+          step: 'error',
+          message: `Key saved. Warnings:\n  • ${warnings.join('\n  • ')}`,
+        })
+        setTimeout(() => onDone(true), 2000)
+      } else {
+        setState({ step: 'success' })
+        setTimeout(() => onDone(true), 800)
       }
+    }
 
-      setState({ step: 'success' })
-      setTimeout(() => onDone(true), 800)
-    })
+    const warnings: string[] = []
+    const formatCheck = validateKeyFormat(provider, key)
+    if (!formatCheck.valid && formatCheck.error) warnings.push(formatCheck.error)
+
+    _testApiKey(provider, key)
+      .then((testResult) => {
+        if (!testResult.ok) warnings.push(testResult.error)
+        persistAndFinish(warnings)
+      })
+      .catch(() => persistAndFinish(warnings))
   }
 
   // ─── Render ──────────────────────────────────────────────────────

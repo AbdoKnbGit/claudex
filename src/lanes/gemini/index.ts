@@ -30,13 +30,26 @@ import { registerLane } from '../dispatcher.js'
  */
 export function initGeminiLane(opts?: {
   apiKey?: string
+  /** Deprecated single-token path. Use cliOAuthToken / antigravityOAuthToken. */
   oauthToken?: string
+  oauthMode?: 'cli' | 'antigravity'
+  /** OAuth token from Gemini CLI flow (free-tier flash/lite models). */
+  cliOAuthToken?: string
+  /** OAuth token from Antigravity flow (Gemini 3.x pro/flash/image models). */
+  antigravityOAuthToken?: string
 }): void {
-  // Configure API client with auth
+  // Configure API client with auth. OAuth tokens can come from the Code
+  // Assist CLI flow (free tier) or the Antigravity flow (gray-area). The
+  // lane routes per-model to the right executor via executorForModel.
   const apiKey = opts?.apiKey ?? process.env.GEMINI_API_KEY
-  const oauthToken = opts?.oauthToken
 
-  geminiApi.configure({ apiKey, oauthToken })
+  geminiApi.configure({
+    apiKey,
+    oauthToken: opts?.oauthToken,
+    oauthMode: opts?.oauthMode,
+    cliOAuthToken: opts?.cliOAuthToken,
+    antigravityOAuthToken: opts?.antigravityOAuthToken,
+  })
 
   // Register with the dispatcher
   registerLane(geminiLane)

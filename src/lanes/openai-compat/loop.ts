@@ -1,331 +1,888 @@
 /**
- * OpenAI-Compatible Lane — Agent Loop
+ * OpenAI-Compatible Lane — Agent Loop + Provider-Shim Entry
  *
- * Handles ALL providers that speak the OpenAI Chat Completions format:
- *   - DeepSeek (deepseek-chat, deepseek-coder, deepseek-reasoner)
- *   - Groq (llama, mixtral, gemma via Groq)
- *   - NVIDIA NIM
- *   - Ollama (local models)
- *   - OpenRouter (long tail of models)
- *   - Mistral, xAI/Grok, Fireworks, Together, etc.
+ * Handles every provider that speaks OpenAI Chat Completions:
+ *   - DeepSeek     (reasoner → `reasoning_content` → thinking; max_tokens 8192 cap)
+ *   - Groq         (strip cache_control / $schema / null function_call; `reasoning` → thinking; fake_stream when JSON mode)
+ *   - NVIDIA NIM   (strip stream_options; per-model param filtering)
+ *   - Ollama       (no API key; Ollama-specific params; strip stream_options)
+ *   - OpenRouter   (cache_control only for Claude / Gemini; relocate to last content block for 4-breakpoint Anthropic cap)
+ *   - Mistral      (strip $id / $schema / additionalProperties / strict; tool_choice "required" → "any")
+ *   - Generic long-tail (Fireworks, Together, Deepinfra, xAI, etc.)
  *
- * Per-provider quirks are handled by small adapter functions, not by
- * separate lane implementations. LiteLLM's provider docs are the
- * reference for these quirks.
+ * Per-provider quirks are consolidated in the transform helpers at the
+ * bottom — adding a new provider is ~20 lines. The reference transformer
+ * files this mirrors: claude-code-router/packages/core/src/transformer,
+ * litellm/llms/<provider>/chat/transformation.py.
  */
 
 import type {
   AnthropicStreamEvent,
   ModelInfo,
+  ProviderMessage,
+  ProviderTool,
 } from '../../services/api/providers/base_provider.js'
-import type { Lane, LaneRunContext, LaneRunResult, NormalizedUsage } from '../types.js'
-import { resolveToolCall, formatToolResult, buildOpenAICompatFunctions } from './tools.js'
-import { assembleOpenAICompatPrompt } from './prompt.js'
-
-const MAX_TURNS = 50 // Lower for compat models — they're less reliable on long chains
+import type {
+  Lane,
+  LaneRunContext,
+  LaneRunResult,
+  LaneProviderCallParams,
+  NormalizedUsage,
+} from '../types.js'
+import { OPENAI_COMPAT_TOOL_REGISTRY } from './tools.js'
 
 // ─── Provider Detection ──────────────────────────────────────────
 
-type ProviderType = 'deepseek' | 'groq' | 'nim' | 'ollama' | 'openrouter' | 'generic'
+type ProviderType =
+  | 'deepseek'
+  | 'groq'
+  | 'mistral'
+  | 'nim'
+  | 'ollama'
+  | 'openrouter'
+  | 'qwen'
+  | 'generic'
 
 function detectProvider(model: string, baseUrl: string): ProviderType {
-  if (baseUrl.includes('deepseek')) return 'deepseek'
-  if (baseUrl.includes('groq')) return 'groq'
-  if (baseUrl.includes('integrate.api.nvidia')) return 'nim'
-  if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) return 'ollama'
-  if (baseUrl.includes('openrouter')) return 'openrouter'
+  const b = baseUrl.toLowerCase()
   const m = model.toLowerCase()
+  if (b.includes('deepseek')) return 'deepseek'
+  if (b.includes('groq')) return 'groq'
+  if (b.includes('mistral')) return 'mistral'
+  if (b.includes('integrate.api.nvidia')) return 'nim'
+  if (b.includes('dashscope') || b.includes('aliyuncs')) return 'qwen'
+  if (b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')) return 'ollama'
+  if (b.includes('openrouter')) return 'openrouter'
   if (m.includes('deepseek')) return 'deepseek'
-  if (m.includes('llama') || m.includes('mixtral') || m.includes('gemma')) return 'groq'
+  if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
+  if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'
+  if (m.startsWith('qwen') || m === 'coder-model') return 'qwen'
   return 'generic'
 }
 
-function isLocalModel(baseUrl: string): boolean {
-  return baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0')
+function isLocalBaseUrl(baseUrl: string): boolean {
+  const b = baseUrl.toLowerCase()
+  return b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')
 }
 
-// ─── Per-Provider Quirks ─────────────────────────────────────────
+// ─── OpenAI Chat Completions Message Shape ───────────────────────
 
-function getProviderHeaders(provider: ProviderType, apiKey: string): Record<string, string> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`
-  }
-  // OpenRouter wants additional headers for ranking/attribution
-  if (provider === 'openrouter') {
-    headers['HTTP-Referer'] = 'https://github.com/claudex'
-    headers['X-Title'] = 'ClaudeX'
-  }
-  return headers
+interface OpenAIChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content?: string | null | Array<{ type: string; text?: string; image_url?: unknown }>
+  tool_calls?: Array<{
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }>
+  tool_call_id?: string
+  name?: string
+  // OpenRouter / DeepSeek reasoning fields come back on the delta; no input field.
 }
 
-function adjustRequestBody(provider: ProviderType, body: any): any {
-  // Ollama doesn't support stream_options
-  if (provider === 'ollama') {
-    delete body.stream_options
-  }
-  // DeepSeek Reasoner: add reasoning fields
-  if (provider === 'deepseek' && body.model?.includes('reasoner')) {
-    body.reasoning_effort = 'medium'
-  }
-  // NIM: some models need specific adjustments
-  if (provider === 'nim') {
-    delete body.stream_options
-  }
-  return body
+interface OpenAIChatRequest {
+  model: string
+  messages: OpenAIChatMessage[]
+  stream?: boolean
+  stream_options?: { include_usage?: boolean }
+  tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>
+  tool_choice?: 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } }
+  max_tokens?: number
+  temperature?: number
+  top_p?: number
+  stop?: string[]
+  // Reasoning knobs — provider-specific. Passed through when supported.
+  reasoning_effort?: 'low' | 'medium' | 'high'
+  reasoning?: { effort?: string }
+  thinking?: { type: 'enabled' } | { type: 'disabled' }
+  extra_body?: Record<string, unknown>
+  // OpenRouter extensions:
+  transforms?: string[]
+  models?: string[]
+  route?: string
+  prompt_cache_key?: string
 }
 
 // ─── Lane Implementation ─────────────────────────────────────────
 
 export class OpenAICompatLane implements Lane {
   readonly name = 'openai-compat'
-  readonly displayName = 'OpenAI Compatible'
+  readonly displayName = 'OpenAI-Compatible (DeepSeek, Groq, Mistral, NIM, Ollama, OpenRouter, …)'
 
   private configs = new Map<string, { apiKey: string; baseUrl: string }>()
   private _healthy = true
 
-  /**
-   * Register a provider with its auth. Called for each compat provider
-   * during init (DeepSeek, Groq, NIM, Ollama, OpenRouter, etc.).
-   */
   registerProvider(name: string, apiKey: string, baseUrl: string): void {
     this.configs.set(name, { apiKey, baseUrl })
   }
 
-  /** Get config for a specific provider */
-  private getConfig(model: string): { apiKey: string; baseUrl: string } | null {
-    // Try to match by model prefix to a registered provider
+  private getConfigForModel(model: string): { apiKey: string; baseUrl: string; provider: ProviderType } | null {
     const m = model.toLowerCase()
-    if (m.includes('deepseek')) return this.configs.get('deepseek') ?? null
-    if (this.configs.has('groq') && (m.includes('llama') || m.includes('mixtral') || m.includes('gemma'))) {
-      return this.configs.get('groq') ?? null
+
+    // Explicit routing: model prefix → provider config
+    if (m.includes('deepseek') && this.configs.has('deepseek')) {
+      const c = this.configs.get('deepseek')!
+      return { ...c, provider: 'deepseek' }
     }
-    if (this.configs.has('nim')) return this.configs.get('nim') ?? null
-    if (this.configs.has('ollama')) return this.configs.get('ollama') ?? null
-    if (this.configs.has('openrouter')) return this.configs.get('openrouter') ?? null
-    // Fallback: try any registered provider
-    for (const config of this.configs.values()) return config
-    return null
+    if ((m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) && this.configs.has('groq')) {
+      const c = this.configs.get('groq')!
+      return { ...c, provider: 'groq' }
+    }
+    if ((m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) && this.configs.has('mistral')) {
+      const c = this.configs.get('mistral')!
+      return { ...c, provider: 'mistral' }
+    }
+    if ((m.startsWith('qwen') || m === 'coder-model') && this.configs.has('qwen')) {
+      const c = this.configs.get('qwen')!
+      return { ...c, provider: 'qwen' }
+    }
+    if (this.configs.has('openrouter') && m.includes('/')) {
+      const c = this.configs.get('openrouter')!
+      return { ...c, provider: 'openrouter' }
+    }
+    if (this.configs.has('nim') && this.configs.has('nim')) {
+      const c = this.configs.get('nim')!
+      return { ...c, provider: 'nim' }
+    }
+    if (this.configs.has('ollama')) {
+      const c = this.configs.get('ollama')!
+      return { ...c, provider: 'ollama' }
+    }
+    // Fallback: first registered config.
+    const first = this.configs.values().next().value
+    if (!first) return null
+    return { ...first, provider: detectProvider(model, first.baseUrl) }
   }
 
   supportsModel(model: string): boolean {
     const m = model.toLowerCase()
-    // Everything that isn't Claude, Gemini, or native OpenAI (GPT/o-series/codex)
+    // Everything that isn't Claude, Gemini, or native OpenAI (handled by other lanes).
     return !(
       m.startsWith('claude-') || m.includes('anthropic') ||
       m.startsWith('gemini-') || m.startsWith('gemma-') ||
-      m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('codex-')
+      m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') ||
+      m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-') ||
+      m.startsWith('gpt-5-codex')
     )
   }
 
-  async *run(context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult> {
-    const { model, signal } = context
-    const config = this.getConfig(model)
-    if (!config) {
-      throw new Error(`No provider configured for model ${model}`)
+  // ── Provider-shim-compatible single-turn entry ──────────────────
+
+  async *streamAsProvider(
+    params: LaneProviderCallParams,
+  ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+    const { model, messages, system, tools, max_tokens, thinking, temperature, stop_sequences, signal } = params
+
+    const cfg = this.getConfigForModel(model)
+    if (!cfg) {
+      throw new Error(`openai-compat lane: no provider configured for model "${model}". Call registerProvider() or set an env var (e.g. DEEPSEEK_API_KEY).`)
     }
 
-    const provider = detectProvider(model, config.baseUrl)
-    const local = isLocalModel(config.baseUrl)
+    const provider = cfg.provider
+    const isLocal = isLocalBaseUrl(cfg.baseUrl)
 
-    const { full: systemPrompt } = assembleOpenAICompatPrompt(model, context.systemParts, local)
-    const tools = buildOpenAICompatFunctions().map(t => ({
-      type: 'function' as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }))
+    // Assemble system text. We keep it simple for Phase-1 (caller's text).
+    const systemText = typeof system === 'string'
+      ? system
+      : (system ?? []).map(b => b.text).join('\n\n')
 
-    const messages: Array<{ role: string; content?: string | null; tool_calls?: any[]; tool_call_id?: string }> = [
-      { role: 'system', content: systemPrompt },
-    ]
-    // Convert history
-    for (const msg of context.messages) {
-      if (typeof msg.content === 'string') {
-        messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: msg.content })
-      } else {
-        const texts: string[] = []
-        const tcs: any[] = []
-        for (const b of msg.content) {
-          if (b.type === 'text' && b.text) texts.push(b.text)
-          if (b.type === 'tool_use' && b.name) {
-            tcs.push({ id: b.id ?? `c_${Date.now()}`, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input) } })
-          }
-          if (b.type === 'tool_result') {
-            messages.push({ role: 'tool', tool_call_id: b.tool_use_id ?? '', content: typeof b.content === 'string' ? b.content : JSON.stringify(b.content) })
-          }
-        }
-        if (texts.length > 0 || tcs.length > 0) {
-          messages.push({
-            role: msg.role === 'assistant' ? 'assistant' : 'user',
-            content: texts.join('\n') || null,
-            ...(tcs.length > 0 && { tool_calls: tcs }),
-          })
-        }
-      }
-    }
+    // History conversion → OpenAI Chat Completions messages.
+    const chatMessages = convertHistoryToOpenAI(messages, systemText)
 
-    const totalUsage: NormalizedUsage = {
-      input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
-      cache_write_tokens: 0, thinking_tokens: 0,
-    }
+    // Tool conversion → OpenAI function tools with per-provider schema
+    // cleanup (strip $schema / $id / additionalProperties / strict etc.).
+    const openaiTools = buildOpenAITools(tools, provider)
 
-    let turnCount = 0
-    while (turnCount < MAX_TURNS) {
-      if (signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
-      turnCount++
+    // Build request body with per-provider quirks applied.
+    const body = applyProviderRequestQuirks(
+      {
+        model,
+        messages: chatMessages,
+        stream: true,
+        stream_options: { include_usage: true },
+        tools: openaiTools.length > 0 && !isLocal ? openaiTools : undefined,
+        tool_choice: openaiTools.length > 0 && !isLocal ? 'auto' : undefined,
+        max_tokens: clampMaxTokens(provider, max_tokens),
+        temperature: temperature ?? (isLocal ? 0.7 : undefined),
+        stop: stop_sequences?.length ? stop_sequences : undefined,
+      },
+      provider,
+      thinking,
+    )
 
-      const messageId = `compat-${Date.now()}-${turnCount}`
-      yield {
-        type: 'message_start',
+    // Headers per-provider.
+    const headers = buildRequestHeaders(provider, cfg.apiKey)
+
+    // Fire request.
+    const url = normalizeBaseUrl(cfg.baseUrl) + '/chat/completions'
+
+    const messageId = `compat-${Date.now()}`
+    let messageStartEmitted = false
+    let inputTokens = 0
+    let outputTokens = 0
+    let cachedInputTokens = 0
+    let reasoningTokens = 0
+
+    // Content-block state.
+    let currentBlockIndex = 0
+    let inTextBlock = false
+    let inThinkingBlock = false
+    const toolCallBuffers = new Map<number, { id: string; name: string; args: string; anthropicIndex: number }>()
+    let emittedAnyToolUse = false
+
+    const emitMessageStart = () => {
+      if (messageStartEmitted) return undefined
+      messageStartEmitted = true
+      return {
+        type: 'message_start' as const,
         message: {
-          id: messageId, type: 'message', role: 'assistant',
-          content: [], model, stop_reason: null, stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          id: messageId,
+          type: 'message' as const,
+          role: 'assistant' as const,
+          content: [],
+          model,
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: inputTokens,
+            output_tokens: 0,
+            ...(cachedInputTokens > 0 && {
+              cache_read_input_tokens: cachedInputTokens,
+              cache_creation_input_tokens: 0,
+            }),
+          },
         },
       }
+    }
 
-      let body: any = {
-        model,
-        messages,
-        stream: true,
-        ...(tools.length > 0 && !local ? { tools } : {}),
-        // Local models: fewer tools, longer timeout, no stream_options
-        ...(local ? { temperature: 0.7 } : {}),
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      })
+    } catch (err: any) {
+      if (!messageStartEmitted) {
+        const mst = emitMessageStart()
+        if (mst) yield mst
       }
-      body = adjustRequestBody(provider, body)
+      yield* emitErrorText(`${provider} API connection error: ${err?.message ?? String(err)}`)
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
+      yield { type: 'message_stop' }
+      return blankUsage(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+    }
 
-      let responseText = ''
-      const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = []
-      let blockIndex = 0
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '')
+      if (!messageStartEmitted) {
+        const mst = emitMessageStart()
+        if (mst) yield mst
+      }
+      yield* emitErrorText(`${provider} API error ${response.status}: ${errText.slice(0, 500)}`)
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
+      yield { type: 'message_stop' }
+      return blankUsage(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+    }
 
-      try {
-        const headers = getProviderHeaders(provider, config.apiKey)
-        const url = `${config.baseUrl}/chat/completions`
-        const response = await fetch(url, {
-          method: 'POST', headers, body: JSON.stringify(body), signal,
-        })
+    if (!response.body) {
+      throw new Error('OpenAI-compat: empty response body')
+    }
 
-        if (!response.ok) {
-          const errText = await response.text().catch(() => '')
-          throw new Error(`${provider} API error ${response.status}: ${errText.slice(0, 200)}`)
-        }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
 
-        const reader = response.body!.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        const partials = new Map<number, { id: string; name: string; args: string }>()
+    try {
+      reading: while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
 
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split('\n')
-            buffer = lines.pop() ?? ''
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
 
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue
-              const data = line.slice(6).trim()
-              if (data === '[DONE]' || !data) continue
+        for (const rawLine of lines) {
+          const line = rawLine.trim()
+          if (!line) continue
+          if (!line.startsWith('data:')) continue
+          const payload = line.slice(5).trim()
+          if (payload === '[DONE]') break reading
+          if (!payload) continue
 
-              let chunk: any
-              try { chunk = JSON.parse(data) } catch { continue }
-              const delta = chunk.choices?.[0]?.delta
-              if (!delta) continue
+          let chunk: any
+          try {
+            chunk = JSON.parse(payload)
+          } catch { continue }
 
-              if (delta.content) {
-                if (!responseText) {
-                  yield { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } }
-                }
-                responseText += delta.content
-                yield { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: delta.content } }
+          // Apply per-provider response normalization (reasoning field
+          // renames etc.) so downstream IR emission is uniform.
+          chunk = applyProviderResponseQuirks(chunk, provider)
+
+          // Stream-level usage (present on final chunk for most providers).
+          if (chunk.usage) {
+            inputTokens = chunk.usage.prompt_tokens ?? inputTokens
+            outputTokens = chunk.usage.completion_tokens ?? outputTokens
+            cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? cachedInputTokens
+            reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens ?? reasoningTokens
+          }
+
+          const choice = chunk.choices?.[0]
+          if (!choice) continue
+          const delta = choice.delta ?? {}
+
+          if (!messageStartEmitted && (delta.content || delta.tool_calls || delta.reasoning_content || delta.thinking)) {
+            const mst = emitMessageStart()
+            if (mst) yield mst
+          }
+
+          // Reasoning / thinking content. We normalize into a thinking
+          // block that claude.ts can render. Providers disagree: some
+          // stream reasoning_content (DeepSeek reasoner), some stream
+          // reasoning (Groq / OpenRouter), some stream thinking (already
+          // normalized).
+          const thinkingDelta: string | undefined =
+            delta.thinking ?? delta.reasoning_content ?? delta.reasoning
+          if (typeof thinkingDelta === 'string' && thinkingDelta.length > 0) {
+            if (inTextBlock) {
+              yield { type: 'content_block_stop', index: currentBlockIndex }
+              currentBlockIndex++
+              inTextBlock = false
+            }
+            if (!inThinkingBlock) {
+              yield {
+                type: 'content_block_start',
+                index: currentBlockIndex,
+                content_block: { type: 'thinking', thinking: '' },
               }
-
-              if (delta.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  if (!partials.has(tc.index)) {
-                    if (responseText && blockIndex === 0) {
-                      yield { type: 'content_block_stop', index: blockIndex }; blockIndex++
-                    }
-                    partials.set(tc.index, { id: tc.id ?? `c_${tc.index}`, name: tc.function?.name ?? '', args: tc.function?.arguments ?? '' })
-                  } else {
-                    const p = partials.get(tc.index)!
-                    if (tc.function?.arguments) p.args += tc.function.arguments
-                    if (tc.function?.name) p.name = tc.function.name
-                    if (tc.id) p.id = tc.id
-                  }
-                }
-              }
-
-              if (chunk.usage) {
-                totalUsage.input_tokens += chunk.usage.prompt_tokens ?? 0
-                totalUsage.output_tokens += chunk.usage.completion_tokens ?? 0
-              }
+              inThinkingBlock = true
+            }
+            yield {
+              type: 'content_block_delta',
+              index: currentBlockIndex,
+              delta: { type: 'thinking_delta', thinking: thinkingDelta },
             }
           }
-        } finally { reader.releaseLock() }
 
-        for (const [, tc] of partials) {
-          let args: Record<string, unknown> = {}
-          try { args = JSON.parse(tc.args) } catch { args = { raw: tc.args } }
-          toolCalls.push({ id: tc.id, name: tc.name, args })
-          yield { type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: tc.id, name: tc.name, input: args } }
-          yield { type: 'content_block_stop', index: blockIndex }
-          blockIndex++
-        }
-      } catch (err: any) {
-        if (err?.name === 'AbortError' || signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
-        yield { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: `\n\n${provider} error: ${err.message}` } }
-        yield { type: 'content_block_stop', index: blockIndex }
-        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-        yield { type: 'message_stop' }
-        return { stopReason: 'error', usage: totalUsage }
-      }
+          // Text content.
+          if (typeof delta.content === 'string' && delta.content.length > 0) {
+            if (inThinkingBlock) {
+              yield { type: 'content_block_stop', index: currentBlockIndex }
+              currentBlockIndex++
+              inThinkingBlock = false
+            }
+            if (!inTextBlock) {
+              yield {
+                type: 'content_block_start',
+                index: currentBlockIndex,
+                content_block: { type: 'text', text: '' },
+              }
+              inTextBlock = true
+            }
+            yield {
+              type: 'content_block_delta',
+              index: currentBlockIndex,
+              delta: { type: 'text_delta', text: delta.content },
+            }
+          }
 
-      if (responseText || toolCalls.length === 0) {
-        yield { type: 'content_block_stop', index: blockIndex }
-      }
+          // Tool-call deltas. OpenAI-style tool_calls arrive piece-by-piece
+          // indexed by position. We accumulate args until finish_reason
+          // signals completion.
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0
+              let buf = toolCallBuffers.get(idx)
+              if (!buf) {
+                // Close any currently-open text/thinking block.
+                if (inTextBlock || inThinkingBlock) {
+                  yield { type: 'content_block_stop', index: currentBlockIndex }
+                  currentBlockIndex++
+                  inTextBlock = false
+                  inThinkingBlock = false
+                }
+                buf = {
+                  id: tc.id ?? `call_${idx}`,
+                  name: tc.function?.name ?? '',
+                  args: '',
+                  anthropicIndex: currentBlockIndex,
+                }
+                currentBlockIndex++
+                toolCallBuffers.set(idx, buf)
+                emittedAnyToolUse = true
+              }
+              if (tc.id) buf.id = tc.id
+              if (tc.function?.name) buf.name = tc.function.name
+              if (typeof tc.function?.arguments === 'string') buf.args += tc.function.arguments
+            }
+          }
 
-      if (toolCalls.length === 0) {
-        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-        yield { type: 'message_stop' }
-        return { stopReason: 'end_turn', usage: totalUsage }
-      }
+          // finish_reason signals completion of this choice's output.
+          const finishReason = choice.finish_reason
+          if (finishReason) {
+            // Close open text / thinking blocks.
+            if (inTextBlock || inThinkingBlock) {
+              yield { type: 'content_block_stop', index: currentBlockIndex }
+              inTextBlock = false
+              inThinkingBlock = false
+            }
 
-      yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 0 } }
-      yield { type: 'message_stop' }
-
-      messages.push({
-        role: 'assistant', content: responseText || null,
-        tool_calls: toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args) } })),
-      })
-
-      for (const tc of toolCalls) {
-        const resolved = resolveToolCall(tc.name, tc.args)
-        let result: string
-        if (!resolved) {
-          result = `Error: Unknown tool "${tc.name}"`
-        } else {
-          try {
-            const r = await context.executeTool(resolved.implId, resolved.input)
-            result = formatToolResult(tc.name, r.isError ? `Error: ${r.content}` : r.content)
-          } catch (err: any) {
-            result = `Error: ${err.message}`
+            // Emit final tool_use blocks with the accumulated arguments.
+            for (const buf of toolCallBuffers.values()) {
+              const implId = normalizeToolName(buf.name)
+              let input: Record<string, unknown>
+              try {
+                input = buf.args ? JSON.parse(buf.args) : {}
+              } catch {
+                input = { _raw: buf.args }
+              }
+              const anthropicToolUseId = buf.id.startsWith('toolu_') ? buf.id : `toolu_compat_${buf.id}`
+              yield {
+                type: 'content_block_start',
+                index: buf.anthropicIndex,
+                content_block: {
+                  type: 'tool_use',
+                  id: anthropicToolUseId,
+                  name: implId,
+                  input,
+                },
+              }
+              yield { type: 'content_block_stop', index: buf.anthropicIndex }
+            }
+            toolCallBuffers.clear()
           }
         }
-        messages.push({ role: 'tool', tool_call_id: tc.id, content: result })
+      }
+    } finally {
+      reader.releaseLock()
+    }
+
+    if (!messageStartEmitted) {
+      const mst = emitMessageStart()
+      if (mst) yield mst
+    }
+
+    const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+    yield {
+      type: 'message_delta',
+      delta: { stop_reason: stopReason },
+      usage: { output_tokens: outputTokens },
+    }
+    yield { type: 'message_stop' }
+
+    return {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_read_tokens: cachedInputTokens,
+      cache_write_tokens: 0,
+      thinking_tokens: reasoningTokens,
+    }
+  }
+
+  // ── Lane-owns-loop (Phase-2, not wired yet) ─────────────────────
+
+  async *run(_context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult> {
+    throw new Error('OpenAICompatLane.run (lane-owns-loop) is not wired yet — use streamAsProvider via LaneBackedProvider.')
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    // Each provider has its own model list. Phase-1 returns the empty set
+    // and relies on the /models command to query per-provider separately.
+    return []
+  }
+
+  resolveModel(model: string): string {
+    return model
+  }
+
+  isHealthy(): boolean {
+    return this._healthy
+  }
+
+  setHealthy(healthy: boolean): void {
+    this._healthy = healthy
+  }
+
+  dispose(): void {}
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────
+
+function blankUsage(i: number, o: number, c: number, r: number): NormalizedUsage {
+  return {
+    input_tokens: i,
+    output_tokens: o,
+    cache_read_tokens: c,
+    cache_write_tokens: 0,
+    thinking_tokens: r,
+  }
+}
+
+function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
+  yield { type: 'content_block_stop', index: 0 }
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+}
+
+function buildRequestHeaders(provider: ProviderType, apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+  }
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+  if (provider === 'openrouter') {
+    headers['HTTP-Referer'] = 'https://github.com/AbdoKnbGit/claudex'
+    headers['X-Title'] = 'ClaudeX'
+  }
+  if (provider === 'qwen') {
+    // DashScope-specific headers: enable prompt caching + identify client.
+    headers['X-DashScope-CacheControl'] = 'enable'
+    headers['X-DashScope-UserAgent'] = `ClaudeX/0.1 (${process.platform}; ${process.arch})`
+  }
+  return headers
+}
+
+function normalizeToolName(rawName: string): string {
+  // Tool name arrives as whatever the model called. If it matches a native
+  // entry in the registry, map to shared impl id. Otherwise pass through.
+  const reg = OPENAI_COMPAT_TOOL_REGISTRY.find(r => r.nativeName === rawName)
+  return reg?.implId ?? rawName
+}
+
+function clampMaxTokens(provider: ProviderType, requested: number): number {
+  // DeepSeek hard-caps max_tokens at 8192 — requesting more 400s.
+  if (provider === 'deepseek' && requested > 8192) return 8192
+  return requested
+}
+
+// ─── Per-Provider Request Quirks ─────────────────────────────────
+//
+// Consolidates the transformations the reference transformers do. Each
+// quirk has a brief comment explaining *why* (usually: a specific error
+// the provider returns on non-compliant requests).
+
+function applyProviderRequestQuirks(
+  body: OpenAIChatRequest,
+  provider: ProviderType,
+  thinking: LaneProviderCallParams['thinking'] | undefined,
+): OpenAIChatRequest {
+  const isReasoning = thinking && thinking.type !== 'disabled'
+  const effort = resolveReasoningEffort(thinking)
+
+  // Strip cache_control from messages for providers that don't understand it.
+  // Only Claude / Gemini (via OpenRouter) support it on this endpoint.
+  if (provider !== 'openrouter') {
+    body.messages = body.messages.map(stripCacheControlFromMessage)
+  }
+
+  // Provider-specific transformations.
+  switch (provider) {
+    case 'deepseek': {
+      // DeepSeek reasoner supports `thinking: { type: 'enabled' }` only —
+      // no budget_tokens. When reasoning is requested, pass through.
+      if (isReasoning) body.thinking = { type: 'enabled' }
+      break
+    }
+    case 'groq': {
+      // Groq rejects $schema on tool parameters. Already stripped by
+      // buildOpenAITools → sanitizeToolSchema.
+      // Groq accepts reasoning_effort for reasoning-capable models.
+      if (isReasoning && effort) body.reasoning_effort = effort
+      // Groq doesn't support stream_options.include_usage on some tiers;
+      // include it anyway — newer tiers respect it, older tiers ignore.
+      // Strip null values from assistant tool_calls (Groq's validator
+      // rejects `"function_call": null`).
+      body.messages = body.messages.map(stripNullToolCall)
+      break
+    }
+    case 'mistral': {
+      // Mistral rejects tool_choice "required" — must use "any".
+      if (body.tool_choice === 'required') body.tool_choice = 'auto'
+      // Strip `name` from non-tool messages (Mistral allows it only on
+      // tool messages; system/user/assistant with name field → extra_forbidden).
+      body.messages = body.messages.map(m => (m.role === 'tool' ? m : stripNameField(m)))
+      // Magistral models want the thinking system-prompt template injected.
+      if (isReasoning && body.model.toLowerCase().includes('magistral')) {
+        body.messages = injectMagistralThinkingPrompt(body.messages)
+      }
+      break
+    }
+    case 'nim': {
+      delete body.stream_options
+      break
+    }
+    case 'ollama': {
+      delete body.stream_options
+      // Ollama has Ollama-specific params. Pass through from extra_body if set.
+      break
+    }
+    case 'openrouter': {
+      // OpenRouter cache_control: only Claude / Gemini models respect it.
+      // Keep the original message-level cache_control; the upstream
+      // transformer will relocate it to the last content block (Anthropic
+      // has a hard 4-breakpoint cap that OpenRouter auto-enforces).
+      if (isReasoning && effort) body.reasoning = { effort }
+      break
+    }
+    case 'qwen': {
+      // DashScope compatible-mode supports OpenAI prompt caching via
+      // `cache_control: { type: "ephemeral" }`. The upstream applies the
+      // marker to the last text/tool — we pass through cache_control from
+      // the caller. Reasoning via extra_body.enable_thinking.
+      if (isReasoning) {
+        body.extra_body = {
+          ...(body.extra_body ?? {}),
+          enable_thinking: true,
+        }
+        // Vision models need vl_high_resolution_images flag. Only flip it
+        // on for the vision-capable Qwen families we recognize.
+        if (/qwen-vl|qwen3-vl|qwen3\.5-plus/i.test(body.model)) {
+          body.extra_body = {
+            ...(body.extra_body ?? {}),
+            vl_high_resolution_images: true,
+          }
+        }
+      }
+      break
+    }
+    default:
+      break
+  }
+
+  // Remove undefined fields — many providers 400 on explicit `null` on
+  // optional fields they don't recognize.
+  for (const k of Object.keys(body)) {
+    if ((body as any)[k] === undefined) delete (body as any)[k]
+  }
+
+  return body
+}
+
+function resolveReasoningEffort(
+  thinking: LaneProviderCallParams['thinking'] | undefined,
+): 'low' | 'medium' | 'high' | undefined {
+  if (!thinking || thinking.type === 'disabled') return undefined
+  if (thinking.type === 'adaptive') return 'medium'
+  const budget = (thinking as any).budget_tokens as number | undefined
+  if (budget == null) return 'medium'
+  if (budget < 2000) return 'low'
+  if (budget < 8000) return 'medium'
+  return 'high'
+}
+
+function stripCacheControlFromMessage(m: OpenAIChatMessage): OpenAIChatMessage {
+  if (!m.content || typeof m.content === 'string') return m
+  const cleanedContent = m.content.map(part => {
+    if (typeof part !== 'object' || part === null) return part
+    const { cache_control: _cc, ...rest } = part as any
+    return rest
+  })
+  return { ...m, content: cleanedContent as any }
+}
+
+function stripNullToolCall(m: OpenAIChatMessage): OpenAIChatMessage {
+  if (!m.tool_calls) return m
+  const cleaned = m.tool_calls.filter(tc => tc && tc.function && tc.function.name)
+  if (cleaned.length === 0) {
+    const { tool_calls: _tc, ...rest } = m
+    return rest
+  }
+  return { ...m, tool_calls: cleaned }
+}
+
+function stripNameField(m: OpenAIChatMessage): OpenAIChatMessage {
+  if (!m.name) return m
+  const { name: _n, ...rest } = m
+  return rest
+}
+
+function injectMagistralThinkingPrompt(messages: OpenAIChatMessage[]): OpenAIChatMessage[] {
+  const thinkingPrompt =
+    'Reason step-by-step inside <think>...</think> tags before answering. '
+    + 'Emit your thinking first, then provide your final answer outside the tags.'
+  const existingSystem = messages.findIndex(m => m.role === 'system')
+  if (existingSystem >= 0) {
+    const sys = messages[existingSystem]
+    const merged = typeof sys.content === 'string'
+      ? thinkingPrompt + '\n\n' + sys.content
+      : thinkingPrompt
+    return messages.map((m, i) => i === existingSystem ? { ...m, content: merged } : m)
+  }
+  return [{ role: 'system', content: thinkingPrompt }, ...messages]
+}
+
+// ─── Per-Provider Response Quirks ────────────────────────────────
+
+function applyProviderResponseQuirks(chunk: any, provider: ProviderType): any {
+  const choice = chunk?.choices?.[0]
+  if (!choice) return chunk
+  const delta = choice.delta ?? {}
+
+  // Groq: returns `reasoning` on deltas; normalize to reasoning_content
+  // for uniform downstream handling (not strictly required with our
+  // thinking-delta union fallback, but keeps things tidy).
+  if (provider === 'groq' && typeof delta.reasoning === 'string' && !delta.reasoning_content) {
+    delta.reasoning_content = delta.reasoning
+  }
+  // Qwen (DashScope compatible-mode) also uses `reasoning_content` and
+  // sometimes `reasoning`. Keep both populated so the union fallback wins.
+  if (provider === 'qwen') {
+    if (typeof delta.reasoning === 'string' && !delta.reasoning_content) {
+      delta.reasoning_content = delta.reasoning
+    }
+    // DashScope emits finish_reason="error_finish" for in-stream errors;
+    // surface the embedded message so the user sees what happened.
+    if (choice.finish_reason === 'error_finish' && typeof delta.content === 'string') {
+      delta.content = `[DashScope error] ${delta.content}`
+    }
+  }
+  // DeepSeek already sends reasoning_content; nothing to rename.
+  // OpenRouter may send either reasoning or reasoning_content depending
+  // on the underlying model; the union handling in streamAsProvider
+  // covers both.
+
+  // Rebuild choice with normalized delta.
+  return { ...chunk, choices: [{ ...choice, delta }] }
+}
+
+// ─── Tool Schema Sanitization ────────────────────────────────────
+
+function buildOpenAITools(
+  tools: ProviderTool[],
+  provider: ProviderType,
+): Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return tools.map(t => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description ?? '',
+      parameters: sanitizeToolSchema(t.input_schema ?? { type: 'object', properties: {} }, provider),
+    },
+  }))
+}
+
+// Strip JSON Schema fields that various providers reject. Provider-specific
+// removals are listed below; shared ones (always strip) are applied to all.
+function sanitizeToolSchema(schema: Record<string, unknown>, provider: ProviderType): Record<string, unknown> {
+  // Fields to drop for all compat providers:
+  const ALWAYS = new Set(['$schema', '$id', '$ref', '$comment'])
+  // Provider-specific:
+  const EXTRA: Record<ProviderType, Set<string>> = {
+    groq: new Set(['strict', 'additionalProperties']),
+    mistral: new Set(['strict', 'additionalProperties', 'format', 'examples', 'default']),
+    deepseek: new Set([]),
+    nim: new Set([]),
+    ollama: new Set(['strict', 'additionalProperties']),
+    openrouter: new Set([]),
+    qwen: new Set(['strict', 'additionalProperties']),
+    generic: new Set(['strict']),
+  }
+  const drop = new Set<string>([...ALWAYS, ...EXTRA[provider]])
+
+  function walk(v: unknown): unknown {
+    if (Array.isArray(v)) return v.map(walk)
+    if (v && typeof v === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, value] of Object.entries(v as Record<string, unknown>)) {
+        if (drop.has(k)) continue
+        out[k] = walk(value)
+      }
+      return out
+    }
+    return v
+  }
+  return walk(schema) as Record<string, unknown>
+}
+
+// ─── History Conversion ──────────────────────────────────────────
+
+function convertHistoryToOpenAI(
+  messages: ProviderMessage[],
+  systemText: string,
+): OpenAIChatMessage[] {
+  const out: OpenAIChatMessage[] = []
+  if (systemText) out.push({ role: 'system', content: systemText })
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      out.push({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: msg.content,
+      })
+      continue
+    }
+
+    const texts: string[] = []
+    const toolCalls: NonNullable<OpenAIChatMessage['tool_calls']> = []
+    const toolResults: OpenAIChatMessage[] = []
+
+    for (const block of msg.content) {
+      switch (block.type) {
+        case 'text':
+          if (block.text) texts.push(block.text)
+          break
+        case 'tool_use':
+          if (block.id && block.name) {
+            toolCalls.push({
+              id: block.id,
+              type: 'function',
+              function: {
+                name: block.name,
+                arguments: JSON.stringify(block.input ?? {}),
+              },
+            })
+          }
+          break
+        case 'tool_result':
+          if (block.tool_use_id) {
+            toolResults.push({
+              role: 'tool',
+              tool_call_id: block.tool_use_id,
+              content: typeof block.content === 'string'
+                ? block.content
+                : stringifyToolContent(block.content),
+            })
+          }
+          break
+        case 'thinking':
+          // OpenAI Chat Completions doesn't echo thinking back — skip.
+          break
       }
     }
 
-    return { stopReason: 'max_turns', usage: totalUsage }
+    if (texts.length > 0 || toolCalls.length > 0) {
+      out.push({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: texts.length > 0 ? texts.join('\n') : null,
+        ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
+      })
+    }
+    out.push(...toolResults)
   }
 
-  async listModels(): Promise<ModelInfo[]> { return [] }
-  resolveModel(model: string): string { return model }
-  isHealthy(): boolean { return this._healthy && this.configs.size > 0 }
-  setHealthy(h: boolean): void { this._healthy = h }
-  dispose(): void {}
+  return out
 }
+
+function stringifyToolContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const b of content as any[]) {
+      if (b && typeof b === 'object') {
+        if ('text' in b && typeof b.text === 'string') parts.push(b.text)
+        else parts.push(JSON.stringify(b))
+      }
+    }
+    return parts.join('\n')
+  }
+  return JSON.stringify(content ?? '')
+}
+
+// ─── Singleton Export ────────────────────────────────────────────
 
 export const openaiCompatLane = new OpenAICompatLane()
