@@ -615,10 +615,17 @@ async function checkPermissionsAndCallTool(
   // Use .strip() mode: silently drop unknown properties instead of rejecting.
   // Third-party models (Gemini, DeepSeek, etc.) frequently hallucinate extra
   // params from their native tool schemas (e.g., multiSelect on AskUserQuestion).
-  // Stripping is safe — unknown props can't affect tool behavior.
-  const strippedSchema = tool.inputSchema instanceof Object && 'strip' in tool.inputSchema
-    ? (tool.inputSchema as any).strip()
-    : tool.inputSchema
+  // Stripping is safe for tools with defined Zod schemas — unknown props can't
+  // affect tool behavior. But tools that carry a dynamic `inputJSONSchema`
+  // (MCP tools, SyntheticOutputTool) use `z.object({}).passthrough()` as a
+  // placeholder Zod schema; calling .strip() on that drops EVERY argument
+  // because no keys are defined in the Zod layer. Those tools validate against
+  // `inputJSONSchema` elsewhere (MCP server-side; Ajv in SyntheticOutputTool).
+  const hasDynamicJsonSchema = 'inputJSONSchema' in tool && !!tool.inputJSONSchema
+  const strippedSchema =
+    !hasDynamicJsonSchema && tool.inputSchema instanceof Object && 'strip' in tool.inputSchema
+      ? (tool.inputSchema as any).strip()
+      : tool.inputSchema
   const parsedInput = strippedSchema.safeParse(input)
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(
