@@ -28,6 +28,7 @@ import {
   deleteAllProviderCredentials,
   hasStoredKey,
 } from '../../services/api/auth/api_key_manager.js'
+import { clearAllAntigravityAccounts } from '../../lanes/shared/antigravity_auth.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 
@@ -58,6 +59,16 @@ export async function performLogout({
   if (isThirdPartyProvider(provider)) {
     // Third-party: only delete this provider's credentials
     deleteAllProviderCredentials(provider)
+    // Gemini's Antigravity flow stores accounts outside the regular
+    // provider-key store (multi-account rotation, per-family quotas).
+    // Wipe that store too so nothing survives a logout.
+    if (provider === 'gemini') {
+      try {
+        clearAllAntigravityAccounts()
+      } catch {
+        // Best-effort: a missing/locked store shouldn't fail the logout.
+      }
+    }
     // Clear the active provider so it falls back to env vars or firstParty
     clearActiveProvider()
   } else {
@@ -136,7 +147,13 @@ export async function call(
  */
 function providerIsConfigured(p: APIProvider): boolean {
   if (p === 'firstParty') return true // Anthropic path always does something
-  return hasStoredKey(p) || hasStoredKey(`${p}_oauth`)
+  if (hasStoredKey(p) || hasStoredKey(`${p}_oauth`)) return true
+  // Gemini has two parallel OAuth flows (CLI + Antigravity); either one
+  // counts as "configured" and needs to show up in the logout picker.
+  if (p === 'gemini') {
+    return hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth_antigravity')
+  }
+  return false
 }
 
 function ProviderPickerLogout({
@@ -249,15 +266,25 @@ function ProviderPickerLogout({
               const name = PROVIDER_DISPLAY_NAMES[p]
               const isActive = p === activeProvider
               const hasApi = p !== 'firstParty' && hasStoredKey(p)
+              const hasOauthCli =
+                p === 'gemini' && hasStoredKey('gemini_oauth_cli')
+              const hasOauthAg =
+                p === 'gemini' && hasStoredKey('gemini_oauth_antigravity')
               const hasOauth =
-                p !== 'firstParty' && hasStoredKey(`${p}_oauth`)
+                (p !== 'firstParty' && hasStoredKey(`${p}_oauth`)) ||
+                hasOauthCli || hasOauthAg
+              const oauthDetail =
+                p === 'gemini' && (hasOauthCli || hasOauthAg)
+                  ? ` (${[hasOauthCli && 'CLI', hasOauthAg && 'Antigravity']
+                      .filter(Boolean).join(' + ')})`
+                  : ''
               const credLabel =
                 p === 'firstParty'
                   ? 'Anthropic account'
                   : hasApi && hasOauth
-                    ? 'OAuth + API key'
+                    ? `OAuth${oauthDetail} + API key`
                     : hasOauth
-                      ? 'OAuth'
+                      ? `OAuth${oauthDetail}`
                       : hasApi
                         ? 'API key'
                         : ''

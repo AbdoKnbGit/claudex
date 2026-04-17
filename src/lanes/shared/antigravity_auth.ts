@@ -92,10 +92,13 @@ export interface AntigravityStore {
   version: number
   accounts: AntigravityAccount[]
   activeIndex: number
-  activeIndexByFamily: {
-    claude?: number
-    gemini?: number
-  }
+  /**
+   * Per-family active-account index. Keys must match the rotation
+   * module's `AntigravityFamily` enum; values are offsets into `accounts[]`.
+   * Allowed keys: 'claude' | 'gemini-pro' | 'gemini-flash' plus legacy
+   * 'gemini' for back-compat with older store files.
+   */
+  activeIndexByFamily: Partial<Record<string, number>>
 }
 
 // ─── PKCE Helpers ────────────────────────────────────────────────
@@ -317,6 +320,18 @@ export function saveStore(store: AntigravityStore): void {
   }
   // Best-effort 0600 on POSIX; no-op on Windows.
   try { chmodSync(STORAGE_FILE, 0o600) } catch { /* not supported on Windows */ }
+}
+
+/**
+ * Wipe every Antigravity account from the multi-account store.
+ *
+ * Called by `/logout` when signing out of Gemini, since Antigravity
+ * credentials live outside the regular provider-key store (they rotate
+ * across several Google accounts). Overwriting with a fresh empty store
+ * preserves the file perms and version, rather than unlinking.
+ */
+export function clearAllAntigravityAccounts(): void {
+  saveStore({ version: 1, accounts: [], activeIndex: 0, activeIndexByFamily: {} })
 }
 
 // ─── Multi-account rotation ──────────────────────────────────────
