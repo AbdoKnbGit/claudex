@@ -35,6 +35,8 @@ export { LaneBackedProvider } from './provider-bridge.js'
 import { initGeminiLane } from './gemini/index.js'
 import { initCodexLane } from './codex/index.js'
 import { initOpenAICompatLane } from './openai-compat/index.js'
+import { initQwenLane } from './qwen/index.js'
+import { initClaudeLane } from './claude/index.js'
 
 /**
  * Initialize all lanes with available auth credentials.
@@ -73,6 +75,11 @@ export function initLanes(opts?: {
   // Qwen (DashScope)
   qwenApiKey?: string
 }): void {
+  // ── Claude lane (registration-only: Anthropic traffic uses
+  //    services/api/claude.ts directly — this lane exists for /lane
+  //    and /models UX symmetry + smallFastModel lookup). ──
+  initClaudeLane()
+
   // ── Gemini lane (Gemini models) ──
   initGeminiLane({
     apiKey: opts?.geminiApiKey,
@@ -87,7 +94,15 @@ export function initLanes(opts?: {
     baseUrl: opts?.openaiBaseUrl,
   })
 
-  // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama, OpenRouter, Qwen) ──
+  // ── Qwen lane (native OAuth + DashScope) ──
+  // Must register BEFORE openai-compat so the dispatcher picks the
+  // dedicated Qwen lane first for qwen-* / coder-model ids. Openai-compat
+  // keeps no qwen provider after Phase 2B.
+  initQwenLane({
+    apiKey: opts?.qwenApiKey,
+  })
+
+  // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama, OpenRouter) ──
   initOpenAICompatLane({
     deepseek: opts?.deepseekApiKey ? { apiKey: opts.deepseekApiKey } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
@@ -95,6 +110,5 @@ export function initLanes(opts?: {
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,
     ollama: opts?.ollamaBaseUrl ? { baseUrl: opts.ollamaBaseUrl } : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
-    qwen: opts?.qwenApiKey ? { apiKey: opts.qwenApiKey } : undefined,
   })
 }

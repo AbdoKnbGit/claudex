@@ -6,6 +6,45 @@
  * - tools: [{functionDeclarations: [...]}]
  * - systemInstruction: {parts: [{text}]}
  * - generationConfig: {maxOutputTokens, temperature}
+ *
+ * ── Tool-call reliability layers (in order of importance) ──────────
+ *
+ * Gemini tends to invent tool calls based on training-data memory of names
+ * like `Agent`, `WebFetch`, `TaskCreate` — emitting calls with missing
+ * required parameters. The fix is layered defense, ported from the
+ * antigravity / CLIProxyAPI plugin in reference/opencode-google-antigravity-auth-main:
+ *
+ *   1. SERVER ENFORCEMENT (the actual fix):
+ *      `toolConfig.functionCallingConfig.mode = "VALIDATED"`
+ *      Gemini's API validates each functionCall against the declared
+ *      parameters and retries internally on failure. Calls with missing
+ *      required fields never reach us. Set unconditionally when tools
+ *      are present.
+ *
+ *   2. SCHEMA SANITIZATION: `sanitizeSchemaForGemini` strips JSON-Schema
+ *      keys Gemini rejects ($schema, additionalProperties, etc.) and
+ *      flattens anyOf/oneOf/allOf composition. Without this Gemini 400s
+ *      before any tool call is made.
+ *
+ *   3. TOOL NAME SANITIZATION: `sanitizeGeminiToolName` prefixes
+ *      digit-leading names with `t_` (Gemini requires `^[a-zA-Z_]`).
+ *      The reverse map lets inbound responses recover the original.
+ *
+ *   4. PER-TOOL HINT: `appendStrictParamsToDescription` writes a compact
+ *      `STRICT PARAMETERS: name: type REQUIRED, …` line into each tool's
+ *      description so the model has a one-glance schema reminder at call
+ *      time without re-reading the full JSON.
+ *
+ *   5. SYSTEM-INSTRUCTION NUDGE: `GEMINI_TOOL_SCHEMA_SYSTEM_INSTRUCTION`
+ *      a ~10-line block prepended to systemInstruction reminding the model
+ *      to honor the schema instead of training-data memory. Kept short
+ *      because it's on every turn — every byte costs latency on flash-lite.
+ *
+ *   6. SCHEMA CACHE FOR ARG REPAIR: each parameter shape is recorded by
+ *      `recordToolSchema`. The inbound `gemini_to_anthropic` side calls
+ *      `coerceToolCallArgs` to JSON.parse stringly-typed values when the
+ *      schema declares array/object — covers the rare cases that escape
+ *      VALIDATED mode (e.g. malformed-but-non-empty args).
  */
 
 import type {
@@ -16,6 +55,30 @@ import type {
   SystemBlock,
 } from '../providers/base_provider.js'
 import { getThoughtSignature } from './gemini_thought_cache.js'
+import { recordToolSchema } from './tool_schema_cache.js'
+
+/**
+ * Gemini requires function names to match `^[a-zA-Z_][a-zA-Z0-9_-]*$`.
+ * Names that start with a digit (some MCP tool conventions) get a `t_`
+ * prefix; the same prefix is applied symmetrically when names come back
+ * in functionCall/functionResponse so the tool dispatcher still resolves.
+ */
+export function sanitizeGeminiToolName(name: string): string {
+  if (!name) return name
+  return /^[0-9]/.test(name) ? `t_${name}` : name
+}
+
+const renamedToolMap = new Map<string, string>()
+
+/** Records a tool name remapping so inbound responses can reverse it. */
+export function rememberGeminiToolRename(original: string, sanitized: string): void {
+  if (original !== sanitized) renamedToolMap.set(sanitized, original)
+}
+
+/** Reverses sanitizeGeminiToolName for inbound functionCall.name values. */
+export function originalToolNameFromGemini(name: string): string {
+  return renamedToolMap.get(name) ?? name
+}
 
 // ─── Gemini types ──────────────────────────────────────────────────
 
@@ -27,6 +90,19 @@ export interface GeminiSafetySettingEntry {
 export interface GeminiRequest {
   contents: GeminiContent[]
   tools?: Array<{ functionDeclarations: GeminiFunctionDeclaration[] }>
+  /**
+   * Controls how Gemini handles function calls. We force
+   * `functionCallingConfig.mode = "VALIDATED"` whenever tools are present
+   * so the API enforces the declared JSON schema server-side. Without this
+   * the model frequently emits tool calls with missing required parameters
+   * and the failures only surface in our local validator.
+   */
+  toolConfig?: {
+    functionCallingConfig?: {
+      mode?: 'AUTO' | 'ANY' | 'NONE' | 'VALIDATED'
+      allowedFunctionNames?: string[]
+    }
+  }
   systemInstruction?: { parts: Array<{ text: string }> }
   generationConfig?: {
     maxOutputTokens?: number
@@ -319,6 +395,127 @@ export function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record
   return result
 }
 
+// ─── Tool schema augmentation ──────────────────────────────────────
+
+/**
+ * Compact reminder prepended to systemInstruction whenever tools are present.
+ * Backstops the server-side `mode: "VALIDATED"` enforcement: the API will
+ * already reject calls with missing required params, but this nudges the
+ * model to emit valid calls in the first place instead of triggering retries.
+ *
+ * Kept short (≈10 lines) because every byte here is on every Gemini turn.
+ * The previous 50-line version measurably hurt latency on flash-lite.
+ */
+const GEMINI_TOOL_SCHEMA_SYSTEM_INSTRUCTION = `<TOOL_USAGE_RULES>
+Tool schemas in this environment OVERRIDE your training-data memory of tool names.
+Treat each tool's "parameters" field as authoritative:
+- Use parameter NAMES exactly as listed in "properties" (case-sensitive).
+- Supply EVERY parameter listed in "required" — never omit one, never send empty objects.
+- Match parameter TYPES exactly (array means array, object means object, string means string).
+- Do not invent extra parameters that are not in "properties".
+The "STRICT PARAMETERS:" hint at the end of each tool description is your quick reference.
+</TOOL_USAGE_RULES>
+`
+
+function normalizeSchemaTypeForSummary(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    const nonNull = value.filter(t => t !== 'null')
+    const first = nonNull[0] ?? value[0]
+    if (typeof first === 'string') return first
+  }
+  return undefined
+}
+
+function summarizeSchemaNode(schema: unknown, depth: number): string {
+  if (!schema || typeof schema !== 'object') return 'unknown'
+
+  const record = schema as Record<string, unknown>
+  const typeStr = normalizeSchemaTypeForSummary(record.type)
+  const enumValues = Array.isArray(record.enum) ? (record.enum as unknown[]) : undefined
+
+  if (typeStr === 'array') {
+    const itemSummary = depth > 0 ? summarizeSchemaNode(record.items, depth - 1) : 'unknown'
+    return `array[${itemSummary}]`
+  }
+
+  if (typeStr === 'object') {
+    const props = record.properties as Record<string, unknown> | undefined
+    const required = Array.isArray(record.required)
+      ? (record.required as unknown[]).filter((v): v is string => typeof v === 'string')
+      : []
+
+    if (!props || depth <= 0) return 'object'
+
+    const keys = Object.keys(props)
+    const requiredKeys = keys.filter(k => required.includes(k))
+    const optionalKeys = keys.filter(k => !required.includes(k))
+    const ordered = [...requiredKeys.sort(), ...optionalKeys.sort()]
+    const max = 8
+    const shown = ordered.slice(0, max)
+
+    const inner = shown
+      .map(k => {
+        const sub = summarizeSchemaNode(props[k], depth - 1)
+        return `${k}: ${sub}${required.includes(k) ? ' REQUIRED' : ''}`
+      })
+      .join(', ')
+
+    const extra = ordered.length - shown.length
+    const more = extra > 0 ? `, …+${extra}` : ''
+    return `{${inner}${more}}`
+  }
+
+  if (enumValues && enumValues.length > 0) {
+    const preview = enumValues.slice(0, 6).map(String).join('|')
+    const suffix = enumValues.length > 6 ? '|…' : ''
+    return `${typeStr ?? 'unknown'} enum(${preview}${suffix})`
+  }
+
+  return typeStr ?? 'unknown'
+}
+
+/**
+ * Builds the "STRICT PARAMETERS: ..." line that gets appended to each tool's
+ * description so the model has a compact, in-context reminder of names, types
+ * and required flags.
+ */
+export function buildStrictParamsSummary(parameters: Record<string, unknown>): string {
+  const typeStr = normalizeSchemaTypeForSummary(parameters.type)
+  const properties = parameters.properties as Record<string, unknown> | undefined
+  const required = Array.isArray(parameters.required)
+    ? (parameters.required as unknown[]).filter((v): v is string => typeof v === 'string')
+    : []
+
+  if (typeStr !== 'object' || !properties) {
+    return '(schema missing top-level object properties)'
+  }
+
+  const keys = Object.keys(properties)
+  const requiredKeys = keys.filter(k => required.includes(k))
+  const optionalKeys = keys.filter(k => !required.includes(k))
+  const ordered = [...requiredKeys.sort(), ...optionalKeys.sort()]
+
+  const summary = ordered
+    .map(k => {
+      const sub = summarizeSchemaNode(properties[k], 2)
+      return `${k}: ${sub}${required.includes(k) ? ' REQUIRED' : ''}`
+    })
+    .join(', ')
+
+  const max = 900
+  return summary.length > max ? `${summary.slice(0, max)}…` : summary
+}
+
+function appendStrictParamsToDescription(description: string | undefined, parameters: Record<string, unknown>): string {
+  const summary = buildStrictParamsSummary(parameters)
+  const base = (description ?? '').trim()
+  if (base.includes('STRICT PARAMETERS:')) return description ?? ''
+  return base.length > 0
+    ? `${base}\n\nSTRICT PARAMETERS: ${summary}`
+    : `STRICT PARAMETERS: ${summary}`
+}
+
 // ─── Conversion ────────────────────────────────────────────────────
 
 export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiRequest {
@@ -349,12 +546,39 @@ export function anthropicToGeminiRequest(params: ProviderRequestParams): GeminiR
   // Tools → functionDeclarations (sanitize schemas for Gemini compatibility)
   if (params.tools && params.tools.length > 0) {
     request.tools = [{
-      functionDeclarations: params.tools.map(t => ({
-        name: t.name,
-        description: t.description,
-        parameters: sanitizeSchemaForGemini(t.input_schema),
-      })),
+      functionDeclarations: params.tools.map(t => {
+        const sanitizedName = sanitizeGeminiToolName(t.name)
+        rememberGeminiToolRename(t.name, sanitizedName)
+        const parameters = sanitizeSchemaForGemini(t.input_schema)
+        // Cache under both names so the inbound side can look up by either.
+        recordToolSchema(t.name, parameters)
+        if (sanitizedName !== t.name) recordToolSchema(sanitizedName, parameters)
+        return {
+          name: sanitizedName,
+          description: appendStrictParamsToDescription(t.description, parameters),
+          parameters,
+        }
+      }),
     }]
+
+    // Server-side schema enforcement. With mode="VALIDATED" Gemini's API
+    // validates each functionCall against the declared parameters BEFORE
+    // returning. Calls with missing required params are retried internally
+    // instead of being surfaced to us as InputValidationError. This is the
+    // primary fix for the "required parameter X is missing" failure mode.
+    request.toolConfig = {
+      functionCallingConfig: { mode: 'VALIDATED' },
+    }
+
+    // Backstop nudge so the model emits valid calls on the first try and
+    // saves Gemini from forcing a server-side retry.
+    const existingText = request.systemInstruction?.parts?.[0]?.text ?? ''
+    if (!existingText.includes('<TOOL_USAGE_RULES>')) {
+      const merged = existingText
+        ? `${GEMINI_TOOL_SCHEMA_SYSTEM_INSTRUCTION}\n${existingText}`
+        : GEMINI_TOOL_SCHEMA_SYSTEM_INSTRUCTION
+      request.systemInstruction = { parts: [{ text: merged }] }
+    }
   }
 
   // Safety settings — derived from env or default to all-OFF.

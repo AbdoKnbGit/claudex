@@ -29,23 +29,21 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'read_file',
     implId: 'Read',
     nativeDescription:
-      'Reads the content of a file from the local filesystem. ' +
-      'Use start_line and end_line for targeted, surgical reads ' +
-      'to minimize token usage on large files.',
+      "Reads and returns the content of a specified file. To maintain context efficiency, you MUST use 'start_line' and 'end_line' for targeted, surgical reads of specific sections. For your safety, the tool will automatically truncate output exceeding 2000 lines, 1000 characters per line, or 10MB in size; however, triggering these limits is considered token-inefficient. Always retrieve only the minimum content necessary for your next step. Handles text, images (PNG, JPG, GIF, WEBP, SVG, BMP), audio files (MP3, WAV, AIFF, AAC, OGG, FLAC), and PDF files.",
     nativeSchema: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: 'The absolute or relative path to the file to read.',
+          description: 'The path to the file to read.',
         },
         start_line: {
           type: 'number',
-          description: '1-based starting line number. Optional.',
+          description: 'Optional: The 1-based line number to start reading from.',
         },
         end_line: {
           type: 'number',
-          description: '1-based ending line number (inclusive). Optional.',
+          description: 'Optional: The 1-based line number to end reading at (inclusive).',
         },
       },
       required: ['file_path'],
@@ -74,18 +72,17 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'write_file',
     implId: 'Write',
     nativeDescription:
-      'Writes content to a file on the local filesystem. ' +
-      'Creates parent directories automatically if they don\'t exist.',
+      "Writes the complete content to a file, automatically creating missing parent directories. Overwrites existing files. The user has the ability to modify 'content' before it is saved. Best for new or small files; use 'replace' for targeted edits to large files.",
     nativeSchema: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: 'The path to the file to write.',
+          description: 'Path to the file.',
         },
         content: {
           type: 'string',
-          description: 'The complete content to write to the file.',
+          description: "The complete content to write. Provide the full file; do not use placeholders like '// ... rest of code'.",
         },
       },
       required: ['file_path', 'content'],
@@ -103,30 +100,32 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'replace',
     implId: 'Edit',
     nativeDescription:
-      'Replaces exact text in a file. Requires old_string to match ' +
-      'exactly including whitespace and indentation. Include 3+ lines ' +
-      'of surrounding context for unique matching.',
+      "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. If you want to replace multiple occurrences of the exact same string, set `allow_multiple` to true. This tool requires providing significant context around the change to ensure precise targeting.\nThe user has the ability to modify the `new_string` content. If modified, this will be stated in the response.",
     nativeSchema: {
       type: 'object',
       properties: {
         file_path: {
+          description: 'The path to the file to modify.',
           type: 'string',
-          description: 'Path to the file to modify.',
+        },
+        instruction: {
+          description: 'A clear, semantic instruction for the code change, acting as a high-quality prompt for an expert LLM assistant. It must be self-contained and explain the goal of the change.',
+          type: 'string',
         },
         old_string: {
+          description: 'The exact literal text to replace, unescaped. If this string is not the exact literal text (i.e. you escaped it) or does not match exactly, the tool will fail.',
           type: 'string',
-          description: 'The exact literal text to replace. Must include enough context for unique matching.',
         },
         new_string: {
+          description: "The exact literal text to replace `old_string` with, unescaped. Provide the EXACT text. Ensure the resulting code is correct and idiomatic. Do not use omission placeholders like '(rest of methods ...)', '...', or 'unchanged code'; provide exact literal code.",
           type: 'string',
-          description: 'The exact replacement text.',
         },
         allow_multiple: {
           type: 'boolean',
-          description: 'If true, replace all occurrences. Defaults to false.',
+          description: 'If true, the tool will replace all occurrences of `old_string`. If false (default), it will only succeed if exactly one occurrence is found.',
         },
       },
-      required: ['file_path', 'old_string', 'new_string'],
+      required: ['file_path', 'instruction', 'old_string', 'new_string'],
     },
     adaptInput(native) {
       return {
@@ -146,25 +145,29 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'run_shell_command',
     implId: 'Bash',
     nativeDescription:
-      'Executes a shell command. Uses bash on Unix, PowerShell on Windows.',
+      process.platform === 'win32'
+        ? 'This tool executes a given shell command as `powershell.exe -NoProfile -Command <command>`. To run a command in the background, set the `is_background` parameter to true.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.'
+        : 'This tool executes a given shell command as `bash -c <command>`. To run a command in the background, set the `is_background` parameter to true. Do NOT use `&` to background commands.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.',
     nativeSchema: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: 'The shell command to execute.',
+          description: process.platform === 'win32'
+            ? 'Exact command to execute as `powershell.exe -NoProfile -Command <command>`'
+            : 'Exact bash command to execute as `bash -c <command>`',
         },
         description: {
           type: 'string',
-          description: 'A brief description of what this command does.',
+          description: 'Brief description of the command for the user. Be specific and concise. Ideally a single sentence. Can be up to 3 sentences for clarity. No line breaks.',
         },
         dir_path: {
           type: 'string',
-          description: 'Directory to run the command in. Defaults to CWD.',
+          description: '(OPTIONAL) The path of the directory to run the command in. If not provided, the project root directory is used. Must be a directory within the workspace and must already exist.',
         },
         is_background: {
           type: 'boolean',
-          description: 'Run the command in the background.',
+          description: 'Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.',
         },
       },
       required: ['command'],
@@ -192,18 +195,17 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'glob',
     implId: 'Glob',
     nativeDescription:
-      'Finds files matching a glob pattern. Returns absolute paths ' +
-      'sorted by modification time (newest first).',
+      'Efficiently finds files matching specific glob patterns (e.g., `src/**/*.ts`, `**/*.md`), returning absolute paths sorted by modification time (newest first). Ideal for quickly locating files based on their name or path structure, especially in large codebases.',
     nativeSchema: {
       type: 'object',
       properties: {
         pattern: {
           type: 'string',
-          description: 'Glob pattern (e.g., "**/*.ts", "src/**").',
+          description: "The glob pattern to match against (e.g., '**/*.py', 'docs/*.md').",
         },
         dir_path: {
           type: 'string',
-          description: 'Directory to search in. Defaults to project root.',
+          description: 'Optional: The absolute path to the directory to search within. If omitted, searches the root directory.',
         },
       },
       required: ['pattern'],
@@ -223,30 +225,29 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'grep_search',
     implId: 'Grep',
     nativeDescription:
-      'Searches for a regex pattern in file contents. Fast, powered by ' +
-      'ripgrep. Preferred over run_shell_command for code search.',
+      'Searches for a regular expression pattern within file contents. This tool is FAST and optimized, powered by ripgrep. PREFERRED over standard `run_shell_command("grep ...")` due to better performance and automatic output limiting (defaults to 100 matches, but can be increased via `total_max_matches`).',
     nativeSchema: {
       type: 'object',
       properties: {
         pattern: {
           type: 'string',
-          description: 'Regex pattern to search for.',
+          description: "The pattern to search for. By default, treated as a Rust-flavored regular expression. Use '\\b' for precise symbol matching (e.g., '\\bMatchMe\\b').",
         },
         dir_path: {
           type: 'string',
-          description: 'Directory to search in. Defaults to CWD.',
+          description: "Directory or file to search. Directories are searched recursively. Relative paths are resolved against current working directory. Defaults to current working directory ('.') if omitted.",
         },
         include_pattern: {
           type: 'string',
-          description: 'Glob pattern for files to include (e.g., "*.ts").',
+          description: "Glob pattern to filter files (e.g., '*.ts', 'src/**'). Recommended for large repositories to reduce noise. Defaults to all files if omitted.",
         },
         names_only: {
           type: 'boolean',
-          description: 'Return only file paths, not matching lines.',
+          description: 'Optional: If true, only the file paths of the matches will be returned, without the line content or line numbers. This is useful for gathering a list of files.',
         },
         total_max_matches: {
           type: 'integer',
-          description: 'Maximum total matches. Defaults to 100.',
+          description: 'Optional: Maximum number of total matches to return. Use this to limit the overall size of the response. Defaults to 100 if omitted.',
         },
       },
       required: ['pattern'],
@@ -269,14 +270,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'google_web_search',
     implId: 'WebSearch',
     nativeDescription:
-      'Performs a Google web search and returns a synthesized answer ' +
-      'with citations.',
+      "Performs a grounded Google Search to find information across the internet. Returns a synthesized answer with citations (e.g., [1]) and source URIs. Best for finding up-to-date documentation, troubleshooting obscure errors, or broad research. Use this when you don't have a specific URL. If a search result requires deeper analysis, follow up by using 'web_fetch' on the provided URI.",
     nativeSchema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'The search query.',
+          description: 'The search query to use.',
         },
       },
       required: ['query'],
@@ -294,14 +294,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'web_fetch',
     implId: 'WebFetch',
     nativeDescription:
-      'Fetches and processes content from one or more URLs. Supports ' +
-      'up to 20 URLs. GitHub blob URLs are auto-converted to raw.',
+      "Processes content from URL(s) embedded in the 'prompt' parameter, up to 20. Extracts information, summarizes, or answers questions per the prompt's instructions. Ideal for deep-diving into a known URL. Use 'google_web_search' first if you don't have a specific URL. Private/local network URLs (e.g., localhost) are supported.",
     nativeSchema: {
       type: 'object',
       properties: {
         prompt: {
           type: 'string',
-          description: 'URL(s) and instructions on how to process the content.',
+          description: "A comprehensive prompt that includes the URL(s) (up to 20) to fetch and specific instructions on how to process their content (e.g., 'Summarize https://example.com/article and extract key points from https://another.com/data'). Must contain as least one URL starting with http:// or https://.",
         },
       },
       required: ['prompt'],
@@ -326,13 +325,14 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'list_directory',
     implId: 'Bash',
-    nativeDescription: 'Lists files and subdirectories in a directory.',
+    nativeDescription:
+      'Lists the names of files and subdirectories directly within a specified directory path. Can optionally ignore entries matching provided glob patterns.',
     nativeSchema: {
       type: 'object',
       properties: {
         dir_path: {
           type: 'string',
-          description: 'Directory path to list.',
+          description: 'The path to the directory to list',
         },
       },
       required: ['dir_path'],
@@ -350,8 +350,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'ask_user',
     implId: 'AskUserQuestion',
     nativeDescription:
-      'Asks the user one or more questions to gather preferences or ' +
-      'clarify requirements. Prefer multiple-choice with descriptions.',
+      "Asks the user one or more questions to gather preferences or clarify requirements. Prefer multiple-choice questions (type='choice') with clear, concise options and explanatory descriptions. Use type='text' for free-form answers and type='yesno' for binary decisions. At least one question is required.",
     nativeSchema: {
       type: 'object',
       properties: {
@@ -402,13 +401,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'enter_plan_mode',
     implId: 'EnterPlanMode',
     nativeDescription:
-      'Switch to Plan Mode for safe research and design using read-only tools.',
+      'Enters Plan Mode — a constrained research and design state. Only safe, read-only tools are available until you formally finalize the plan via `exit_plan_mode`. Use this when the user asks you to plan, design, or research before making code changes.',
     nativeSchema: {
       type: 'object',
       properties: {
         reason: {
           type: 'string',
-          description: 'Reason for entering plan mode.',
+          description: 'Brief reason for entering plan mode (e.g., "investigate the auth bug before fixing").',
         },
       },
     },
@@ -425,13 +424,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'exit_plan_mode',
     implId: 'ExitPlanMode',
     nativeDescription:
-      'Exits Plan Mode and transitions to implementation after user approval.',
+      'Finalizes the planning phase and transitions to implementation by presenting the plan for formal user approval. You MUST reach an informal agreement with the user in the chat regarding the proposed strategy BEFORE calling this tool. This tool MUST be used to exit Plan Mode before any source code edits can be performed.',
     nativeSchema: {
       type: 'object',
       properties: {
         plan_filename: {
           type: 'string',
-          description: 'Filename of the finalized plan.',
+          description: 'The filename of the finalized plan (e.g., "feature-x.md"). Do not provide an absolute path.',
         },
       },
       required: ['plan_filename'],
@@ -450,18 +449,18 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'save_memory',
     implId: 'Bash',
     nativeDescription:
-      'Saves a fact or preference that persists across sessions.',
+      "Saves a specific piece of information or fact to long-term memory. Use this when the user explicitly asks to remember something (e.g., 'remember that X'), or states a clear, concise fact that seems important to retain for future interactions (e.g., personal preferences, project details).",
     nativeSchema: {
       type: 'object',
       properties: {
         fact: {
           type: 'string',
-          description: 'The fact to remember.',
+          description: 'The specific fact or piece of information to remember. Should be a clear, self-contained statement.',
         },
         scope: {
           type: 'string',
           enum: ['global', 'project'],
-          description: 'global = all workspaces, project = current workspace only.',
+          description: "The scope of the memory. 'global' persists across all projects; 'project' is scoped to the current workspace only. Defaults to 'project'.",
         },
       },
       required: ['fact'],

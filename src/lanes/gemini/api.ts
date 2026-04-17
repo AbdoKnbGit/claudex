@@ -28,6 +28,21 @@ import {
   clearCodeAssistCache,
   warmupCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
+import {
+  classifyGeminiError,
+  type ClassifiedGeminiError,
+  type GeminiErrorKind,
+} from './quota.js'
+import {
+  getAntigravityRotation,
+  familyForAntigravityModel,
+} from './rotation.js'
+
+// Duplicated from services/api/errors.ts to avoid pulling in its
+// transitive import of utils/messages.ts (which has build-time-only
+// module resolution that breaks bun-test). The string must stay
+// identical so isPromptTooLongMessage() downstream matches.
+const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -59,7 +74,17 @@ class GeminiApiClient {
   /** OAuth token for the Antigravity executor (Gemini 3.x pro/flash models). */
   private antigravityOAuthToken: string | null = null
 
-  /** Configure auth. Call this before making requests. */
+  /**
+   * Configure auth. Call this before making requests.
+   *
+   * Semantics: only fields explicitly present on `opts` are updated. A
+   * partial call like `configure({ cliOAuthToken: x })` must NOT wipe the
+   * existing `apiKey` or `antigravityOAuthToken` — background token
+   * refreshes come in one token at a time, and stomping the other tokens
+   * leaves the lane with no credentials for half its models until the
+   * next full `reloadGeminiLaneAuth` cycle (seen in the wild as a
+   * multi-minute hang on Antigravity requests after a CLI token refresh).
+   */
   configure(opts: {
     apiKey?: string
     oauthToken?: string
@@ -67,9 +92,9 @@ class GeminiApiClient {
     antigravityOAuthToken?: string
     oauthMode?: 'cli' | 'antigravity'
   }): void {
-    this.apiKey = opts.apiKey ?? null
-    this.cliOAuthToken = opts.cliOAuthToken ?? null
-    this.antigravityOAuthToken = opts.antigravityOAuthToken ?? null
+    if ('apiKey' in opts) this.apiKey = opts.apiKey ?? null
+    if ('cliOAuthToken' in opts) this.cliOAuthToken = opts.cliOAuthToken ?? null
+    if ('antigravityOAuthToken' in opts) this.antigravityOAuthToken = opts.antigravityOAuthToken ?? null
     // Legacy single-token path: route per oauthMode ('cli' default).
     if (opts.oauthToken) {
       if (opts.oauthMode === 'antigravity') {
@@ -118,14 +143,41 @@ class GeminiApiClient {
    * Pick the OAuth token appropriate for a model. Antigravity models
    * route through the Antigravity executor (Gemini 3.x pro/flash pool),
    * everything else goes through the CLI executor (Code Assist free tier).
-   * Falls back to the other token when the preferred one is absent.
+   *
+   * Multi-account rotation: when the Antigravity rotation store has any
+   * enrolled accounts, prefer the rotation's per-family best-pick over
+   * the single `antigravityOAuthToken` that `configure()` set. This is
+   * a drop-in upgrade — legacy single-token users (no accounts in the
+   * rotation store) keep working unchanged.
+   *
+   * Returns { token, executor, accountEmail? } — `accountEmail` is set
+   * when the token came from the rotation, so the caller can record
+   * success/failure feedback against the right account.
    */
-  private _tokenForModel(model: string): { token: string; executor: 'cli' | 'antigravity' } | null {
+  private _tokenForModel(
+    model: string,
+  ): { token: string; executor: 'cli' | 'antigravity'; accountEmail?: string } | null {
     const executor = executorForModel(model)
+
+    // Antigravity path: consult rotation first when available.
     if (executor === 'antigravity') {
+      const rotation = getAntigravityRotation()
+      if (rotation.hasAccounts()) {
+        const account = rotation.pickForModel(model)
+        if (account) {
+          return {
+            token: account.accessToken,
+            executor: 'antigravity',
+            accountEmail: account.email,
+          }
+        }
+        // All accounts disabled/cooling — fall through to single-token
+        // path or, as last resort, CLI token.
+      }
       const t = this.antigravityOAuthToken ?? this.cliOAuthToken
       return t ? { token: t, executor: this.antigravityOAuthToken ? 'antigravity' : 'cli' } : null
     }
+
     const t = this.cliOAuthToken ?? this.antigravityOAuthToken
     return t ? { token: t, executor: this.cliOAuthToken ? 'cli' : 'antigravity' } : null
   }
@@ -152,45 +204,109 @@ class GeminiApiClient {
     // routes to the right pool (free Code Assist vs Antigravity).
     const oauthRouting = this._tokenForModel(model)
     if (oauthRouting) {
-      const { token, executor } = oauthRouting
-      const projectId = await ensureCodeAssistReady(token, executor)
-      const wrappedBody = executor === 'antigravity'
-        ? wrapForCodeAssist(model, projectId, body)
-        : wrapForGeminiCLI(model, projectId, body)
-      const headers = executor === 'antigravity'
-        ? { ...antigravityApiHeaders(token), 'Connection': 'keep-alive' }
-        : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
-
+      // Per-attempt state: re-resolve projectId each attempt so that a
+      // stale-project 403 that clears the cache gets a fresh project on
+      // the next attempt (before this fix, projectId was captured once
+      // outside retryWithBackoff and the cleared cache was moot).
+      let reonboardsLeft = 1
       const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
+      const rotation = getAntigravityRotation()
+
       const response = await retryWithBackoff(
         async () => {
+          // Re-pick the token each attempt so rate-limit rotation applies
+          // across retries — a 429 on account A gets the next call onto
+          // account B. `_tokenForModel` consults rotation.pickForModel().
+          const routing = this._tokenForModel(model)
+          if (!routing) {
+            throw new GeminiApiError(0, 'No OAuth credentials available', undefined, {
+              kind: 'non-retryable',
+              details: {},
+            })
+          }
+          const { token, executor, accountEmail } = routing
+          const projectId = await ensureCodeAssistReady(token, executor)
+          const wrappedBody = executor === 'antigravity'
+            ? wrapForCodeAssist(model, projectId, body)
+            : wrapForGeminiCLI(model, projectId, body)
+          const headers = executor === 'antigravity'
+            ? { ...antigravityApiHeaders(token), 'Connection': 'keep-alive' }
+            : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
+          // Code Assist uses proto-json snake_case — rename thoughtSignature
+          // on the wire. One string replace on the outgoing payload; cheap.
+          const serialized = JSON.stringify(wrappedBody)
+            .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
+
           const resp = await fetch(url, {
             method: 'POST',
             headers,
-            body: JSON.stringify(wrappedBody),
+            body: serialized,
             signal,
           })
           if (!resp.ok) {
             const errText = await resp.text().catch(() => '')
-            // 403 with stale-project signature → clear and let the next
-            // attempt re-onboard with a fresh projectId. Mirrors the legacy
-            // provider's self-heal; without it the lane wedges on account
-            // switches.
-            if (resp.status === 403 && /cloudaicompanion|does not have permission|project might not exist/i.test(errText)) {
-              clearCodeAssistCache(executor)
+            const cls = classifyGeminiError(resp.status, errText)
+            const retryAfterMs = cls.retryAfterMs
+              ?? parseRetryAfter(resp.headers.get('retry-after'))
+
+            // Record feedback against the rotation (no-op when the token
+            // came from the legacy single-token path).
+            if (accountEmail && executor === 'antigravity') {
+              const account = rotation.list().find(a => a.email === accountEmail)
+              if (account) {
+                const family = familyForAntigravityModel(model)
+                if (cls.kind === 'retryable-quota' || cls.kind === 'terminal-quota') {
+                  rotation.recordRateLimit(account, family, retryAfterMs)
+                } else if (
+                  cls.kind === 'non-retryable'
+                  || cls.kind === 'validation-required'
+                  || cls.kind === 'auth-stale'
+                ) {
+                  // Auth-stale counts as a hard failure so subsequent
+                  // requests rotate to a different enrolled account. If
+                  // it was actually a transient cache issue, the retry
+                  // succeeds and the follow-up recordSuccess mixes the
+                  // score back up — no harm done.
+                  rotation.recordHardFailure(account)
+                }
+              }
             }
-            const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
-            throw new GeminiApiError(resp.status, errText, retryAfterMs)
+
+            // Stale-project 403: clear cache + recurse once within this
+            // retry attempt so the user doesn't pay an extra backoff wait
+            // for a case we can fix immediately. Budget: one re-onboard
+            // per request — if it happens twice, something else is wrong.
+            if (cls.kind === 'auth-stale' && reonboardsLeft > 0) {
+              reonboardsLeft--
+              clearCodeAssistCache(executor)
+              throw new GeminiApiError(resp.status, errText, 0, {
+                kind: 'transient',
+                details: cls.details,
+                retryAfterMs: 0,
+              })
+            }
+
+            throw new GeminiApiError(resp.status, errText, retryAfterMs, cls)
           }
-          if (!resp.body) throw new GeminiApiError(0, 'No response body')
+          if (!resp.body) {
+            throw new GeminiApiError(0, 'No response body', undefined, {
+              kind: 'transient',
+              details: {},
+            })
+          }
+
+          // Success feedback (against the account that served this attempt).
+          if (accountEmail && executor === 'antigravity') {
+            const account = rotation.list().find(a => a.email === accountEmail)
+            if (account) rotation.recordSuccess(account)
+          }
+
           return resp
         },
         { signal },
       )
 
       // Code Assist SSE frames are wrapped as `{ response: <chunk> }`.
-      // Lane's GeminiStreamChunk is structurally compatible with the
-      // adapter's; cast to sidestep the type identity gap between copies.
       for await (const chunk of parseCodeAssistSSE(response.body!)) {
         yield chunk as GeminiStreamChunk
       }
@@ -211,10 +327,17 @@ class GeminiApiClient {
         })
         if (!resp.ok) {
           const errText = await resp.text().catch(() => '')
-          const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
-          throw new GeminiApiError(resp.status, errText, retryAfterMs)
+          const cls = classifyGeminiError(resp.status, errText)
+          const retryAfterMs = cls.retryAfterMs
+            ?? parseRetryAfter(resp.headers.get('retry-after'))
+          throw new GeminiApiError(resp.status, errText, retryAfterMs, cls)
         }
-        if (!resp.body) throw new GeminiApiError(0, 'No response body')
+        if (!resp.body) {
+          throw new GeminiApiError(0, 'No response body', undefined, {
+            kind: 'transient',
+            details: {},
+          })
+        }
         return resp
       },
       { signal },
@@ -280,32 +403,80 @@ class GeminiApiClient {
     // OAuth → Code Assist (unwraps the `{ response: ... }` envelope).
     const oauthRouting = this._tokenForModel(model)
     if (oauthRouting) {
-      const { token, executor } = oauthRouting
-      const projectId = await ensureCodeAssistReady(token, executor)
-      const wrappedBody = executor === 'antigravity'
-        ? wrapForCodeAssist(model, projectId, body)
-        : wrapForGeminiCLI(model, projectId, body)
-      const headers = executor === 'antigravity'
-        ? { ...antigravityApiHeaders(token), 'Connection': 'keep-alive' }
-        : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
-
+      let reonboardsLeft = 1
       const url = `${CODE_ASSIST_BASE}:generateContent`
+      const rotation = getAntigravityRotation()
+
       const data = await retryWithBackoff(
         async () => {
+          const routing = this._tokenForModel(model)
+          if (!routing) {
+            throw new GeminiApiError(0, 'No OAuth credentials available', undefined, {
+              kind: 'non-retryable',
+              details: {},
+            })
+          }
+          const { token, executor, accountEmail } = routing
+          const projectId = await ensureCodeAssistReady(token, executor)
+          const wrappedBody = executor === 'antigravity'
+            ? wrapForCodeAssist(model, projectId, body)
+            : wrapForGeminiCLI(model, projectId, body)
+          const headers = executor === 'antigravity'
+            ? { ...antigravityApiHeaders(token), 'Connection': 'keep-alive' }
+            : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
+          const serialized = JSON.stringify(wrappedBody)
+            .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
+
           const resp = await fetch(url, {
             method: 'POST',
             headers,
-            body: JSON.stringify(wrappedBody),
+            body: serialized,
             signal,
           })
           if (!resp.ok) {
             const errText = await resp.text().catch(() => '')
-            if (resp.status === 403 && /cloudaicompanion|does not have permission|project might not exist/i.test(errText)) {
-              clearCodeAssistCache(executor)
+            const cls = classifyGeminiError(resp.status, errText)
+            const retryAfterMs = cls.retryAfterMs
+              ?? parseRetryAfter(resp.headers.get('retry-after'))
+
+            if (accountEmail && executor === 'antigravity') {
+              const account = rotation.list().find(a => a.email === accountEmail)
+              if (account) {
+                const family = familyForAntigravityModel(model)
+                if (cls.kind === 'retryable-quota' || cls.kind === 'terminal-quota') {
+                  rotation.recordRateLimit(account, family, retryAfterMs)
+                } else if (
+                  cls.kind === 'non-retryable'
+                  || cls.kind === 'validation-required'
+                  || cls.kind === 'auth-stale'
+                ) {
+                  // Auth-stale counts as a hard failure so subsequent
+                  // requests rotate to a different enrolled account. If
+                  // it was actually a transient cache issue, the retry
+                  // succeeds and the follow-up recordSuccess mixes the
+                  // score back up — no harm done.
+                  rotation.recordHardFailure(account)
+                }
+              }
             }
-            const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
-            throw new GeminiApiError(resp.status, errText, retryAfterMs)
+
+            if (cls.kind === 'auth-stale' && reonboardsLeft > 0) {
+              reonboardsLeft--
+              clearCodeAssistCache(executor)
+              throw new GeminiApiError(resp.status, errText, 0, {
+                kind: 'transient',
+                details: cls.details,
+                retryAfterMs: 0,
+              })
+            }
+            throw new GeminiApiError(resp.status, errText, retryAfterMs, cls)
           }
+
+          if (accountEmail && executor === 'antigravity') {
+            const account = rotation.list().find(a => a.email === accountEmail)
+            if (account) rotation.recordSuccess(account)
+          }
+
           return resp.json()
         },
         { signal },
@@ -327,8 +498,10 @@ class GeminiApiClient {
         })
         if (!resp.ok) {
           const errText = await resp.text().catch(() => '')
-          const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
-          throw new GeminiApiError(resp.status, errText, retryAfterMs)
+          const cls = classifyGeminiError(resp.status, errText)
+          const retryAfterMs = cls.retryAfterMs
+            ?? parseRetryAfter(resp.headers.get('retry-after'))
+          throw new GeminiApiError(resp.status, errText, retryAfterMs, cls)
         }
         return resp.json()
       },
@@ -356,10 +529,7 @@ class GeminiApiClient {
         models.push(
           { id: 'gemini-3.1-pro-high',    name: 'Gemini 3.1 Pro · high thinking' },
           { id: 'gemini-3.1-pro-low',     name: 'Gemini 3.1 Pro · low thinking' },
-          { id: 'gemini-3-pro-high',      name: 'Gemini 3 Pro · high thinking' },
-          { id: 'gemini-3-pro-low',       name: 'Gemini 3 Pro · low thinking' },
           { id: 'gemini-3-flash',         name: 'Gemini 3 Flash' },
-          { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash · image' },
         )
       }
       return models
@@ -404,13 +574,40 @@ class GeminiApiClient {
 // ─── Error Type ──────────────────────────────────────────────────
 
 export class GeminiApiError extends Error {
+  /**
+   * Google error-details classification. Set by the constructor (lazy) or
+   * passed explicitly when the caller already ran the classifier.
+   */
+  private _classified?: ClassifiedGeminiError
+
   constructor(
     public readonly status: number,
     public readonly body: string,
     public readonly retryAfterMs?: number,
+    classified?: ClassifiedGeminiError,
   ) {
-    super(`Gemini API error ${status}: ${body.slice(0, 200)}`)
+    // Prompt-too-long errors must expose the Claude-Code signal prefix so
+    // query.ts reactive compact fires — the downstream check text-matches
+    // against PROMPT_TOO_LONG_ERROR_MESSAGE. The raw body is preserved in
+    // .body so callers can still inspect the upstream detail.
+    const cls = classified ?? classifyGeminiError(status, body)
+    const head = cls.kind === 'prompt-too-long'
+      ? `${PROMPT_TOO_LONG_ERROR_MESSAGE} (Gemini ${status})`
+      : `Gemini API error ${status}`
+    super(`${head}: ${body.slice(0, 200)}`)
     this.name = 'GeminiApiError'
+    this._classified = cls
+  }
+
+  get classification(): ClassifiedGeminiError {
+    if (!this._classified) {
+      this._classified = classifyGeminiError(this.status, this.body)
+    }
+    return this._classified
+  }
+
+  get kind(): GeminiErrorKind {
+    return this.classification.kind
   }
 
   get isRateLimited(): boolean {
@@ -421,10 +618,36 @@ export class GeminiApiError extends Error {
     return this.status === 401 || this.status === 403
   }
 
+  get isPromptTooLong(): boolean {
+    return this.classification.kind === 'prompt-too-long'
+  }
+
+  /**
+   * Whether the outer retryWithBackoff loop should back off and retry
+   * without operator intervention. Auth-stale and retryable-quota are
+   * retried HERE (via the fetch closure) with a bounded counter rather
+   * than through isRetryable, because they need side effects between
+   * attempts (cache clear / credential rotate).
+   */
   get isRetryable(): boolean {
-    // 429 (rate limit), 499 (client closed), 5xx (server errors). 400 is
-    // explicitly NOT retryable — it's a malformed request that won't
-    // succeed regardless of retry. Mirrors gemini-cli's isRetryableError.
+    switch (this.kind) {
+      case 'transient':
+        return true
+      case 'retryable-quota':
+        // Rotation happens inline; backoff loop also retries so that a
+        // single-account setup still gets exponential wait.
+        return true
+      case 'prompt-too-long':
+      case 'validation-required':
+      case 'terminal-quota':
+      case 'non-retryable':
+        return false
+      case 'auth-stale':
+        // Handled by the reonboard counter inside the request closure,
+        // not by retryWithBackoff. Return false so we don't double-retry.
+        return false
+    }
+    // Fallback: legacy status-based heuristic.
     if (this.status === 400) return false
     return this.status === 429 || this.status === 499 || (this.status >= 500 && this.status < 600)
   }

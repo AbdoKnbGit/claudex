@@ -19,6 +19,13 @@
  */
 
 import type { SystemPromptParts } from '../types.js'
+import {
+  type StableSlot,
+  type VolatileSlot,
+  stableFrom,
+  renderVolatileSlot,
+  flatten,
+} from '../shared/system_slots.js'
 
 // ─── Model-Family Detection ──────────────────────────────────────
 
@@ -119,83 +126,65 @@ This workspace is a git repository. When working with git:
 /**
  * Assemble the complete Gemini system prompt.
  *
- * Returns { stable, volatile } — the stable portion is cacheable,
- * the volatile portion changes every turn.
+ * Returns `{ stable, volatile }` — only the stable slot may feed the
+ * Gemini `cachedContents` key; the volatile slot goes inline as a
+ * leading user message so the cache key stays byte-identical across
+ * turns when only env/git/memory change.
  */
 export function assembleGeminiSystemPrompt(
   model: string,
   parts: SystemPromptParts,
-): { stable: string; volatile: string; full: string } {
+): { stable: StableSlot; volatile: VolatileSlot; full: string } {
   const family = detectFamily(model)
 
-  // ── Stable sections (cacheable) ──
-  const stableSections: string[] = [
+  // Lane preamble = preamble + mandates + workflow + tool-usage +
+  // guidelines + git-section. Same every turn; belongs in cache key.
+  const lanePreamble = [
     preamble(family),
     coreMandates(),
     workflows(family),
     toolUsageGuidelines(),
     operationalGuidelines(),
     gitRepoSection(),
-  ]
+  ].join('\n\n')
 
-  // Inject custom instructions into stable section if present
-  if (parts.customInstructions) {
-    stableSections.push(`## Additional Instructions\n\n${parts.customInstructions}`)
-  }
+  // Stable slot: lane preamble + user/project stable additions
+  // (customInstructions, toolsAddendum, mcpIntro, skillsContext).
+  const stable = stableFrom(lanePreamble, parts)
 
-  // Inject tools addendum
-  if (parts.toolsAddendum) {
-    stableSections.push(`## Tool Configuration\n\n${parts.toolsAddendum}`)
-  }
+  // Volatile slot: memory + environment + git status.
+  const volatile = renderVolatileSlot(parts)
 
-  // Inject MCP intro
-  if (parts.mcpIntro) {
-    stableSections.push(`## MCP Tools\n\n${parts.mcpIntro}`)
-  }
-
-  // Inject skills context
-  if (parts.skillsContext) {
-    stableSections.push(`## Available Skills\n\n<available_skills>\n${parts.skillsContext}\n</available_skills>`)
-  }
-
-  const stable = stableSections.join('\n\n')
-
-  // ── Volatile sections (per-turn) ──
-  const volatileSections: string[] = []
-
-  // Memory (from CLAUDE.md, GEMINI.md, AGENTS.md)
-  if (parts.memory) {
-    volatileSections.push(
-      `## Context\n\n<loaded_context>\n${parts.memory}\n</loaded_context>`
-    )
-  }
-
-  // Environment info
-  if (parts.environment || parts.gitStatus) {
-    const envParts: string[] = []
-    if (parts.environment) envParts.push(parts.environment)
-    if (parts.gitStatus) envParts.push(`Git status:\n${parts.gitStatus}`)
-    volatileSections.push(`## Environment\n\n${envParts.join('\n\n')}`)
-  }
-
-  const volatile = volatileSections.join('\n\n')
-
-  // Combine with boundary marker for cache manager
-  const full = volatile
-    ? `${stable}\n\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\n\n${volatile}`
-    : stable
+  // `full` keeps the flat form for lanes/paths that can't carry the
+  // split (e.g. non-cached legacy shim path). No boundary marker —
+  // that was a Claude-Code leak; Gemini doesn't read it.
+  const full = flatten(stable, volatile)
 
   return { stable, volatile, full }
 }
 
 /**
- * Build systemInstruction for the Gemini API.
- * Returns the shape Gemini's REST API expects.
+ * Build the `systemInstruction` field for the Gemini API using ONLY
+ * the stable slot — so its bytes match across turns and `cachedContents`
+ * can hit. The volatile slot travels as a leading user message and is
+ * wired separately by the lane's request builder.
  */
 export function buildGeminiSystemInstruction(
   model: string,
   parts: SystemPromptParts,
 ): { parts: Array<{ text: string }> } {
+  const { stable } = assembleGeminiSystemPrompt(model, parts)
+  return { parts: [{ text: stable }] }
+}
+
+/**
+ * Legacy/debug helper: flat system prompt with stable+volatile joined.
+ * Lanes/paths that can't carry the split use this; they forgo caching.
+ */
+export function buildFlatGeminiSystemPrompt(
+  model: string,
+  parts: SystemPromptParts,
+): string {
   const { full } = assembleGeminiSystemPrompt(model, parts)
-  return { parts: [{ text: full }] }
+  return full
 }

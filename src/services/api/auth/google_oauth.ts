@@ -140,7 +140,20 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
   const codeChallenge = generateCodeChallenge(codeVerifier)
   const state = randomBytes(16).toString('hex')
 
-  const redirectUri = `http://localhost:${cfg.port}${cfg.redirectPath}`
+  // Bind the callback server BEFORE building the auth URL so we know the
+  // real port. On Windows, Hyper-V/WSL2/Docker reserve big chunks of the
+  // ephemeral port range (see `netsh int ipv4 show excludedportrange tcp`)
+  // and our preferred port may land inside one of them — that surfaces as
+  // EACCES on a 127.0.0.1 bind. Falling back to an OS-assigned port keeps
+  // the flow working on those machines; Google's installed-app OAuth
+  // accepts any localhost port in the redirect_uri.
+  const { port: actualPort, code: codePromise } = await _startCallbackServer(
+    cfg.port,
+    cfg.redirectPath,
+    state,
+  )
+
+  const redirectUri = `http://localhost:${actualPort}${cfg.redirectPath}`
 
   const authUrl = new URL(GOOGLE_AUTH_URL)
   authUrl.searchParams.set('client_id', cfg.clientId)
@@ -161,7 +174,7 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
     )
   }
 
-  const authCode = await _waitForAuthCode(cfg.port, cfg.redirectPath, state)
+  const authCode = await codePromise
 
   const tokenResponse = await fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
@@ -190,9 +203,28 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
   }
   saveProviderKey(cfg.storageKey, JSON.stringify(stored))
 
+  // Tell the Gemini lane to re-read credentials so the current session
+  // uses the new token immediately — without this, users had to restart
+  // claudex after /login before the lane picked up the creds.
+  await _reloadGeminiLaneAuth()
+
   return {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token ?? '',
+  }
+}
+
+/**
+ * Dynamic-import lane-auth reload. Kept dynamic so google_oauth.ts
+ * doesn't hard-depend on the lane module (which in turn transitively
+ * imports this file via providerShim).
+ */
+async function _reloadGeminiLaneAuth(): Promise<void> {
+  try {
+    const { reloadGeminiLaneAuth } = await import('../providers/providerShim.js')
+    await reloadGeminiLaneAuth()
+  } catch {
+    // best-effort; the tokens are on disk either way
   }
 }
 
@@ -229,6 +261,9 @@ export async function refreshGeminiOAuth(
     expiresAt: Date.now() + tokens.expires_in * 1000,
   }
   saveProviderKey(cfg.storageKey, JSON.stringify(stored))
+
+  // Keep the running session in sync with the freshly-refreshed token.
+  await _reloadGeminiLaneAuth()
 
   return tokens.access_token
 }
@@ -288,19 +323,30 @@ export async function getGoogleOAuthToken() {
 
 // ─── Internal: callback server ────────────────────────────────────────
 
-function _waitForAuthCode(
-  port: number,
+/**
+ * Bind the OAuth callback server, then return the bound port plus a
+ * promise that resolves with the authorization code. We bind first so
+ * the caller can build the redirect_uri with whatever port we actually
+ * got — important on Windows where the preferred port may sit inside an
+ * excluded range and we have to fall back.
+ */
+function _startCallbackServer(
+  preferredPort: number,
   redirectPath: string,
   expectedState: string,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      server.close()
-      reject(new Error('OAuth callback timed out after 5 minutes'))
-    }, 5 * 60 * 1000)
+): Promise<{ port: number; code: Promise<string> }> {
+  return new Promise((resolveBind, rejectBind) => {
+    let codeResolve!: (code: string) => void
+    let codeReject!: (err: Error) => void
+    const codePromise = new Promise<string>((res, rej) => {
+      codeResolve = res
+      codeReject = rej
+    })
+
+    let timeout: NodeJS.Timeout | null = null
 
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '', `http://localhost:${port}`)
+      const url = new URL(req.url ?? '', 'http://localhost')
 
       if (url.pathname === redirectPath) {
         const code = url.searchParams.get('code')
@@ -310,18 +356,18 @@ function _waitForAuthCode(
         if (error) {
           res.writeHead(400, { 'Content-Type': 'text/html' })
           res.end(`<h1>Authentication Failed</h1><p>${error}</p>`)
-          clearTimeout(timeout)
+          if (timeout) clearTimeout(timeout)
           server.close()
-          reject(new Error(`Google OAuth error: ${error}`))
+          codeReject(new Error(`Google OAuth error: ${error}`))
           return
         }
 
         if (state !== expectedState) {
           res.writeHead(400, { 'Content-Type': 'text/html' })
           res.end('<h1>Authentication Failed</h1><p>Invalid state.</p>')
-          clearTimeout(timeout)
+          if (timeout) clearTimeout(timeout)
           server.close()
-          reject(new Error('Google OAuth error: invalid state parameter'))
+          codeReject(new Error('Google OAuth error: invalid state parameter'))
           return
         }
 
@@ -341,9 +387,9 @@ function _waitForAuthCode(
             '<p>You can close this tab now.</p></div>' +
             '<script>setTimeout(function(){window.close()},1500)</script></body></html>',
           )
-          clearTimeout(timeout)
+          if (timeout) clearTimeout(timeout)
           server.close()
-          resolve(code)
+          codeResolve(code)
           return
         }
       }
@@ -352,20 +398,45 @@ function _waitForAuthCode(
       res.end()
     })
 
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      clearTimeout(timeout)
-      if (err.code === 'EADDRINUSE') {
-        reject(
-          new Error(
-            `Port ${port} is in use. Close whatever is bound to it ` +
-            `and run the login again.`,
-          ),
-        )
-      } else {
-        reject(err)
-      }
-    })
+    let triedFallback = false
+    const tryListen = (port: number) => {
+      server.removeAllListeners('error')
+      server.removeAllListeners('listening')
 
-    server.listen(port)
+      server.once('listening', () => {
+        const addr = server.address()
+        const actualPort =
+          addr && typeof addr === 'object' ? addr.port : port
+        timeout = setTimeout(() => {
+          server.close()
+          codeReject(new Error('OAuth callback timed out after 5 minutes'))
+        }, 5 * 60 * 1000)
+        resolveBind({ port: actualPort, code: codePromise })
+      })
+
+      server.once('error', (err: NodeJS.ErrnoException) => {
+        // EACCES on a localhost bind is almost always a Windows excluded
+        // port range (Hyper-V/WSL2/Docker reserve big chunks of 49152+).
+        // EADDRINUSE means another process owns the port. In both cases,
+        // ask the OS for any free port and retry once.
+        if (
+          !triedFallback &&
+          (err.code === 'EACCES' || err.code === 'EADDRINUSE')
+        ) {
+          triedFallback = true
+          tryListen(0)
+          return
+        }
+        rejectBind(err)
+      })
+
+      // Bind to 127.0.0.1 explicitly. Without a hostname Node binds to
+      // 0.0.0.0, which on Windows requires elevation or a urlacl. The
+      // OAuth callback only ever talks to the user's own browser, so
+      // loopback is both correct and safer.
+      server.listen(port, '127.0.0.1')
+    }
+
+    tryListen(preferredPort)
   })
 }

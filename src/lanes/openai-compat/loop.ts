@@ -29,7 +29,13 @@ import type {
   LaneProviderCallParams,
   NormalizedUsage,
 } from '../types.js'
-import { OPENAI_COMPAT_TOOL_REGISTRY } from './tools.js'
+import { OPENAI_COMPAT_TOOL_REGISTRY, selectEditToolSet } from './tools.js'
+import {
+  appendStrictParamsHint,
+  OPENAI_COMPAT_TOOL_USAGE_RULES,
+} from '../shared/mcp_bridge.js'
+import { getTransformer, type ProviderId } from './transformers/index.js'
+import { resolveEditFormat } from './capabilities.js'
 
 // ─── Provider Detection ──────────────────────────────────────────
 
@@ -40,7 +46,6 @@ type ProviderType =
   | 'nim'
   | 'ollama'
   | 'openrouter'
-  | 'qwen'
   | 'generic'
 
 function detectProvider(model: string, baseUrl: string): ProviderType {
@@ -50,13 +55,12 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('groq')) return 'groq'
   if (b.includes('mistral')) return 'mistral'
   if (b.includes('integrate.api.nvidia')) return 'nim'
-  if (b.includes('dashscope') || b.includes('aliyuncs')) return 'qwen'
   if (b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')) return 'ollama'
   if (b.includes('openrouter')) return 'openrouter'
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
   if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'
-  if (m.startsWith('qwen') || m === 'coder-model') return 'qwen'
+  // qwen removed — handled by the dedicated Qwen lane (src/lanes/qwen/).
   return 'generic'
 }
 
@@ -132,10 +136,7 @@ export class OpenAICompatLane implements Lane {
       const c = this.configs.get('mistral')!
       return { ...c, provider: 'mistral' }
     }
-    if ((m.startsWith('qwen') || m === 'coder-model') && this.configs.has('qwen')) {
-      const c = this.configs.get('qwen')!
-      return { ...c, provider: 'qwen' }
-    }
+    // Qwen routing moved to the dedicated Qwen lane. Compat never sees qwen-*.
     if (this.configs.has('openrouter') && m.includes('/')) {
       const c = this.configs.get('openrouter')!
       return { ...c, provider: 'openrouter' }
@@ -156,10 +157,12 @@ export class OpenAICompatLane implements Lane {
 
   supportsModel(model: string): boolean {
     const m = model.toLowerCase()
-    // Everything that isn't Claude, Gemini, or native OpenAI (handled by other lanes).
+    // Everything that isn't Claude, Gemini, Qwen, or native OpenAI
+    // (each handled by its own dedicated lane).
     return !(
       m.startsWith('claude-') || m.includes('anthropic') ||
       m.startsWith('gemini-') || m.startsWith('gemma-') ||
+      m.startsWith('qwen') || m === 'coder-model' ||
       m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') ||
       m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-') ||
       m.startsWith('gpt-5-codex')
@@ -182,16 +185,29 @@ export class OpenAICompatLane implements Lane {
     const isLocal = isLocalBaseUrl(cfg.baseUrl)
 
     // Assemble system text. We keep it simple for Phase-1 (caller's text).
-    const systemText = typeof system === 'string'
+    const rawSystemText = typeof system === 'string'
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
 
-    // History conversion → OpenAI Chat Completions messages.
-    const chatMessages = convertHistoryToOpenAI(messages, systemText)
-
     // Tool conversion → OpenAI function tools with per-provider schema
     // cleanup (strip $schema / $id / additionalProperties / strict etc.).
+    // Every function tool gets the STRICT PARAMETERS description hint,
+    // plus function.strict: true when the provider honors it.
     const openaiTools = buildOpenAITools(tools, provider)
+
+    // Prepend OPENAI_COMPAT_TOOL_USAGE_RULES to the system message when
+    // tools are present — in-context reminder of schema authority for
+    // providers that don't enforce `strict: true` server-side (Mistral,
+    // generic long-tail). Cheap to include everywhere since providers
+    // that DO enforce server-side just see an extra system note.
+    const systemText = openaiTools.length > 0
+      ? (rawSystemText
+          ? `${OPENAI_COMPAT_TOOL_USAGE_RULES}\n${rawSystemText}`
+          : OPENAI_COMPAT_TOOL_USAGE_RULES)
+      : rawSystemText
+
+    // History conversion → OpenAI Chat Completions messages.
+    const chatMessages = convertHistoryToOpenAI(messages, systemText)
 
     // Build request body with per-provider quirks applied.
     const body = applyProviderRequestQuirks(
@@ -280,7 +296,19 @@ export class OpenAICompatLane implements Lane {
         const mst = emitMessageStart()
         if (mst) yield mst
       }
-      yield* emitErrorText(`${provider} API error ${response.status}: ${errText.slice(0, 500)}`)
+      // Detect prompt-too-long / context-window-exceeded per the
+      // transformer's known markers. Emit with the "Prompt is too long"
+      // prefix claude.ts reactive-compact text-matches against —
+      // otherwise Flash / smaller models 400 on oversized turns and
+      // the user has to `/compact` manually.
+      const transformer = getTransformer(provider as ProviderId)
+      const markers = transformer.contextExceededMarkers()
+      const lowered = errText.toLowerCase()
+      const isPromptTooLong = markers.some(m => lowered.includes(m.toLowerCase()))
+      const headline = isPromptTooLong
+        ? `Prompt is too long (${provider} ${response.status})`
+        : `${provider} API error ${response.status}`
+      yield* emitErrorText(`${headline}: ${errText.slice(0, 500)}`)
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
       yield { type: 'message_stop' }
       return blankUsage(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
@@ -438,6 +466,10 @@ export class OpenAICompatLane implements Lane {
                 input = { _raw: buf.args }
               }
               const anthropicToolUseId = buf.id.startsWith('toolu_') ? buf.id : `toolu_compat_${buf.id}`
+              // Three-event sequence: start (empty input) + input_json_delta
+              // (args as JSON string) + stop. claude.ts's accumulator reads
+              // partial_json, not the inline input field — inline input gets
+              // dropped and every tool sees `{}`.
               yield {
                 type: 'content_block_start',
                 index: buf.anthropicIndex,
@@ -445,7 +477,15 @@ export class OpenAICompatLane implements Lane {
                   type: 'tool_use',
                   id: anthropicToolUseId,
                   name: implId,
-                  input,
+                  input: {},
+                },
+              }
+              yield {
+                type: 'content_block_delta',
+                index: buf.anthropicIndex,
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: JSON.stringify(input ?? {}),
                 },
               }
               yield { type: 'content_block_stop', index: buf.anthropicIndex }
@@ -487,13 +527,47 @@ export class OpenAICompatLane implements Lane {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    // Each provider has its own model list. Phase-1 returns the empty set
-    // and relies on the /models command to query per-provider separately.
-    return []
+    // Query /v1/models on every configured provider in parallel, cache
+    // for 5 minutes. Errors on individual providers don't block the
+    // rest — a slow Ollama install shouldn't delay Groq's list.
+    const now = Date.now()
+    if (_modelsCache && now - _modelsCacheAt < MODELS_CACHE_TTL_MS) {
+      return _modelsCache
+    }
+    const entries = Array.from(this.configs.entries())
+    const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
+      const url = `${normalizeBaseUrl(cfg.baseUrl)}/models`
+      const headers: Record<string, string> = { 'Accept': 'application/json' }
+      if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
+      const resp = await fetch(url, { headers, method: 'GET' })
+      if (!resp.ok) return []
+      const data = await resp.json() as { data?: Array<{ id?: string; owned_by?: string }> }
+      return (data.data ?? [])
+        .filter(m => typeof m.id === 'string')
+        .map(m => ({
+          id: m.id as string,
+          name: m.id as string,
+        }))
+    }))
+    const out: ModelInfo[] = []
+    for (const r of results) {
+      if (r.status === 'fulfilled') out.push(...r.value)
+    }
+    _modelsCache = out
+    _modelsCacheAt = now
+    return out
   }
 
   resolveModel(model: string): string {
     return model
+  }
+
+  smallFastModel(): string | null {
+    // Compat lane: no universal fast model — provider-specific hints
+    // live in each transformer. The caller passes the currently-
+    // configured model to resolveSmallFastModel() below to get a
+    // provider-appropriate fast model when present.
+    return null
   }
 
   isHealthy(): boolean {
@@ -508,6 +582,24 @@ export class OpenAICompatLane implements Lane {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
+
+// ─── Per-lane /v1/models cache ────────────────────────────────────
+
+let _modelsCache: ModelInfo[] | null = null
+let _modelsCacheAt = 0
+const MODELS_CACHE_TTL_MS = 5 * 60_000
+
+/**
+ * Resolve a small/fast model for a given main-loop model by delegating
+ * to the appropriate transformer. Exported so session-title /
+ * tool-use-summary callers can request the cheaper model per-provider.
+ */
+export function resolveCompatSmallFastModel(
+  provider: ProviderType,
+  model: string,
+): string | null {
+  return getTransformer(provider as ProviderId).smallFastModel(model)
+}
 
 function blankUsage(i: number, o: number, c: number, r: number): NormalizedUsage {
   return {
@@ -535,15 +627,12 @@ function buildRequestHeaders(provider: ProviderType, apiKey: string): Record<str
     'Accept': 'text/event-stream',
   }
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-  if (provider === 'openrouter') {
-    headers['HTTP-Referer'] = 'https://github.com/AbdoKnbGit/claudex'
-    headers['X-Title'] = 'ClaudeX'
-  }
-  if (provider === 'qwen') {
-    // DashScope-specific headers: enable prompt caching + identify client.
-    headers['X-DashScope-CacheControl'] = 'enable'
-    headers['X-DashScope-UserAgent'] = `ClaudeX/0.1 (${process.platform}; ${process.arch})`
-  }
+  // Delegate provider-specific header additions (e.g. OpenRouter's
+  // HTTP-Referer) to the transformer. Adding a new provider = one
+  // buildHeaders() method in its transformer file.
+  const transformer = getTransformer(provider as ProviderId)
+  const extra = transformer.buildHeaders?.(apiKey) ?? {}
+  for (const [k, v] of Object.entries(extra)) headers[k] = v
   return headers
 }
 
@@ -555,9 +644,8 @@ function normalizeToolName(rawName: string): string {
 }
 
 function clampMaxTokens(provider: ProviderType, requested: number): number {
-  // DeepSeek hard-caps max_tokens at 8192 — requesting more 400s.
-  if (provider === 'deepseek' && requested > 8192) return 8192
-  return requested
+  // Per-provider ceilings live in each transformer (e.g. DeepSeek 8192).
+  return getTransformer(provider as ProviderId).clampMaxTokens(requested)
 }
 
 // ─── Per-Provider Request Quirks ─────────────────────────────────
@@ -571,93 +659,38 @@ function applyProviderRequestQuirks(
   provider: ProviderType,
   thinking: LaneProviderCallParams['thinking'] | undefined,
 ): OpenAIChatRequest {
-  const isReasoning = thinking && thinking.type !== 'disabled'
-  const effort = resolveReasoningEffort(thinking)
+  const transformer = getTransformer(provider as ProviderId)
+  const isReasoning = !!(thinking && thinking.type !== 'disabled')
+  const effort = resolveReasoningEffort(thinking) ?? null
 
-  // Strip cache_control from messages for providers that don't understand it.
-  // Only Claude / Gemini (via OpenRouter) support it on this endpoint.
-  if (provider !== 'openrouter') {
+  // Cache-control placement per-transformer: strip when the provider
+  // doesn't honor it (DeepSeek, Groq, Mistral, NIM, Ollama, generic);
+  // pass through for OpenRouter (its upstream relocates for Anthropic
+  // cap compliance automatically).
+  const cacheMode = transformer.cacheControlMode(body.model)
+  if (cacheMode === 'none') {
     body.messages = body.messages.map(stripCacheControlFromMessage)
   }
 
-  // Provider-specific transformations.
-  switch (provider) {
-    case 'deepseek': {
-      // DeepSeek reasoner supports `thinking: { type: 'enabled' }` only —
-      // no budget_tokens. When reasoning is requested, pass through.
-      if (isReasoning) body.thinking = { type: 'enabled' }
-      break
-    }
-    case 'groq': {
-      // Groq rejects $schema on tool parameters. Already stripped by
-      // buildOpenAITools → sanitizeToolSchema.
-      // Groq accepts reasoning_effort for reasoning-capable models.
-      if (isReasoning && effort) body.reasoning_effort = effort
-      // Groq doesn't support stream_options.include_usage on some tiers;
-      // include it anyway — newer tiers respect it, older tiers ignore.
-      // Strip null values from assistant tool_calls (Groq's validator
-      // rejects `"function_call": null`).
-      body.messages = body.messages.map(stripNullToolCall)
-      break
-    }
-    case 'mistral': {
-      // Mistral rejects tool_choice "required" — must use "any".
-      if (body.tool_choice === 'required') body.tool_choice = 'auto'
-      // Strip `name` from non-tool messages (Mistral allows it only on
-      // tool messages; system/user/assistant with name field → extra_forbidden).
-      body.messages = body.messages.map(m => (m.role === 'tool' ? m : stripNameField(m)))
-      // Magistral models want the thinking system-prompt template injected.
-      if (isReasoning && body.model.toLowerCase().includes('magistral')) {
-        body.messages = injectMagistralThinkingPrompt(body.messages)
-      }
-      break
-    }
-    case 'nim': {
-      delete body.stream_options
-      break
-    }
-    case 'ollama': {
-      delete body.stream_options
-      // Ollama has Ollama-specific params. Pass through from extra_body if set.
-      break
-    }
-    case 'openrouter': {
-      // OpenRouter cache_control: only Claude / Gemini models respect it.
-      // Keep the original message-level cache_control; the upstream
-      // transformer will relocate it to the last content block (Anthropic
-      // has a hard 4-breakpoint cap that OpenRouter auto-enforces).
-      if (isReasoning && effort) body.reasoning = { effort }
-      break
-    }
-    case 'qwen': {
-      // DashScope compatible-mode supports OpenAI prompt caching via
-      // `cache_control: { type: "ephemeral" }`. The upstream applies the
-      // marker to the last text/tool — we pass through cache_control from
-      // the caller. Reasoning via extra_body.enable_thinking.
-      if (isReasoning) {
-        body.extra_body = {
-          ...(body.extra_body ?? {}),
-          enable_thinking: true,
-        }
-        // Vision models need vl_high_resolution_images flag. Only flip it
-        // on for the vision-capable Qwen families we recognize.
-        if (/qwen-vl|qwen3-vl|qwen3\.5-plus/i.test(body.model)) {
-          body.extra_body = {
-            ...(body.extra_body ?? {}),
-            vl_high_resolution_images: true,
-          }
-        }
-      }
-      break
-    }
-    default:
-      break
-  }
+  // Let the transformer apply its provider-specific quirks. Every
+  // provider implements this; adding a new one = one new file.
+  transformer.transformRequest(body, {
+    model: body.model,
+    isReasoning,
+    reasoningEffort: effort,
+  })
+
+  // Groq rejects null-valued `function_call` on assistant messages;
+  // always strip null tool_calls regardless of provider (the cost of
+  // doing it uniformly is < 1ms, the risk of missing it per-provider
+  // is a subtle 400 on certain replay flows).
+  body.messages = body.messages.map(stripNullToolCall)
 
   // Remove undefined fields — many providers 400 on explicit `null` on
   // optional fields they don't recognize.
-  for (const k of Object.keys(body)) {
-    if ((body as any)[k] === undefined) delete (body as any)[k]
+  const bag = body as unknown as Record<string, unknown>
+  for (const k of Object.keys(bag)) {
+    if (bag[k] === undefined) delete bag[k]
   }
 
   return body
@@ -729,18 +762,8 @@ function applyProviderResponseQuirks(chunk: any, provider: ProviderType): any {
   if (provider === 'groq' && typeof delta.reasoning === 'string' && !delta.reasoning_content) {
     delta.reasoning_content = delta.reasoning
   }
-  // Qwen (DashScope compatible-mode) also uses `reasoning_content` and
-  // sometimes `reasoning`. Keep both populated so the union fallback wins.
-  if (provider === 'qwen') {
-    if (typeof delta.reasoning === 'string' && !delta.reasoning_content) {
-      delta.reasoning_content = delta.reasoning
-    }
-    // DashScope emits finish_reason="error_finish" for in-stream errors;
-    // surface the embedded message so the user sees what happened.
-    if (choice.finish_reason === 'error_finish' && typeof delta.content === 'string') {
-      delta.content = `[DashScope error] ${delta.content}`
-    }
-  }
+  // Qwen (DashScope compatible-mode) reasoning + DashScope error handling
+  // moved to src/lanes/qwen/ (dedicated lane). Compat no longer sees qwen.
   // DeepSeek already sends reasoning_content; nothing to rename.
   // OpenRouter may send either reasoning or reasoning_content depending
   // on the underlying model; the union handling in streamAsProvider
@@ -755,34 +778,46 @@ function applyProviderResponseQuirks(chunk: any, provider: ProviderType): any {
 function buildOpenAITools(
   tools: ProviderTool[],
   provider: ProviderType,
-): Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
-  return tools.map(t => ({
-    type: 'function' as const,
-    function: {
-      name: t.name,
-      description: t.description ?? '',
-      parameters: sanitizeToolSchema(t.input_schema ?? { type: 'object', properties: {} }, provider),
-    },
-  }))
+): Array<{
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+    strict?: boolean
+  }
+}> {
+  // Transformer-driven strict mode + schema drop list. Per-provider
+  // config lives in each transformer file — adding a new provider =
+  // one new file; this function is provider-agnostic.
+  const transformer = getTransformer(provider as ProviderId)
+  const useStrict = transformer.supportsStrictMode()
+  return tools.map(t => {
+    const parameters = sanitizeToolSchema(
+      t.input_schema ?? { type: 'object', properties: {} },
+      provider,
+    )
+    return {
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        // Every tool description gets the STRICT PARAMETERS summary
+        // appended — plain-text in-context reminder of required fields
+        // + types. Backstops `strict: true` on providers that honor it
+        // and does the whole job on providers that don't.
+        description: appendStrictParamsHint(t.description ?? '', parameters),
+        parameters,
+        ...(useStrict && { strict: true }),
+      },
+    }
+  })
 }
 
-// Strip JSON Schema fields that various providers reject. Provider-specific
-// removals are listed below; shared ones (always strip) are applied to all.
+// Strip JSON Schema fields that various providers reject. Drop lists
+// are owned by each transformer (schemaDropList()); this wrapper just
+// runs the walk.
 function sanitizeToolSchema(schema: Record<string, unknown>, provider: ProviderType): Record<string, unknown> {
-  // Fields to drop for all compat providers:
-  const ALWAYS = new Set(['$schema', '$id', '$ref', '$comment'])
-  // Provider-specific:
-  const EXTRA: Record<ProviderType, Set<string>> = {
-    groq: new Set(['strict', 'additionalProperties']),
-    mistral: new Set(['strict', 'additionalProperties', 'format', 'examples', 'default']),
-    deepseek: new Set([]),
-    nim: new Set([]),
-    ollama: new Set(['strict', 'additionalProperties']),
-    openrouter: new Set([]),
-    qwen: new Set(['strict', 'additionalProperties']),
-    generic: new Set(['strict']),
-  }
-  const drop = new Set<string>([...ALWAYS, ...EXTRA[provider]])
+  const drop = getTransformer(provider as ProviderId).schemaDropList()
 
   function walk(v: unknown): unknown {
     if (Array.isArray(v)) return v.map(walk)

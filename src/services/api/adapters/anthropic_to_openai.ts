@@ -10,6 +10,7 @@ import type {
   ProviderTool,
   SystemBlock,
 } from '../providers/base_provider.js'
+import { recordToolSchema } from './tool_schema_cache.js'
 
 // ─── OpenAI types (minimal, no SDK dependency) ─────────────────────
 
@@ -247,7 +248,7 @@ const UNSUPPORTED_OPENAI_SCHEMA_FIELDS = new Set([
  * Recursively strip unsupported JSON Schema fields from tool parameter schemas.
  * Returns a new object — does not mutate the original.
  */
-function sanitizeSchemaForOpenAI(schema: Record<string, unknown>): Record<string, unknown> {
+export function sanitizeSchemaForOpenAI(schema: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
 
   for (const [key, value] of Object.entries(schema)) {
@@ -275,12 +276,16 @@ function sanitizeSchemaForOpenAI(schema: Record<string, unknown>): Record<string
 // ─── Tool Conversion ───────────────────────────────────────────────
 
 export function anthropicToolsToOpenAI(tools: ProviderTool[]): OpenAITool[] {
-  return tools.map(t => ({
-    type: 'function' as const,
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: sanitizeSchemaForOpenAI(t.input_schema),
-    },
-  }))
+  return tools.map(t => {
+    const parameters = sanitizeSchemaForOpenAI(t.input_schema)
+    recordToolSchema(t.name, parameters)
+    return {
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters,
+      },
+    }
+  })
 }

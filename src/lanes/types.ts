@@ -92,6 +92,17 @@ export interface Lane {
   resolveModel(model: string): string
 
   /**
+   * Return the model id this lane prefers for cheap, fast, single-turn
+   * calls (session titles, commit messages, tool-use summaries). Callers
+   * that fire-and-forget short completions should use this rather than
+   * the main-loop model to save cost + latency.
+   *
+   * Returns `null` when the lane has no distinct fast model — caller
+   * should fall back to the main-loop model.
+   */
+  smallFastModel?(): string | null
+
+  /**
    * Health check. Returns false if the lane should be skipped
    * (API down, auth expired, disabled by config).
    */

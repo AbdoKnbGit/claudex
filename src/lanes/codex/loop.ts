@@ -40,6 +40,11 @@ import {
   CODEX_TOOL_REGISTRY,
 } from './tools.js'
 import {
+  appendStrictParamsHint,
+  sanitizeSchemaForLane,
+  CODEX_TOOL_USAGE_RULES,
+} from '../shared/mcp_bridge.js'
+import {
   codexApi,
   type CodexInputItem,
   type CodexContentPart,
@@ -83,7 +88,7 @@ export class CodexLane implements Lane {
     const { model, messages, system, tools, max_tokens, thinking, signal } = params
 
     // Assemble system text. Codex's instructions field takes a plain string.
-    const instructions = typeof system === 'string'
+    const rawInstructions = typeof system === 'string'
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
 
@@ -97,8 +102,20 @@ export class CodexLane implements Lane {
     // Map caller-provided tools → Codex Responses format. We honor the
     // native tool registry for tools we recognize (including apply_patch
     // as a freeform custom tool) and pass through MCP / custom tools as
-    // function-schema tools with sanitized parameters.
+    // function-schema tools with sanitized parameters. Each function
+    // tool gets `strict: true` (server-side schema enforcement, OpenAI's
+    // equivalent of Gemini's VALIDATED mode) + the STRICT PARAMETERS
+    // description hint.
     const codexTools = buildCodexToolsFromRequest(tools)
+
+    // Prepend CODEX_TOOL_USAGE_RULES to instructions when tools are
+    // present — belt-and-suspenders with `strict: true` so the model
+    // treats the schema as authoritative and doesn't emit empty-args
+    // function calls. The preamble is tuned to match Codex's concise
+    // native prompt tone.
+    const instructions = codexTools && codexTools.length > 0
+      ? `${CODEX_TOOL_USAGE_RULES}\n${rawInstructions}`
+      : rawInstructions
 
     // Map thinking param → Codex reasoning config. Anthropic's adaptive /
     // enabled with budget_tokens mapping:
@@ -321,6 +338,11 @@ export class CodexLane implements Lane {
             ? buf.callId
             : `toolu_codex_${buf.callId}`
 
+          // Tool-use blocks MUST emit the three-event sequence so
+          // claude.ts's accumulator picks up the args: content_block_start
+          // with empty input + input_json_delta carrying the JSON string
+          // + content_block_stop. Embedding `input` inline on start
+          // leaves the accumulator at '' and every tool sees `{}`.
           yield {
             type: 'content_block_start',
             index: buf.anthropicIndex,
@@ -328,7 +350,15 @@ export class CodexLane implements Lane {
               type: 'tool_use',
               id: anthropicToolUseId,
               name: implId,
-              input: adaptedInput,
+              input: {},
+            },
+          }
+          yield {
+            type: 'content_block_delta',
+            index: buf.anthropicIndex,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: JSON.stringify(adaptedInput ?? {}),
             },
           }
           yield { type: 'content_block_stop', index: buf.anthropicIndex }
@@ -375,6 +405,11 @@ export class CodexLane implements Lane {
           const mst = emitMessageStart()
           if (mst) yield mst
         }
+        // Clear the response-chain id on abort so the NEXT user message
+        // doesn't try to chain off a stale previous_response_id (the
+        // server may have discarded it mid-stream). Safer to start a
+        // fresh chain than to dangle.
+        if (typeof codexApi.clearChain === 'function') codexApi.clearChain()
         yield {
           type: 'message_delta',
           delta: { stop_reason: 'end_turn' },
@@ -399,10 +434,16 @@ export class CodexLane implements Lane {
         index: idx,
         content_block: { type: 'text', text: '' },
       }
+      // Prompt-too-long errors must surface unwrapped so reactive-compact
+      // recognizes them via the "Prompt is too long" prefix.
+      const isPTL = (err as { isPromptTooLong?: boolean } | null)?.isPromptTooLong === true
+      const errText = isPTL
+        ? (err?.message ?? String(err))
+        : `Codex API error: ${err?.message ?? String(err)}`
       yield {
         type: 'content_block_delta',
         index: idx,
-        delta: { type: 'text_delta', text: `Codex API error: ${err?.message ?? String(err)}` },
+        delta: { type: 'text_delta', text: errText },
       }
       yield { type: 'content_block_stop', index: idx }
       yield {
@@ -470,6 +511,12 @@ export class CodexLane implements Lane {
 
   resolveModel(model: string): string {
     return model
+  }
+
+  smallFastModel(): string {
+    // gpt-4o-mini is the cheapest Responses-API-compatible OpenAI
+    // model; used for session titles, tool-use summaries, etc.
+    return 'gpt-4o-mini'
   }
 
   isHealthy(): boolean {
@@ -672,6 +719,8 @@ function buildCodexToolsFromRequest(
       ?? getCodexRegistrationByNativeName(tool.name)
     if (reg) {
       if (reg.nativeName === 'apply_patch') {
+        // Freeform tools can't take `strict: true` — they aren't JSON.
+        // apply_patch's Lark grammar is the enforcement mechanism.
         out.push({
           type: 'custom',
           name: 'apply_patch',
@@ -679,19 +728,32 @@ function buildCodexToolsFromRequest(
           format: { type: 'text' },
         })
       } else {
+        // strict: true tells the Responses API to server-side-enforce
+        // the JSON Schema (required fields + types) against the model's
+        // function call — the OpenAI equivalent of Gemini VALIDATED
+        // mode. Empty-args calls get rejected before they stream back.
         out.push({
           type: 'function',
           name: reg.nativeName,
-          description: reg.nativeDescription,
+          description: appendStrictParamsHint(reg.nativeDescription, reg.nativeSchema),
           parameters: reg.nativeSchema,
+          strict: true,
         })
       }
     } else {
+      // Unknown tool (MCP / custom) — sanitize through the shared bridge
+      // with the Codex profile + append the STRICT PARAMETERS hint so
+      // the model sees the required-field summary in plain text.
+      const parameters = sanitizeSchemaForLane(
+        tool.input_schema ?? { type: 'object', properties: {} },
+        'codex',
+      )
       out.push({
         type: 'function',
         name: tool.name,
-        description: tool.description ?? '',
-        parameters: tool.input_schema ?? { type: 'object', properties: {} },
+        description: appendStrictParamsHint(tool.description ?? '', parameters),
+        parameters,
+        strict: true,
       })
     }
   }

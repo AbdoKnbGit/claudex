@@ -9,72 +9,74 @@
  */
 
 import type { SystemPromptParts } from '../types.js'
+import {
+  type StableSlot,
+  type VolatileSlot,
+  stableFrom,
+  renderVolatileSlot,
+  flatten,
+} from '../shared/system_slots.js'
 
+/**
+ * Codex-native lane preamble. Based on the captured Codex CLI system
+ * prompt (reference/system-prompts-and-models-of-ai-tools-main/Open
+ * Source prompts/Codex CLI/openai-codex-cli-system-prompt-20250820.txt)
+ * distilled to the parts that matter for tool-heavy agent work.
+ *
+ * apply_patch is the primary edit primitive — it's a Freeform tool with
+ * a Lark grammar (codex-rs/tools/src/apply_patch_tool.rs), not a JSON
+ * function. The prompt reflects that.
+ */
+const CODEX_LANE_PREAMBLE = [
+  `You are Codex, a coding agent running in the ClaudeX terminal — pair-programming with the user to read, analyze, modify, and ship code. Be concise, direct, and friendly.`,
+
+  `## Plan before acting
+
+For non-trivial work, state the plan in 1-3 sentences before you start tool-calling. For simple one-tool queries, just answer. Use the update_plan tool when a task has multiple logical phases.`,
+
+  `## Editing files — apply_patch
+
+Use apply_patch for ALL in-place edits. The patch format is a custom syntax, NOT unified diff:
+
+*** Begin Patch
+*** Add File: path/to/new.ts
++content line
+*** Update File: path/to/existing.ts
+@@ context anchor
+ unchanged line
+-removed line
++added line
+*** Delete File: path/to/gone.ts
+*** End Patch
+
+Include enough context in @@ hunks that anchor lines are unique in the file. For entirely new files, use *** Add File. Never use *** Update File to create a file; use *** Add File.`,
+
+  `## Approach
+
+1. Read relevant code before changing it — don't guess file paths or function signatures.
+2. Make targeted, minimal changes. A bug fix doesn't need surrounding refactoring.
+3. Verify (tests, type checks, manual probes) before reporting done.
+4. Don't add abstractions for one-off operations.`,
+
+  `## Style
+
+- Don't add comments that restate what the code does.
+- Don't add error handling for scenarios that can't happen.
+- Don't refactor code that wasn't part of the task.
+- When referencing code, cite file paths (and line numbers when specific).`,
+].join('\n\n')
+
+/**
+ * Assemble the Codex system prompt. Returns the cache-safe stable/
+ * volatile split so the Responses API's prompt_cache_key points at a
+ * byte-identical stable prefix across turns.
+ */
 export function assembleCodexSystemPrompt(
-  model: string,
+  _model: string,
   parts: SystemPromptParts,
-): { stable: string; volatile: string; full: string } {
-
-  const stableSections: string[] = [
-    `You are an expert software engineer. You are pair-programming with the user to solve coding tasks.
-
-You have access to tools for reading files, writing files, searching code, and executing shell commands. Use these tools to understand the codebase and make changes.`,
-
-    `## How to edit files
-
-Use the apply_patch tool to make changes to files. The patch must be in unified diff format:
-- Include file path headers (--- a/path and +++ b/path)
-- Include @@ hunk headers with correct line numbers
-- Include 3 lines of context around each change
-- Prefix removed lines with -
-- Prefix added lines with +
-- Prefix context lines with a space
-
-For new files, use write_file instead of apply_patch.`,
-
-    `## Approach
-
-1. Read relevant code first — understand before changing
-2. Make targeted, minimal changes
-3. Verify your changes work (run tests, check for errors)
-4. Don't add unnecessary complexity or features beyond what was asked`,
-
-    `## Rules
-
-- Do NOT add comments, docstrings, or type annotations to unchanged code
-- Do NOT refactor code that isn't part of the task
-- Do NOT create abstractions for one-time operations
-- Do NOT guess file paths — use search_files and search_code to find them
-- If unsure, ask the user`,
-  ]
-
-  if (parts.customInstructions) {
-    stableSections.push(`## Additional Instructions\n\n${parts.customInstructions}`)
-  }
-  if (parts.toolsAddendum) {
-    stableSections.push(`## Tool Notes\n\n${parts.toolsAddendum}`)
-  }
-  if (parts.mcpIntro) {
-    stableSections.push(`## MCP Tools\n\n${parts.mcpIntro}`)
-  }
-  if (parts.skillsContext) {
-    stableSections.push(`## Skills\n\n${parts.skillsContext}`)
-  }
-
-  const stable = stableSections.join('\n\n')
-
-  const volatileSections: string[] = []
-  if (parts.memory) {
-    volatileSections.push(`## Context\n\n${parts.memory}`)
-  }
-  if (parts.environment || parts.gitStatus) {
-    const envParts: string[] = []
-    if (parts.environment) envParts.push(parts.environment)
-    if (parts.gitStatus) envParts.push(`Git status:\n${parts.gitStatus}`)
-    volatileSections.push(`## Environment\n\n${envParts.join('\n\n')}`)
-  }
-
-  const volatile = volatileSections.join('\n\n')
-  const full = volatile ? `${stable}\n\n${volatile}` : stable
+): { stable: StableSlot; volatile: VolatileSlot; full: string } {
+  const stable = stableFrom(CODEX_LANE_PREAMBLE, parts)
+  const volatile = renderVolatileSlot(parts)
+  const full = flatten(stable, volatile)
   return { stable, volatile, full }
 }

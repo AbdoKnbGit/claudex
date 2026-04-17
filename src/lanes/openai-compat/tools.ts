@@ -8,6 +8,19 @@
  * Tool names are deliberately generic and descriptive — these models
  * don't have a specific CLI they were trained against, so clear names
  * that match common coding-assistant patterns work best.
+ *
+ * Three edit primitives are exposed, with per-model selection handled
+ * in `capabilities.ts` / per-provider transformers:
+ *
+ *   - `str_replace`   — simplest; frontier-agnostic, single exact swap.
+ *   - `edit_block`    — SEARCH/REPLACE format; Aider-trained models
+ *                       (DeepSeek-Coder, Codestral, Qwen-Coder, Kimi).
+ *   - `edit_file`     — the classic old_text/new_text style, kept for
+ *                       backward compatibility.
+ *
+ * The lane selects ONE edit tool per request based on the transformer's
+ * `preferredEditFormat(model)` so the model sees one clear way to edit
+ * rather than three overlapping options.
  */
 
 import type { LaneToolRegistration } from '../types.js'
@@ -26,7 +39,9 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['command'],
     },
     adaptInput(native) {
-      return { command: native.command, ...(native.description && { description: native.description }) }
+      const out: Record<string, unknown> = { command: native.command }
+      if (native.description) out.description = native.description
+      return out
     },
     adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
   },
@@ -58,7 +73,7 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'write_file',
     implId: 'Write',
-    nativeDescription: 'Write content to a file. Creates the file if it does not exist.',
+    nativeDescription: 'Write content to a file. Creates the file if it does not exist. Overwrites otherwise. Use str_replace/edit_block/edit_file for targeted edits to existing files.',
     nativeSchema: {
       type: 'object',
       properties: {
@@ -72,10 +87,51 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
     },
     adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
   },
+  // ── Edit primitive #1 ── str_replace (simplest, frontier-agnostic) ──
+  {
+    nativeName: 'str_replace',
+    implId: 'Edit',
+    nativeDescription:
+      'Replace exactly one occurrence of a string in a file. The string must match EXACTLY (whitespace, newlines, punctuation). Include enough surrounding context in `old_str` to make the match unique. For multiple edits to the same file, call this tool multiple times in sequence.',
+    nativeSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file.' },
+        old_str: { type: 'string', description: 'Exact string to find. Include surrounding context for uniqueness.' },
+        new_str: { type: 'string', description: 'Replacement string.' },
+      },
+      required: ['path', 'old_str', 'new_str'],
+    },
+    adaptInput(native) {
+      return { file_path: native.path, old_string: native.old_str, new_string: native.new_str }
+    },
+    adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
+  },
+  // ── Edit primitive #2 ── edit_block (SEARCH/REPLACE; Aider-trained) ──
+  {
+    nativeName: 'edit_block',
+    implId: 'Edit',
+    nativeDescription:
+      'Apply a SEARCH/REPLACE edit to a file. Use this when your training includes Aider-style edit blocks. The `search` text must match exactly (including indentation); include 3+ lines of surrounding context when possible so the match is unique. Call multiple times for multiple edits.',
+    nativeSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file.' },
+        search: { type: 'string', description: 'The exact block to find (the content between <<<<<<< SEARCH and =======).' },
+        replace: { type: 'string', description: 'The replacement block (the content between ======= and >>>>>>> REPLACE).' },
+      },
+      required: ['path', 'search', 'replace'],
+    },
+    adaptInput(native) {
+      return { file_path: native.path, old_string: native.search, new_string: native.replace }
+    },
+    adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
+  },
+  // ── Edit primitive #3 ── edit_file (legacy old_text/new_text) ──
   {
     nativeName: 'edit_file',
     implId: 'Edit',
-    nativeDescription: 'Replace text in a file. The old_text must match exactly.',
+    nativeDescription: 'Replace text in a file. The old_text must match exactly. Kept for models trained on this name; str_replace is preferred for new deployments.',
     nativeSchema: {
       type: 'object',
       properties: {
@@ -103,7 +159,9 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['pattern'],
     },
     adaptInput(native) {
-      return { pattern: native.pattern, ...(native.directory && { path: native.directory }) }
+      const out: Record<string, unknown> = { pattern: native.pattern }
+      if (native.directory) out.path = native.directory
+      return out
     },
     adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
   },
@@ -121,11 +179,10 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['pattern'],
     },
     adaptInput(native) {
-      return {
-        pattern: native.pattern,
-        ...(native.directory && { path: native.directory }),
-        ...(native.file_pattern && { glob: native.file_pattern }),
-      }
+      const out: Record<string, unknown> = { pattern: native.pattern }
+      if (native.directory) out.path = native.directory
+      if (native.file_pattern) out.glob = native.file_pattern
+      return out
     },
     adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
   },
@@ -144,6 +201,40 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
     adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },
   },
 ]
+
+// ─── Edit-primitive filtering ────────────────────────────────────
+//
+// Models that see THREE overlapping edit tools (str_replace,
+// edit_block, edit_file) pick randomly between them and the
+// resulting diff quality is worse than if they see ONE tool that
+// matches their post-training. Before sending tools to the model we
+// filter to a single edit primitive per the transformer's
+// `preferredEditFormat(model)` decision.
+
+const EDIT_TOOL_NAMES: Record<'apply_patch' | 'edit_block' | 'str_replace', string> = {
+  // apply_patch is NOT in this registry — the compat lane doesn't
+  // expose it (apply_patch's grammar needs Codex's Freeform tool
+  // type which Chat-Completions providers don't support). Transformers
+  // that select apply_patch will fall through to str_replace here.
+  apply_patch: 'str_replace',
+  edit_block: 'edit_block',
+  str_replace: 'str_replace',
+}
+
+const ALL_EDIT_TOOL_NAMES = new Set(['str_replace', 'edit_block', 'edit_file'])
+
+/**
+ * Filter the registry to expose ONE edit tool matching the preferred
+ * format. Non-edit tools are always passed through unchanged.
+ */
+export function selectEditToolSet(
+  preferred: 'apply_patch' | 'edit_block' | 'str_replace',
+): LaneToolRegistration[] {
+  const keepName = EDIT_TOOL_NAMES[preferred] ?? 'str_replace'
+  return OPENAI_COMPAT_TOOL_REGISTRY.filter(r =>
+    !ALL_EDIT_TOOL_NAMES.has(r.nativeName) || r.nativeName === keepName,
+  )
+}
 
 // ─── Exports ─────────────────────────────────────────────────────
 
@@ -177,4 +268,9 @@ export function formatToolResult(name: string, output: string | unknown): string
   const r = _byName.get(name)
   if (!r) return typeof output === 'string' ? output : JSON.stringify(output)
   return r.adaptOutput(output)
+}
+
+export function getCompatRegistrationByNativeName(name: string): LaneToolRegistration | undefined {
+  idx()
+  return _byName.get(name)
 }

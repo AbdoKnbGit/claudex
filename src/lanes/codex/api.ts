@@ -112,14 +112,31 @@ export interface CodexUsage {
 
 // ─── Client ──────────────────────────────────────────────────────
 
+// Signal prefix for claudex reactive-compact (must match the string in
+// services/api/errors.ts — duplicated to avoid the transitive import
+// issue with utils/messages.ts).
+const CODEX_PROMPT_TOO_LONG_PREFIX = 'Prompt is too long'
+
 export class CodexApiError extends Error {
+  readonly isPromptTooLong: boolean
+
   constructor(
     public readonly status: number,
     public readonly body: string,
     public readonly retryAfterMs?: number,
   ) {
-    super(`OpenAI Responses API error ${status}: ${body.slice(0, 200)}`)
+    // Recognize the signals OpenAI emits for context-window overflow.
+    // The Responses API surfaces 400 "context_length_exceeded" (structured
+    // error.code) plus a free-text message. Also match the Chat-Completions
+    // variant in case the gateway translates.
+    const ptl = /context_length_exceeded|maximum context length|prompt is too long|token limit/i
+      .test(body)
+    const head = ptl
+      ? `${CODEX_PROMPT_TOO_LONG_PREFIX} (Codex ${status})`
+      : `OpenAI Responses API error ${status}`
+    super(`${head}: ${body.slice(0, 200)}`)
     this.name = 'CodexApiError'
+    this.isPromptTooLong = ptl
   }
 
   get isRateLimited(): boolean { return this.status === 429 }

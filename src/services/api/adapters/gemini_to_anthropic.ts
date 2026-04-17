@@ -14,6 +14,8 @@ import type {
   AnthropicContentBlock,
 } from '../providers/base_provider.js'
 import { storeThoughtSignature } from './gemini_thought_cache.js'
+import { originalToolNameFromGemini } from './anthropic_to_gemini.js'
+import { coerceToolCallArgs } from './tool_schema_cache.js'
 
 // ─── Gemini response types ─────────────────────────────────────────
 
@@ -263,12 +265,13 @@ export async function* geminiStreamToAnthropicEvents(
           hasToolUse = true
           const toolId = `toolu_${Math.random().toString(36).slice(2, 14)}`
           const currentIndex = blockIndex++
+          const toolName = originalToolNameFromGemini(part.functionCall.name)
 
           // Preserve thought_signature for thinking-model round-trip
           const contentBlock: AnthropicContentBlock = {
             type: 'tool_use',
             id: toolId,
-            name: part.functionCall.name,
+            name: toolName,
             input: {},
           }
           if (part.thoughtSignature) {
@@ -282,8 +285,11 @@ export async function* geminiStreamToAnthropicEvents(
             content_block: contentBlock,
           }
 
-          // Emit the full args as a single JSON delta
-          const argsJson = JSON.stringify(part.functionCall.args ?? {})
+          // Emit the full args as a single JSON delta, repairing
+          // stringly-typed array/object values via the schema cache.
+          const rawArgs = part.functionCall.args ?? {}
+          const repairedArgs = coerceToolCallArgs(toolName, rawArgs) ?? rawArgs
+          const argsJson = JSON.stringify(repairedArgs)
           yield {
             type: 'content_block_delta',
             index: currentIndex,

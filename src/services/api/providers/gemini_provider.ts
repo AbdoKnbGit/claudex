@@ -167,10 +167,7 @@ const GEMINI_CLI_MODELS: ModelInfo[] = [
 const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'gemini-3.1-pro-high',                 name: 'Gemini 3.1 Pro · high thinking' },
   { id: 'gemini-3.1-pro-low',                  name: 'Gemini 3.1 Pro · low thinking' },
-  { id: 'gemini-3-pro-high',                   name: 'Gemini 3 Pro · high thinking' },
-  { id: 'gemini-3-pro-low',                    name: 'Gemini 3 Pro · low thinking' },
   { id: 'gemini-3-flash',                      name: 'Gemini 3 Flash' },
-  { id: 'gemini-3.1-flash-image',              name: 'Gemini 3.1 Flash · image' },
 ]
 
 /**

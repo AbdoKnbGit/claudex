@@ -26,7 +26,6 @@ export function initOpenAICompatLane(providers?: {
   nim?: { apiKey: string; baseUrl?: string }
   ollama?: { baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
-  qwen?: { apiKey: string; baseUrl?: string }
 }): void {
   const p = providers ?? {}
 
@@ -73,15 +72,9 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
-  // Qwen via DashScope's OpenAI-compatible endpoint. Accepts either
-  // QWEN_API_KEY or DASHSCOPE_API_KEY — users set whichever they prefer.
-  const qwenKey = p.qwen?.apiKey ?? process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY
-  if (qwenKey) {
-    openaiCompatLane.registerProvider(
-      'qwen', qwenKey,
-      p.qwen?.baseUrl ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    )
-  }
+  // Qwen moved to its own lane (`src/lanes/qwen/`) — see Phase 2 of
+  // the native-lane plan. Do NOT register qwen here: it would shadow the
+  // dedicated lane's native OAuth + Qwen-specific tool registry.
 
   registerLane(openaiCompatLane)
 }

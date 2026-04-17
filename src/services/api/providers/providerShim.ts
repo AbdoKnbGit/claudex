@@ -353,16 +353,114 @@ export function getProvider(provider: APIProvider): BaseProvider {
  * Returns the accessToken if stored and not expired, null otherwise.
  * No async refresh — that's handled by the client.ts pre-flight.
  */
+/**
+ * Read a stored Gemini OAuth token synchronously from disk.
+ *
+ * Behavior:
+ *   - Returns the access_token string when present.
+ *   - If the stored blob is past its `expiresAt` timestamp, fire an
+ *     async background refresh via `refreshGeminiOAuth` using the
+ *     saved refresh_token; the updated token gets written back to
+ *     storage and the NEXT call to this function (next request) will
+ *     see the fresh token. We still return the expired token right
+ *     now — the API call will 401 and the lane's retry path picks up
+ *     the refreshed token from storage on re-read. Better than
+ *     returning null and forcing the user to `/login` again.
+ *
+ * If there's no refresh token (first run, or user revoked), we return
+ * null as before.
+ */
 function _readStoredGeminiToken(storageKey: string): string | null {
   try {
     const raw = loadProviderKey(storageKey)
     if (!raw) return null
-    const tokens = JSON.parse(raw) as { accessToken?: string; expiresAt?: number }
-    if (tokens.expiresAt && Date.now() > tokens.expiresAt - 5 * 60 * 1000) {
-      return null  // expired
+    const tokens = JSON.parse(raw) as {
+      accessToken?: string
+      refreshToken?: string
+      expiresAt?: number
     }
-    return tokens.accessToken ?? null
+    const accessToken = tokens.accessToken ?? null
+    const isExpired = tokens.expiresAt != null
+      && Date.now() > tokens.expiresAt - 5 * 60 * 1000
+    if (isExpired && tokens.refreshToken) {
+      // Fire-and-forget refresh — the updated token lands in storage
+      // before the request completes in most cases, and if not the 401
+      // path re-reads and retries. Avoids blocking the sync boot path.
+      _refreshGeminiTokenInBackground(storageKey, tokens.refreshToken)
+    }
+    return accessToken
   } catch {
     return null
   }
+}
+
+/**
+ * Async background refresh of a stored Gemini OAuth token. Writes the
+ * refreshed access_token + expires_at back via saveProviderKey, AND
+ * reconfigures the in-memory Gemini API client so the next request on
+ * the SAME session picks up the new token without a process restart.
+ */
+const _geminiRefreshInFlight = new Map<string, Promise<void>>()
+function _refreshGeminiTokenInBackground(
+  storageKey: string,
+  refreshToken: string,
+): void {
+  if (_geminiRefreshInFlight.has(storageKey)) return
+  const p = (async () => {
+    try {
+      const type = storageKey === 'gemini_oauth_cli' ? 'cli' : 'antigravity'
+      // Dynamic import avoids circular deps between providerShim and
+      // google_oauth (which imports from auth/api_key_manager that this
+      // file transitively depends on).
+      const { refreshGeminiOAuth } = await import('../auth/google_oauth.js')
+      await refreshGeminiOAuth(type, refreshToken)
+      // refreshGeminiOAuth() already saved the new token blob. Now push
+      // it into the lane's in-memory API client so this session uses it.
+      const next = loadProviderKey(storageKey)
+      if (next) {
+        try {
+          const parsed = JSON.parse(next) as { accessToken?: string }
+          if (parsed.accessToken) {
+            const { geminiApi } = await import('../../../lanes/gemini/api.js')
+            if (type === 'cli') {
+              geminiApi.configure({ cliOAuthToken: parsed.accessToken })
+            } else {
+              geminiApi.configure({ antigravityOAuthToken: parsed.accessToken })
+            }
+          }
+        } catch {
+          // best-effort; the disk write succeeded which is what matters
+        }
+      }
+    } catch {
+      // Refresh failed — the access_token may simply have expired AND
+      // the refresh_token may have been revoked. The next request will
+      // 401 and the auth-stale path prompts the user to re-login.
+    } finally {
+      _geminiRefreshInFlight.delete(storageKey)
+    }
+  })()
+  _geminiRefreshInFlight.set(storageKey, p)
+}
+
+/**
+ * Reconfigure the Gemini lane's in-memory API client from whatever is
+ * currently on disk. Called by the /login command right after it writes
+ * new tokens, so the session picks them up without a restart.
+ */
+export async function reloadGeminiLaneAuth(): Promise<void> {
+  const cliToken = _readStoredGeminiToken('gemini_oauth_cli') ?? undefined
+  const antigravityToken = _readStoredGeminiToken('gemini_oauth_antigravity') ?? undefined
+  const apiKey = getProviderApiKey('gemini') ?? undefined
+  const { geminiApi } = await import('../../../lanes/gemini/api.js')
+  geminiApi.configure({
+    apiKey,
+    cliOAuthToken: cliToken,
+    antigravityOAuthToken: antigravityToken,
+  })
+  // Mark the lane healthy now that auth is fresh. If neither token is
+  // present, configure() already falls back to unhealthy via its own
+  // isConfigured check — we just call setHealthy to surface the change.
+  const { geminiLane } = await import('../../../lanes/gemini/loop.js')
+  geminiLane.setHealthy(!!(apiKey || cliToken || antigravityToken))
 }

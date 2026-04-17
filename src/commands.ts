@@ -25,6 +25,7 @@ import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
+import lane from './commands/lane/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import provider from './commands/provider/index.js'
@@ -341,7 +342,7 @@ const COMMANDS = memoize((): Command[] => [
   hooks,
   exportCommand,
   sandboxToggle,
-  logout, login(), provider,
+  logout, login(), provider, lane,
   passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,

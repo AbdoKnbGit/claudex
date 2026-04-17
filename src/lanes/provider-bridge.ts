@@ -143,10 +143,37 @@ async function assembleFinalMessage(
             currentBlock.text = (currentBlock.text ?? '') + ev.delta.text
           } else if (ev.delta.type === 'thinking_delta' && typeof ev.delta.thinking === 'string') {
             currentBlock.thinking = (currentBlock.thinking ?? '') + ev.delta.thinking
+          } else if (
+            ev.delta.type === 'input_json_delta'
+            && typeof ev.delta.partial_json === 'string'
+            && currentBlock.type === 'tool_use'
+          ) {
+            // Accumulate tool_use input JSON across deltas, same as the
+            // Anthropic Messages streaming IR. The lanes emit input via
+            // this event because that's how claude.ts reads it upstream;
+            // this assembler (used for non-streaming `create()` calls)
+            // was missing the matching branch, leaving every tool_use
+            // block with an empty `input: {}`.
+            const prev = typeof (currentBlock as any)._partialJson === 'string'
+              ? (currentBlock as any)._partialJson as string
+              : ''
+            ;(currentBlock as any)._partialJson = prev + ev.delta.partial_json
           }
         }
         break
       case 'content_block_stop':
+        // Finalize tool_use input from the accumulated partial_json string.
+        if (currentBlock && currentBlock.type === 'tool_use') {
+          const raw = (currentBlock as any)._partialJson
+          if (typeof raw === 'string' && raw.length > 0) {
+            try {
+              currentBlock.input = JSON.parse(raw) as Record<string, unknown>
+            } catch {
+              // Malformed JSON — keep empty input, shared tool will report.
+            }
+          }
+          delete (currentBlock as any)._partialJson
+        }
         currentBlock = null
         break
       case 'message_delta':

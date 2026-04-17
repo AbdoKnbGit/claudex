@@ -11,6 +11,7 @@ import type {
   AnthropicStreamEvent,
   AnthropicContentBlock,
 } from '../providers/base_provider.js'
+import { coerceToolCallArgs } from './tool_schema_cache.js'
 
 // ─── OpenAI response types (minimal) ───────────────────────────────
 
@@ -103,11 +104,12 @@ export function openAIMessageToAnthropic(
       } catch {
         input = { _raw: tc.function.arguments }
       }
+      const coerced = coerceToolCallArgs(tc.function.name, input)
       content.push({
         type: 'tool_use',
         id: tc.id,
         name: tc.function.name,
-        input,
+        input: (coerced ?? input) as Record<string, unknown>,
       })
     }
   }

@@ -16,6 +16,8 @@ import type {
   ProviderTool,
   SystemBlock,
 } from '../providers/base_provider.js'
+import { sanitizeSchemaForOpenAI } from './anthropic_to_openai.js'
+import { coerceToolCallArgs, recordToolSchema } from './tool_schema_cache.js'
 
 // ─── Responses API types ───────────────────────────────────────────
 
@@ -185,13 +187,17 @@ export function anthropicToResponsesInput(
 export function anthropicToolsToResponsesTools(
   tools: ProviderTool[],
 ): ResponsesApiTool[] {
-  return tools.map(t => ({
-    type: 'function' as const,
-    name: t.name,
-    description: t.description,
-    parameters: t.input_schema,
-    strict: false,
-  }))
+  return tools.map(t => {
+    const parameters = sanitizeSchemaForOpenAI(t.input_schema)
+    recordToolSchema(t.name, parameters)
+    return {
+      type: 'function' as const,
+      name: t.name,
+      description: t.description,
+      parameters,
+      strict: false,
+    }
+  })
 }
 
 // ─── Streaming conversion (Responses API SSE → Anthropic events) ───
@@ -453,10 +459,12 @@ export function responsesMessageToAnthropic(
       } catch {
         input = { _raw: item.arguments }
       }
+      const name = item.name ?? ''
+      input = (coerceToolCallArgs(name, input) ?? input) as Record<string, unknown>
       content.push({
         type: 'tool_use',
         id: item.call_id ?? item.id ?? `toolu_${Math.random().toString(36).slice(2, 11)}`,
-        name: item.name ?? '',
+        name,
         input,
       })
     }
