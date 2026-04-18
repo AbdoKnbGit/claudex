@@ -509,7 +509,9 @@ export class OpenAICompatLane implements Lane {
       delta: { stop_reason: stopReason },
       usage: {
         output_tokens: outputTokens,
-        input_tokens: inputTokens,
+        // OpenAI-style `prompt_tokens` is total (fresh + cached). Split
+        // into fresh + cache_read to match Anthropic's additive buckets.
+        input_tokens: Math.max(0, inputTokens - cachedInputTokens),
         ...(cachedInputTokens > 0 && {
           cache_read_input_tokens: cachedInputTokens,
           cache_creation_input_tokens: 0,

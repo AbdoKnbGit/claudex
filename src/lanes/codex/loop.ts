@@ -460,7 +460,10 @@ export class CodexLane implements Lane {
         delta: { stop_reason: 'end_turn' },
         usage: {
           output_tokens: outputTokens,
-          input_tokens: inputTokens,
+          // OpenAI's input_tokens is total (fresh + cached). Anthropic
+          // semantic expects fresh-only here; cached lives on its own
+          // field. Subtract so cost / context-meter don't double-count.
+          input_tokens: Math.max(0, inputTokens - cachedInputTokens),
           ...(cachedInputTokens > 0 && {
             cache_read_input_tokens: cachedInputTokens,
             cache_creation_input_tokens: 0,

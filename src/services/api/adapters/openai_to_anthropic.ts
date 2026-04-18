@@ -131,6 +131,12 @@ export function openAIMessageToAnthropic(
     : 'end_turn'
 
   const cachedTokens = response.usage?.prompt_tokens_details?.cached_tokens ?? 0
+  const promptTokens = response.usage?.prompt_tokens ?? 0
+  // OpenAI's prompt_tokens is the TOTAL (cached + fresh). Anthropic's
+  // semantic treats input_tokens and cache_read_input_tokens as separate
+  // additive buckets. Subtract so downstream cost / context-meter code
+  // doesn't double-count the cached portion.
+  const freshInputTokens = Math.max(0, promptTokens - cachedTokens)
 
   return {
     id: response.id ?? `msg_${Date.now()}`,
@@ -141,12 +147,8 @@ export function openAIMessageToAnthropic(
     stop_reason: stopReason as AnthropicMessage['stop_reason'],
     stop_sequence: null,
     usage: {
-      input_tokens: response.usage?.prompt_tokens ?? 0,
+      input_tokens: freshInputTokens,
       output_tokens: response.usage?.completion_tokens ?? 0,
-      // OpenAI reports cache hits on prompt_tokens_details.cached_tokens.
-      // Surface as Anthropic's cache_read_input_tokens so cost tracking /
-      // UI /logging treat it identically. cache_creation_input_tokens stays
-      // 0 — OpenAI caches automatically without a separate write step.
       ...(cachedTokens > 0 && {
         cache_read_input_tokens: cachedTokens,
         cache_creation_input_tokens: 0,
@@ -363,13 +365,15 @@ export async function* openAIStreamToAnthropicEvents(
       // message_delta with stop reason. Input + cache tokens are piggy-
       // backed so downstream (claude.ts updateUsage, provider-bridge
       // assembler) picks them up — OpenAI only ships usage in the final
-      // chunk, so message_start was emitted with zeros.
+      // chunk, so message_start was emitted with zeros. Split OpenAI's
+      // total prompt_tokens into fresh vs cached to match Anthropic's
+      // additive-bucket semantic.
       yield {
         type: 'message_delta',
         delta: { stop_reason: stopReason, stop_sequence: null },
         usage: {
           output_tokens: totalOutputTokens,
-          input_tokens: totalInputTokens,
+          input_tokens: Math.max(0, totalInputTokens - totalCachedTokens),
           ...(totalCachedTokens > 0 && {
             cache_read_input_tokens: totalCachedTokens,
             cache_creation_input_tokens: 0,
@@ -401,7 +405,7 @@ export async function* openAIStreamToAnthropicEvents(
       delta: { stop_reason: 'end_turn', stop_sequence: null },
       usage: {
         output_tokens: totalOutputTokens,
-        input_tokens: totalInputTokens,
+        input_tokens: Math.max(0, totalInputTokens - totalCachedTokens),
         ...(totalCachedTokens > 0 && {
           cache_read_input_tokens: totalCachedTokens,
           cache_creation_input_tokens: 0,

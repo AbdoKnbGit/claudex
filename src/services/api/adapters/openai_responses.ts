@@ -372,6 +372,10 @@ export async function* responsesStreamToAnthropicEvents(
         // tokens ride here so claude.ts updateUsage() and the bridge
         // assembler pick them up — message_start was emitted on
         // response.created with zeros.
+        // OpenAI reports input_tokens as TOTAL (fresh + cached). Anthropic
+        // treats input_tokens and cache_read_input_tokens as additive
+        // buckets — sum them for "total input". Subtract so cost tracking /
+        // context-meter don't double-count the cached portion.
         yield {
           type: 'message_delta',
           delta: {
@@ -380,7 +384,7 @@ export async function* responsesStreamToAnthropicEvents(
           },
           usage: {
             output_tokens: totalOutputTokens,
-            input_tokens: totalInputTokens,
+            input_tokens: Math.max(0, totalInputTokens - totalCachedTokens),
             ...(totalCachedTokens > 0 && {
               cache_read_input_tokens: totalCachedTokens,
               cache_creation_input_tokens: 0,
@@ -494,6 +498,9 @@ export function responsesMessageToAnthropic(
   }
 
   const cachedTokens = response.usage?.input_tokens_details?.cached_tokens ?? 0
+  const totalInputTokens = response.usage?.input_tokens ?? 0
+  // Split OpenAI's total input into Anthropic's fresh + cached buckets.
+  const freshInputTokens = Math.max(0, totalInputTokens - cachedTokens)
 
   return {
     id: response.id ?? `msg_${Date.now()}`,
@@ -504,10 +511,8 @@ export function responsesMessageToAnthropic(
     stop_reason: (hasToolCalls ? 'tool_use' : 'end_turn') as AnthropicMessage['stop_reason'],
     stop_sequence: null,
     usage: {
-      input_tokens: response.usage?.input_tokens ?? 0,
+      input_tokens: freshInputTokens,
       output_tokens: response.usage?.output_tokens ?? 0,
-      // Responses API reports cache hits on input_tokens_details.cached_tokens.
-      // Map to Anthropic's cache_read accounting so cost tracking matches.
       ...(cachedTokens > 0 && {
         cache_read_input_tokens: cachedTokens,
         cache_creation_input_tokens: 0,
