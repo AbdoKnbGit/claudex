@@ -335,9 +335,23 @@ export class CodexApiClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
+      // codex-rs sends the conversation id as an HTTP header (not just
+      // a body field). The ChatGPT backend uses this header for sticky
+      // cache routing — without it, every turn lands on a different
+      // backend node and the prompt cache never hits. Mirror its shape.
+      // Ref: codex-rs/codex-api/src/requests/headers.rs build_conversation_headers.
+      'session_id': this.sessionCacheKey,
+      // codex-rs also sends `originator` so the server segments cache
+      // per-client. We mirror codex-cli's value so the backend treats
+      // us as the same client family.
+      'originator': 'codex_cli_rs',
+      'OpenAI-Beta': 'responses=experimental',
     }
     if (this.chatgptAccessToken) {
       headers['Authorization'] = `Bearer ${this.chatgptAccessToken}`
+      // codex-rs sends the account id from the OAuth token. We don't
+      // have the account-id decoded here; send empty to preserve the
+      // header name (some gateways require the header even if blank).
       headers['chatgpt-account-id'] = ''
     } else if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`
