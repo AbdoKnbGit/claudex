@@ -183,6 +183,20 @@ async function assembleFinalMessage(
         if (typeof ev.usage?.output_tokens === 'number') {
           outputTokens = ev.usage.output_tokens
         }
+        // Fold end-of-stream usage/cache stats. OpenAI Responses and
+        // OpenAI Chat only ship usage on the final event (response.completed
+        // / final chunk), so message_start carried zeros and the real
+        // numbers land here. Without this merge the assembler returns
+        // zero cache reads for every Codex / compat turn.
+        if (typeof ev.usage?.input_tokens === 'number' && ev.usage.input_tokens > 0) {
+          inputTokens = ev.usage.input_tokens
+        }
+        if (typeof ev.usage?.cache_read_input_tokens === 'number' && ev.usage.cache_read_input_tokens > 0) {
+          cacheReadTokens = ev.usage.cache_read_input_tokens
+        }
+        if (typeof ev.usage?.cache_creation_input_tokens === 'number' && ev.usage.cache_creation_input_tokens > 0) {
+          cacheCreationTokens = ev.usage.cache_creation_input_tokens
+        }
         break
     }
   }

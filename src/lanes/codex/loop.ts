@@ -138,10 +138,12 @@ export class CodexLane implements Lane {
       include: reasoning ? ['reasoning.encrypted_content'] : undefined,
       max_output_tokens: max_tokens,
       // Stable session-scoped cache key — the Responses server uses this
-      // to warm its prompt cache across turns independently of
-      // previous_response_id (which chains memory but doesn't drive
-      // caching alone). Mirrors codex-rs/core/src/client.rs.
-      prompt_cache_key: codexApi.currentChain ?? undefined,
+      // to route identical-prefix requests to a warm KV-cache node. Must
+      // stay identical across turns of the same conversation. Using the
+      // previous_response_id here (as we did before) made the key rotate
+      // every turn and the cache never hit. Mirrors codex-rs/core/
+      // src/client.rs which sets `prompt_cache_key = conversation_id`.
+      prompt_cache_key: codexApi.sessionCacheKey,
     }
 
     // Stream state.
@@ -413,7 +415,14 @@ export class CodexLane implements Lane {
         yield {
           type: 'message_delta',
           delta: { stop_reason: 'end_turn' },
-          usage: { output_tokens: outputTokens },
+          usage: {
+            output_tokens: outputTokens,
+            input_tokens: inputTokens,
+            ...(cachedInputTokens > 0 && {
+              cache_read_input_tokens: cachedInputTokens,
+              cache_creation_input_tokens: 0,
+            }),
+          },
         }
         yield { type: 'message_stop' }
         return {
@@ -449,7 +458,14 @@ export class CodexLane implements Lane {
       yield {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },
-        usage: { output_tokens: outputTokens },
+        usage: {
+          output_tokens: outputTokens,
+          input_tokens: inputTokens,
+          ...(cachedInputTokens > 0 && {
+            cache_read_input_tokens: cachedInputTokens,
+            cache_creation_input_tokens: 0,
+          }),
+        },
       }
       yield { type: 'message_stop' }
       return {
@@ -479,7 +495,14 @@ export class CodexLane implements Lane {
     yield {
       type: 'message_delta',
       delta: { stop_reason: stopReason },
-      usage: { output_tokens: outputTokens },
+      usage: {
+        output_tokens: outputTokens,
+        input_tokens: inputTokens,
+        ...(cachedInputTokens > 0 && {
+          cache_read_input_tokens: cachedInputTokens,
+          cache_creation_input_tokens: 0,
+        }),
+      },
     }
     yield { type: 'message_stop' }
 

@@ -116,6 +116,16 @@ export class OpenAIProvider extends BaseProvider {
    */
   protected preserveCacheControl: boolean = false
 
+  /**
+   * Stable cache-routing key for the Responses API. OpenAI routes requests
+   * with the same `prompt_cache_key` to the same backend node, which is
+   * what makes the server-side prompt cache hit. codex-rs uses a single
+   * conversation-id for the lifetime of the session — we mirror that here
+   * with a randomly-generated id created on first use. Rotates via
+   * clearCacheSession() (called by the lane on /clear or context reset).
+   */
+  private _cacheSessionId: string | null = null
+
   constructor(config: ProviderConfig) {
     super()
     this.apiKey = config.apiKey
@@ -243,6 +253,11 @@ export class OpenAIProvider extends BaseProvider {
       stream: true,
       stream_options: { include_usage: true },
     }
+    // prompt_cache_key is OpenAI-specific. Sending it to Groq / OpenRouter /
+    // etc. risks a 400 on strict-JSON providers, so gate on this.name.
+    if (this.name === 'openai') {
+      body.prompt_cache_key = this.cacheSessionKey
+    }
     if (useNewTokenParam) {
       body.max_completion_tokens = optimized.max_tokens
     } else {
@@ -303,6 +318,9 @@ export class OpenAIProvider extends BaseProvider {
     const body: Record<string, unknown> = {
       model,
       messages,
+    }
+    if (this.name === 'openai') {
+      body.prompt_cache_key = this.cacheSessionKey
     }
     if (useNewTokenParam) {
       body.max_completion_tokens = optimized.max_tokens
@@ -505,6 +523,25 @@ export class OpenAIProvider extends BaseProvider {
     }
   }
 
+  /**
+   * Stable per-session cache key used with the Responses API. Generated on
+   * first read and kept until clearCacheSession() rotates it.
+   */
+  protected get cacheSessionKey(): string {
+    if (!this._cacheSessionId) {
+      const crypto = require('crypto') as typeof import('crypto')
+      this._cacheSessionId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `oai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    }
+    return this._cacheSessionId
+  }
+
+  /** Force a new cache-session id — call on conversation reset / compact. */
+  clearCacheSession(): void {
+    this._cacheSessionId = null
+  }
+
   // ─── Responses API (GPT-5 Codex models) ─────────────────────────
 
   /**
@@ -536,7 +573,12 @@ export class OpenAIProvider extends BaseProvider {
       model,
       input,
       stream: true,
-      store: false,
+      // store:true + stable prompt_cache_key is what lets OpenAI route this
+      // request to the same backend node as prior turns in the session and
+      // reuse the prefix cache. With store:false + rotating key (the old
+      // default) every turn missed the cache entirely.
+      store: true,
+      prompt_cache_key: this.cacheSessionKey,
     }
 
     if (instructions) body.instructions = instructions
@@ -588,7 +630,8 @@ export class OpenAIProvider extends BaseProvider {
     const body: Record<string, unknown> = {
       model,
       input,
-      store: false,
+      store: true,
+      prompt_cache_key: this.cacheSessionKey,
     }
 
     if (instructions) body.instructions = instructions

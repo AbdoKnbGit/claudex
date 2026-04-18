@@ -33,7 +33,13 @@ export interface OpenAIChatCompletion {
     }
     finish_reason: string | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    completion_tokens_details?: { reasoning_tokens?: number }
+  }
 }
 
 export interface OpenAIChatCompletionChunk {
@@ -55,7 +61,13 @@ export interface OpenAIChatCompletionChunk {
     }
     finish_reason: string | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    completion_tokens_details?: { reasoning_tokens?: number }
+  } | null
 }
 
 // ─── Non-Streaming Conversion ──────────────────────────────────────
@@ -118,6 +130,8 @@ export function openAIMessageToAnthropic(
     : choice.finish_reason === 'length' ? 'max_tokens'
     : 'end_turn'
 
+  const cachedTokens = response.usage?.prompt_tokens_details?.cached_tokens ?? 0
+
   return {
     id: response.id ?? `msg_${Date.now()}`,
     type: 'message',
@@ -129,6 +143,14 @@ export function openAIMessageToAnthropic(
     usage: {
       input_tokens: response.usage?.prompt_tokens ?? 0,
       output_tokens: response.usage?.completion_tokens ?? 0,
+      // OpenAI reports cache hits on prompt_tokens_details.cached_tokens.
+      // Surface as Anthropic's cache_read_input_tokens so cost tracking /
+      // UI /logging treat it identically. cache_creation_input_tokens stays
+      // 0 — OpenAI caches automatically without a separate write step.
+      ...(cachedTokens > 0 && {
+        cache_read_input_tokens: cachedTokens,
+        cache_creation_input_tokens: 0,
+      }),
     },
   }
 }
@@ -166,6 +188,7 @@ export async function* openAIStreamToAnthropicEvents(
 
   let totalInputTokens = 0
   let totalOutputTokens = 0
+  let totalCachedTokens = 0
   let finishedCleanly = false
 
   for await (const chunk of openAIStream) {
@@ -174,6 +197,7 @@ export async function* openAIStreamToAnthropicEvents(
       if (chunk.usage) {
         totalInputTokens = chunk.usage.prompt_tokens ?? totalInputTokens
         totalOutputTokens = chunk.usage.completion_tokens ?? totalOutputTokens
+        totalCachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? totalCachedTokens
       }
       continue
     }
@@ -333,13 +357,24 @@ export async function* openAIStreamToAnthropicEvents(
       if (chunk.usage) {
         totalInputTokens = chunk.usage.prompt_tokens ?? totalInputTokens
         totalOutputTokens = chunk.usage.completion_tokens ?? totalOutputTokens
+        totalCachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? totalCachedTokens
       }
 
-      // message_delta with stop reason
+      // message_delta with stop reason. Input + cache tokens are piggy-
+      // backed so downstream (claude.ts updateUsage, provider-bridge
+      // assembler) picks them up — OpenAI only ships usage in the final
+      // chunk, so message_start was emitted with zeros.
       yield {
         type: 'message_delta',
         delta: { stop_reason: stopReason, stop_sequence: null },
-        usage: { output_tokens: totalOutputTokens },
+        usage: {
+          output_tokens: totalOutputTokens,
+          input_tokens: totalInputTokens,
+          ...(totalCachedTokens > 0 && {
+            cache_read_input_tokens: totalCachedTokens,
+            cache_creation_input_tokens: 0,
+          }),
+        },
       }
 
       // message_stop
@@ -364,7 +399,14 @@ export async function* openAIStreamToAnthropicEvents(
     yield {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { output_tokens: totalOutputTokens },
+      usage: {
+        output_tokens: totalOutputTokens,
+        input_tokens: totalInputTokens,
+        ...(totalCachedTokens > 0 && {
+          cache_read_input_tokens: totalCachedTokens,
+          cache_creation_input_tokens: 0,
+        }),
+      },
     }
     yield { type: 'message_stop' }
   }

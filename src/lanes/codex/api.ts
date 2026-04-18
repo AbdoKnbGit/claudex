@@ -159,6 +159,18 @@ export class CodexApiClient {
    * a fresh conversation (handled externally via clearChainForSession).
    */
   private chainedResponseId: string | null = null
+  /**
+   * Stable per-session identifier used as the Responses API
+   * `prompt_cache_key`. Per codex-rs/core/src/client.rs, the cache key
+   * must be *stable* across turns of the same conversation — it's the
+   * server-side routing hint that lets identical prefixes land on a
+   * node with the KV cache warm. Using the previous_response_id here
+   * (which changes every turn) defeats caching entirely.
+   *
+   * Generated lazily on first use; rotated by clearChain() when the
+   * caller starts a fresh conversation.
+   */
+  private cacheSessionId: string | null = null
 
   configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string }): void {
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
@@ -173,11 +185,35 @@ export class CodexApiClient {
   /** Reset the previous_response_id chain (new conversation). */
   clearChain(): void {
     this.chainedResponseId = null
+    // Rotate the cache session id too — a fresh conversation should not
+    // share a prompt_cache_key with the prior one, otherwise stale cache
+    // entries can get routed to this request and the server may serve a
+    // prefix that no longer matches our actual input.
+    this.cacheSessionId = null
   }
 
   /** Current chained response id (for debugging). */
   get currentChain(): string | null {
     return this.chainedResponseId
+  }
+
+  /**
+   * Stable `prompt_cache_key` for the current conversation. Generated
+   * lazily on first access and held until `clearChain()` rotates it.
+   * Uses `crypto.randomUUID()` when available (Node ≥ 14.17, browsers);
+   * falls back to a timestamp+random id otherwise.
+   */
+  get sessionCacheKey(): string {
+    if (!this.cacheSessionId) {
+      // Lazy require keeps this module importable from contexts without
+      // node:crypto (tests, edge runtimes).
+      // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+      const crypto = require('crypto') as typeof import('crypto')
+      this.cacheSessionId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `codex-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    }
+    return this.cacheSessionId
   }
 
   /**

@@ -37,6 +37,8 @@ export interface ResponsesApiResponse {
     input_tokens: number
     output_tokens: number
     total_tokens: number
+    input_tokens_details?: { cached_tokens?: number }
+    output_tokens_details?: { reasoning_tokens?: number }
   }
 }
 
@@ -221,6 +223,7 @@ export async function* responsesStreamToAnthropicEvents(
   let finishedCleanly = false
   let totalInputTokens = 0
   let totalOutputTokens = 0
+  let totalCachedTokens = 0
 
   // Track active tool calls by output_index
   const activeTools = new Map<number, { blockIndex: number }>()
@@ -339,9 +342,17 @@ export async function* responsesStreamToAnthropicEvents(
       }
 
       case 'response.completed': {
-        const resp = event.response as { usage?: { input_tokens?: number; output_tokens?: number }; output?: unknown[] } | undefined
+        const resp = event.response as {
+          usage?: {
+            input_tokens?: number
+            output_tokens?: number
+            input_tokens_details?: { cached_tokens?: number }
+          }
+          output?: unknown[]
+        } | undefined
         totalInputTokens = resp?.usage?.input_tokens ?? 0
         totalOutputTokens = resp?.usage?.output_tokens ?? 0
+        totalCachedTokens = resp?.usage?.input_tokens_details?.cached_tokens ?? 0
 
         // Check output for function_calls (in case we missed output_item.added)
         if (Array.isArray(resp?.output)) {
@@ -356,13 +367,25 @@ export async function* responsesStreamToAnthropicEvents(
         }
         activeTools.clear()
 
+        // Fold the end-of-stream usage through message_delta (Responses
+        // API only reports it on response.completed). Input + cache
+        // tokens ride here so claude.ts updateUsage() and the bridge
+        // assembler pick them up — message_start was emitted on
+        // response.created with zeros.
         yield {
           type: 'message_delta',
           delta: {
             stop_reason: hadToolCalls ? 'tool_use' : 'end_turn',
             stop_sequence: null,
           },
-          usage: { output_tokens: totalOutputTokens },
+          usage: {
+            output_tokens: totalOutputTokens,
+            input_tokens: totalInputTokens,
+            ...(totalCachedTokens > 0 && {
+              cache_read_input_tokens: totalCachedTokens,
+              cache_creation_input_tokens: 0,
+            }),
+          },
         }
         yield { type: 'message_stop' }
         finishedCleanly = true
@@ -470,6 +493,8 @@ export function responsesMessageToAnthropic(
     }
   }
 
+  const cachedTokens = response.usage?.input_tokens_details?.cached_tokens ?? 0
+
   return {
     id: response.id ?? `msg_${Date.now()}`,
     type: 'message',
@@ -481,6 +506,12 @@ export function responsesMessageToAnthropic(
     usage: {
       input_tokens: response.usage?.input_tokens ?? 0,
       output_tokens: response.usage?.output_tokens ?? 0,
+      // Responses API reports cache hits on input_tokens_details.cached_tokens.
+      // Map to Anthropic's cache_read accounting so cost tracking matches.
+      ...(cachedTokens > 0 && {
+        cache_read_input_tokens: cachedTokens,
+        cache_creation_input_tokens: 0,
+      }),
     },
   }
 }

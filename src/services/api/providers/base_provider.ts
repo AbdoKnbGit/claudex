@@ -71,8 +71,18 @@ export interface AnthropicStreamEvent {
     stop_reason?: string
     stop_sequence?: string | null
   }
-  // message_delta
-  usage?: { output_tokens: number }
+  // message_delta — Anthropic's IR only carries output_tokens here, but we
+  // widen it so third-party lanes whose usage only lands at end-of-stream
+  // (OpenAI Responses `response.completed`, OpenAI Chat's final chunk,
+  // DeepSeek etc.) can surface cache stats without needing a second
+  // message_start. claude.ts's updateUsage() already folds these fields
+  // from message_delta, and provider-bridge's assembler does the same.
+  usage?: {
+    output_tokens: number
+    input_tokens?: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
 }
 
 export interface ProviderConfig {
@@ -197,6 +207,26 @@ export function buildProviderStreamResult(
         collected.push(event)
         if (event.type === 'message_start' && event.message) {
           finalMsg = event.message
+        }
+        // Fold final usage from message_delta into finalMsg. Lanes whose
+        // usage only lands at end-of-stream (OpenAI Responses, OpenAI
+        // Chat final chunk, etc.) emit input/cache tokens here; without
+        // this merge the finalMessage() consumer sees the zero'd values
+        // that were placeholder on message_start.
+        if (event.type === 'message_delta' && finalMsg && event.usage) {
+          const u = event.usage
+          if (typeof u.output_tokens === 'number') {
+            finalMsg.usage.output_tokens = u.output_tokens
+          }
+          if (typeof u.input_tokens === 'number' && u.input_tokens > 0) {
+            finalMsg.usage.input_tokens = u.input_tokens
+          }
+          if (typeof u.cache_read_input_tokens === 'number' && u.cache_read_input_tokens > 0) {
+            finalMsg.usage.cache_read_input_tokens = u.cache_read_input_tokens
+          }
+          if (typeof u.cache_creation_input_tokens === 'number' && u.cache_creation_input_tokens > 0) {
+            finalMsg.usage.cache_creation_input_tokens = u.cache_creation_input_tokens
+          }
         }
         if (event.type === 'message_stop' && finalMsg) {
           messageCallbacks.forEach(cb => cb(finalMsg!))

@@ -507,7 +507,14 @@ export class OpenAICompatLane implements Lane {
     yield {
       type: 'message_delta',
       delta: { stop_reason: stopReason },
-      usage: { output_tokens: outputTokens },
+      usage: {
+        output_tokens: outputTokens,
+        input_tokens: inputTokens,
+        ...(cachedInputTokens > 0 && {
+          cache_read_input_tokens: cachedInputTokens,
+          cache_creation_input_tokens: 0,
+        }),
+      },
     }
     yield { type: 'message_stop' }
 
