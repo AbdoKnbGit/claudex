@@ -573,11 +573,12 @@ export class OpenAIProvider extends BaseProvider {
       model,
       input,
       stream: true,
-      // store:true + stable prompt_cache_key is what lets OpenAI route this
-      // request to the same backend node as prior turns in the session and
-      // reuse the prefix cache. With store:false + rotating key (the old
-      // default) every turn missed the cache entirely.
-      store: true,
+      // The ChatGPT backend (OAuth / Codex endpoint) rejects store:true with
+      // "Store must be set to false". Keep store:false for both OAuth and
+      // API-key paths — prompt_cache_key alone is enough to make the server
+      // route the request to the same cache-warm backend node (this is what
+      // codex-rs does).
+      store: false,
       prompt_cache_key: this.cacheSessionKey,
     }
 
@@ -630,7 +631,7 @@ export class OpenAIProvider extends BaseProvider {
     const body: Record<string, unknown> = {
       model,
       input,
-      store: true,
+      store: false,
       prompt_cache_key: this.cacheSessionKey,
     }
 
