@@ -11,7 +11,25 @@ const VALID_PROVIDERS: readonly APIProvider[] = [
   'openai', 'gemini', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
 ]
 
-export function getAPIProvider(): APIProvider {
+// Session-local snapshot of the active provider.
+//
+// The previous implementation re-read activeProvider from the shared
+// global-config cache on every request. That cache is kept in sync with
+// ~/.claude.json by a 1-second fs.watchFile poller (see
+// startGlobalConfigFreshnessWatcher in utils/config.ts), so when one
+// session ran `/provider nim` the other session (running ollama) saw the
+// write within a second and started mis-routing requests — producing
+// cross-talk 404s like "ollama API error 404: model 'nim/xxx' not found"
+// and vice-versa.
+//
+// Fix: each process latches the provider it resolves on first call and
+// ignores later disk changes made by sibling sessions. Disk persistence
+// is preserved (for next-launch default), but in-memory routing for a
+// running session is frozen. `NODE_ENV=test` bypasses the cache so the
+// test suite can toggle providers freely.
+let _sessionActiveProvider: APIProvider | null = null
+
+function _resolveAPIProvider(): APIProvider {
   // 1. Check persistent config first (set by /provider command)
   const configured = getGlobalConfig().activeProvider
   if (configured && VALID_PROVIDERS.includes(configured as APIProvider)) {
@@ -31,11 +49,21 @@ export function getAPIProvider(): APIProvider {
   return 'firstParty'
 }
 
+export function getAPIProvider(): APIProvider {
+  if (process.env.NODE_ENV === 'test') return _resolveAPIProvider()
+  if (_sessionActiveProvider !== null) return _sessionActiveProvider
+  _sessionActiveProvider = _resolveAPIProvider()
+  return _sessionActiveProvider
+}
+
 /**
- * Persist the active provider selection to global config.
- * This takes priority over environment variables on next getAPIProvider() call.
+ * Persist the active provider selection to global config AND update this
+ * session's snapshot. Disk write keeps the choice across restarts;
+ * snapshot update makes the change visible on the next request in this
+ * session without waiting on the config-freshness watcher.
  */
 export function setActiveProvider(provider: APIProvider): void {
+  _sessionActiveProvider = provider
   saveGlobalConfig(current => ({
     ...current,
     activeProvider: provider,
@@ -43,9 +71,11 @@ export function setActiveProvider(provider: APIProvider): void {
 }
 
 /**
- * Clear the active provider from config, reverting to env-var detection.
+ * Clear the active provider from config AND from this session's snapshot.
+ * Next getAPIProvider() call re-resolves from env vars.
  */
 export function clearActiveProvider(): void {
+  _sessionActiveProvider = null
   saveGlobalConfig(current => ({
     ...current,
     activeProvider: undefined,
