@@ -37,8 +37,14 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
+  // Groq is intentionally gated off — the free / on-demand TPM cap
+  // (6k–12k per model) is too tight for claudex's tool suite to be
+  // useful. Flip GROQ_ENABLED to true to bring it back; the transformer,
+  // routing, and tool-filter logic (src/lanes/openai-compat/transformers/groq.ts)
+  // are all still wired and ready.
+  const GROQ_ENABLED = false
   const groqKey = p.groq?.apiKey ?? process.env.GROQ_API_KEY
-  if (groqKey) {
+  if (GROQ_ENABLED && groqKey) {
     openaiCompatLane.registerProvider(
       'groq', groqKey,
       p.groq?.baseUrl ?? 'https://api.groq.com/openai/v1',

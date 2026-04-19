@@ -144,7 +144,10 @@ function createProvider(provider: APIProvider): BaseProvider {
     const laneName = _laneNameForProvider(provider)
     const lane = getLane(laneName)
     if (lane && lane.isHealthy()) {
-      return new LaneBackedProvider(lane)
+      // Pass the provider name as a hint so shared lanes (openai-compat)
+      // can filter /v1/models per-provider — otherwise /models groq
+      // returns the union of every compat provider's catalog.
+      return new LaneBackedProvider(lane, provider)
     }
     // Lane not registered / unhealthy → legacy path below.
   }

@@ -34,7 +34,16 @@ import type { Lane } from './types.js'
 export class LaneBackedProvider implements BaseProvider {
   readonly name: string
 
-  constructor(private readonly lane: Lane) {
+  /**
+   * `providerHint` is the original APIProvider name the shim was built
+   * for (e.g. "groq", "openrouter"). It flows through to lane.listModels()
+   * so shared lanes like openai-compat can filter their catalog by
+   * sub-provider instead of returning the union of everything they host.
+   */
+  constructor(
+    private readonly lane: Lane,
+    private readonly providerHint?: string,
+  ) {
     this.name = lane.name
   }
 
@@ -48,6 +57,7 @@ export class LaneBackedProvider implements BaseProvider {
     }
 
     const lane = this.lane
+    const providerHint = this.providerHint
 
     if (typeof lane.streamAsProvider !== 'function') {
       throw new Error(
@@ -71,6 +81,7 @@ export class LaneBackedProvider implements BaseProvider {
         stop_sequences: params.stop_sequences,
         thinking: params.thinking,
         signal: controller.signal,
+        providerHint: providerHint,
       })
       for await (const ev of gen) {
         yield ev
@@ -91,7 +102,7 @@ export class LaneBackedProvider implements BaseProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    return this.lane.listModels()
+    return this.lane.listModels(this.providerHint)
   }
 
   resolveModel(model: string): string {

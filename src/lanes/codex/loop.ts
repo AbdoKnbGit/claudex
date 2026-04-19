@@ -5,9 +5,9 @@
  *
  *   1. streamAsProvider(params) — single-turn, provider-shim-compatible.
  *      Used by src/lanes/provider-bridge.ts. Issues ONE Responses API
- *      call in the native idiom: /v1/responses, apply_patch (freeform),
- *      reasoning {effort,summary}, previous_response_id chaining,
- *      store:true for automatic prompt caching.
+ *      call in the native idiom: POST /responses, apply_patch (freeform
+ *      custom tool), reasoning {effort,summary}, stable prompt_cache_key
+ *      for sticky cache routing, `store: false` except on Azure.
  *
  *   2. run(context) — future lane-owns-loop mode. Scaffolded but not
  *      wired; Phase-2 migration target.
@@ -19,6 +19,7 @@
  *
  * References:
  *   - codex-rs/core/src/codex.rs (agent loop)
+ *   - codex-rs/core/src/client.rs (build_responses_request — store/include)
  *   - codex-rs/codex-api/src/sse/responses.rs (event shapes)
  *   - codex-rs/core/gpt-5.2-codex_prompt.md (system prompt)
  */
@@ -61,7 +62,7 @@ export class CodexLane implements Lane {
 
   private _healthy = true
 
-  configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string }): void {
+  configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string; chatgptAccountId?: string; chatgptIdToken?: string }): void {
     codexApi.configure(opts)
     this._healthy = codexApi.isConfigured
   }
@@ -125,6 +126,16 @@ export class CodexLane implements Lane {
     //   enabled with high budget → high
     const reasoning = resolveReasoning(thinking, model)
 
+    // Request body must match codex-rs's `ResponsesApiRequest` wire
+    // shape exactly. Native codex DOES NOT send `max_output_tokens` or
+    // `temperature` — shipping them changes the serialized body and can
+    // move the request to a non-cached partition on the backend (every
+    // extra field contributes to the request-shape hash the server uses
+    // to validate incremental cache eligibility). The server defaults
+    // for output length / sampling are what gpt-5-codex is tuned on.
+    // Ref: codex-rs/codex-api/src/common.rs ResponsesApiRequest
+    //      codex-rs/core/src/client.rs build_responses_request
+    void max_tokens
     const request: CodexResponsesRequest = {
       model,
       instructions,
@@ -133,16 +144,22 @@ export class CodexLane implements Lane {
       tool_choice: 'auto',
       parallel_tool_calls: true,
       reasoning,
-      store: true,
+      // codex-rs sets store=true ONLY on Azure; OpenAI + ChatGPT lanes
+      // run with store=false. `store: true` on non-Azure forces the
+      // server to persist and diff response items, which invalidates
+      // the KV cache on every tool-call turn — the dominant cause of
+      // the "cache hit rate = 0" token burn.
+      // Ref: codex-rs/core/src/client.rs line 873.
+      store: codexApi.isAzureResponsesEndpoint,
       stream: true,
+      // When reasoning is enabled, codex-rs includes
+      // reasoning.encrypted_content so follow-up turns can replay the
+      // model's own thinking back at it. (Ref: client.rs build_responses_request.)
       include: reasoning ? ['reasoning.encrypted_content'] : undefined,
-      max_output_tokens: max_tokens,
-      // Stable session-scoped cache key — the Responses server uses this
-      // to route identical-prefix requests to a warm KV-cache node. Must
-      // stay identical across turns of the same conversation. Using the
-      // previous_response_id here (as we did before) made the key rotate
-      // every turn and the cache never hit. Mirrors codex-rs/core/
-      // src/client.rs which sets `prompt_cache_key = conversation_id`.
+      // Stable per-conversation cache routing hint. codex-rs sets this
+      // to `conversation_id` so identical prefixes land on a KV-cache
+      // warm node every turn. Must stay constant across turns — we
+      // rotate only when the conversation resets (dispose()).
       prompt_cache_key: codexApi.sessionCacheKey,
     }
 
@@ -407,17 +424,18 @@ export class CodexLane implements Lane {
           const mst = emitMessageStart()
           if (mst) yield mst
         }
-        // Clear the response-chain id on abort so the NEXT user message
-        // doesn't try to chain off a stale previous_response_id (the
-        // server may have discarded it mid-stream). Safer to start a
-        // fresh chain than to dangle.
-        if (typeof codexApi.clearChain === 'function') codexApi.clearChain()
+        // Keep the prompt_cache_key intact on abort. codex-rs does the
+        // same — the cache key is conversation-scoped, not turn-scoped.
+        // Rotating it here would cold-start the cache on the retry.
         yield {
           type: 'message_delta',
           delta: { stop_reason: 'end_turn' },
           usage: {
             output_tokens: outputTokens,
-            input_tokens: inputTokens,
+            // OpenAI's input_tokens is total (fresh + cached). Anthropic
+            // semantic expects fresh-only here; cached lives on its own
+            // field. Subtract so cost / context-meter don't double-count.
+            input_tokens: Math.max(0, inputTokens - cachedInputTokens),
             ...(cachedInputTokens > 0 && {
               cache_read_input_tokens: cachedInputTokens,
               cache_creation_input_tokens: 0,
@@ -426,7 +444,7 @@ export class CodexLane implements Lane {
         }
         yield { type: 'message_stop' }
         return {
-          input_tokens: inputTokens,
+          input_tokens: Math.max(0, inputTokens - cachedInputTokens),
           output_tokens: outputTokens,
           cache_read_tokens: cachedInputTokens,
           cache_write_tokens: 0,
@@ -472,7 +490,7 @@ export class CodexLane implements Lane {
       }
       yield { type: 'message_stop' }
       return {
-        input_tokens: inputTokens,
+        input_tokens: Math.max(0, inputTokens - cachedInputTokens),
         output_tokens: outputTokens,
         cache_read_tokens: cachedInputTokens,
         cache_write_tokens: 0,
@@ -500,7 +518,10 @@ export class CodexLane implements Lane {
       delta: { stop_reason: stopReason },
       usage: {
         output_tokens: outputTokens,
-        input_tokens: inputTokens,
+        // OpenAI's input_tokens is total (fresh + cached). Anthropic
+        // semantic expects fresh-only here; cached lives on its own
+        // field. Subtract so cost / context-meter don't double-count.
+        input_tokens: Math.max(0, inputTokens - cachedInputTokens),
         ...(cachedInputTokens > 0 && {
           cache_read_input_tokens: cachedInputTokens,
           cache_creation_input_tokens: 0,
@@ -510,7 +531,7 @@ export class CodexLane implements Lane {
     yield { type: 'message_stop' }
 
     return {
-      input_tokens: inputTokens,
+      input_tokens: Math.max(0, inputTokens - cachedInputTokens),
       output_tokens: outputTokens,
       cache_read_tokens: cachedInputTokens,
       cache_write_tokens: 0,

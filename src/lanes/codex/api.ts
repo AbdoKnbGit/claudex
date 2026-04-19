@@ -1,21 +1,28 @@
 /**
  * Codex Lane — Responses API Client
  *
- * Codex (GPT-5, o-series, codex-*) is post-trained against OpenAI's
- * Responses API (POST /v1/responses), NOT Chat Completions. Using the
- * wrong endpoint produces measurable quality regressions on tool-heavy
- * agent workloads.
+ * Mirrors codex-rs's HTTP Responses path exactly so prompt-cache hits land
+ * and token accounting reflects the native client. Specifically:
  *
- * Key differences from Chat Completions:
- *   - Request shape: { model, instructions, input, tools, reasoning, store, stream, previous_response_id }
- *   - SSE event types: response.created, response.output_item.{added,done},
- *     response.output_text.delta, response.reasoning_summary_text.delta,
- *     response.reasoning_text.delta, response.completed, response.failed
- *   - previous_response_id chains turns so the server caches prior context
- *   - `store: true` persists responses for replay / sticky routing
+ *   - POST <base>/responses with `ResponsesApiRequest` shape — NO
+ *     `previous_response_id` on HTTP (that's WS-only in codex-rs).
+ *   - `store` defaults to false; only true for Azure-wire endpoints.
+ *   - Cache routing via body `prompt_cache_key` + header `session_id`,
+ *     both set to the stable conversation id.
+ *   - Auth: Bearer (API key OR ChatGPT OAuth access token). ChatGPT lane
+ *     auto-selects `https://chatgpt.com/backend-api/codex` base URL.
+ *   - Standard codex-rs headers: `originator`, `User-Agent`,
+ *     `x-client-request-id`. `ChatGPT-Account-ID` only when decoded from
+ *     an accompanying JWT (never empty string).
  *
- * Reference: codex-rs/codex-api/src/endpoint/responses.rs
- *            codex-rs/codex-api/src/sse/responses.rs
+ * Reference:
+ *   codex-rs/codex-api/src/common.rs            (ResponsesApiRequest shape)
+ *   codex-rs/codex-api/src/endpoint/responses.rs (HTTP path + headers)
+ *   codex-rs/codex-api/src/requests/headers.rs  (session_id header)
+ *   codex-rs/codex-api/src/auth.rs              (ChatGPT-Account-ID)
+ *   codex-rs/login/src/auth/default_client.rs   (originator, User-Agent)
+ *   codex-rs/model-provider-info/src/lib.rs     (ChatGPT base URL)
+ *   codex-rs/core/src/client.rs                 (store/include flags)
  */
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -65,14 +72,24 @@ export interface CodexResponsesRequest {
   tool_choice?: 'auto' | 'required' | 'none' | { type: 'function'; name: string }
   parallel_tool_calls?: boolean
   reasoning?: CodexReasoningConfig
+  // codex-rs mirrors this directly — defaults to Azure-only. NOT
+  // `previous_response_id`; that field is WebSocket-only in codex-rs.
   store?: boolean
   stream?: boolean
   include?: string[]
-  previous_response_id?: string
   prompt_cache_key?: string
   text?: { format?: 'markdown' | 'plaintext' }
-  max_output_tokens?: number
-  temperature?: number
+  service_tier?: 'auto' | 'default' | 'flex' | 'priority'
+  /**
+   * Per codex-rs `ResponsesApiRequest.client_metadata` — carries
+   * `x-codex-installation-id` in the body so the backend aggregates the
+   * call against the installation's cache + quota bucket. Native codex
+   * sends this on every call; omitting it lands us in a default
+   * "unknown client" partition.
+   * Ref: codex-rs/codex-api/src/common.rs (ResponsesApiRequest)
+   *      codex-rs/core/src/client.rs (build_responses_request)
+   */
+  client_metadata?: Record<string, string>
 }
 
 // ─── SSE Event Types ─────────────────────────────────────────────
@@ -147,66 +164,221 @@ export class CodexApiError extends Error {
   }
 }
 
+const DEFAULT_ORIGINATOR = 'codex_cli_rs'
+const DEFAULT_API_BASE_URL = 'https://api.openai.com/v1'
+const CHATGPT_BASE_URL = 'https://chatgpt.com/backend-api/codex'
+/**
+ * Default version string baked into the User-Agent. Kept in step with the
+ * latest upstream `codex-rs` release so the backend's user-agent-based
+ * feature gates treat claudex-codex identically to native codex. Override
+ * via the `CLAUDEX_CODEX_VERSION` env var if upstream drifts.
+ */
+const DEFAULT_CODEX_VERSION = '0.47.0'
+
+// Build a codex-rs-style User-Agent. Format mirrors get_codex_user_agent:
+//   `codex_cli_rs/<build_ver> (<os_type> <os_version>; <arch>) <terminal_ua>`
+// The backend uses this for client segmentation / routing; drifting from
+// native shape can land us on a different pool than native codex clients
+// (which affects quota bucket + cache routing on chatgpt.com). Evaluated
+// once per process.
+// Ref: codex-rs/login/src/auth/default_client.rs get_codex_user_agent
+let USER_AGENT_CACHE: string | null = null
+function getCodexUserAgent(): string {
+  if (USER_AGENT_CACHE) return USER_AGENT_CACHE
+  const ver = process.env.CLAUDEX_CODEX_VERSION ?? DEFAULT_CODEX_VERSION
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+  const os = require('os') as typeof import('os')
+  const osType = process.platform === 'darwin' ? 'Mac OS'
+    : process.platform === 'linux' ? 'Linux'
+    : process.platform === 'win32' ? 'Windows'
+    : os.type()
+  const osVersion = os.release() // e.g. "10.0.19045" on Win10, "23.5.0" on macOS.
+  // Node's process.arch is `x64` / `arm64`; native codex-rs uses os_info
+  // crate which returns `x86_64` / `arm64`. Map for parity.
+  const arch = process.arch === 'x64' ? 'x86_64' : process.arch
+  const terminal = `${DEFAULT_ORIGINATOR}/${ver}`
+  USER_AGENT_CACHE = `${DEFAULT_ORIGINATOR}/${ver} (${osType} ${osVersion}; ${arch}) ${terminal}`
+  return USER_AGENT_CACHE
+}
+
+/**
+ * Decode the `chatgpt_account_id` claim from a ChatGPT OAuth id_token or
+ * access token JWT. Native codex extracts this from the id_token's
+ * `https://api.openai.com/auth.chatgpt_account_id` claim and sends the
+ * value as the `ChatGPT-Account-ID` header. Without it, requests land in
+ * a different account-scoped cache/quota bucket on chatgpt.com.
+ * Ref: codex-rs/login/src/token_data.rs
+ *      codex-rs/login/src/server.rs (chatgpt_account_id claim path)
+ */
+function extractChatGPTAccountIdFromJwt(jwt: string): string | null {
+  try {
+    const parts = jwt.split('.')
+    if (parts.length < 2) return null
+    const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = payloadB64 + '='.repeat((4 - (payloadB64.length % 4)) % 4)
+    const payload = JSON.parse(Buffer.from(padded, 'base64').toString('utf-8')) as Record<string, unknown>
+    const auth = payload['https://api.openai.com/auth']
+    if (auth && typeof auth === 'object') {
+      const id = (auth as Record<string, unknown>).chatgpt_account_id
+      if (typeof id === 'string' && id.length > 0) return id
+    }
+    const direct = payload['chatgpt_account_id']
+    if (typeof direct === 'string' && direct.length > 0) return direct
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolve a persistent installation id, matching codex-rs's behavior of
+ * storing a UUID at `$CODEX_HOME/installation_id`. The backend uses this
+ * for cache + quota aggregation; regenerating it every process defeats
+ * both.
+ * Ref: codex-rs/core/src/installation_id.rs resolve_installation_id
+ */
+let INSTALLATION_ID_CACHE: string | null = null
+function resolveInstallationId(): string {
+  if (INSTALLATION_ID_CACHE) return INSTALLATION_ID_CACHE
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+  const path = require('path') as typeof import('path')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+  const fs = require('fs') as typeof import('fs')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+  const os = require('os') as typeof import('os')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+  const crypto = require('crypto') as typeof import('crypto')
+
+  const home = process.env.CODEX_HOME
+    ?? process.env.CLAUDEX_HOME
+    ?? path.join(os.homedir(), '.claudex')
+  const file = path.join(home, 'installation_id')
+  try {
+    if (fs.existsSync(file)) {
+      const existing = fs.readFileSync(file, 'utf-8').trim()
+      // Accept anything that looks like a UUID (native codex uses strict
+      // UUIDv4 but we're lenient on read). Otherwise rewrite.
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existing)) {
+        INSTALLATION_ID_CACHE = existing.toLowerCase()
+        return INSTALLATION_ID_CACHE
+      }
+    }
+    const fresh = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(file, fresh, { encoding: 'utf-8', mode: 0o644 })
+    INSTALLATION_ID_CACHE = fresh
+    return INSTALLATION_ID_CACHE
+  } catch {
+    // Best-effort — if we can't touch disk, generate an in-process UUID
+    // so we still send a stable id for the lifetime of the process.
+    const fallback = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`
+    INSTALLATION_ID_CACHE = fallback
+    return INSTALLATION_ID_CACHE
+  }
+}
+
+// Azure wire-base-URL detection. Must match codex-rs's
+// is_azure_responses_wire_base_url so `store` defaults correctly.
+// Ref: codex-rs/codex-api/src/provider.rs
+function isAzureResponsesBaseUrl(baseUrl: string): boolean {
+  const b = baseUrl.toLowerCase()
+  return (
+    b.includes('openai.azure.')
+    || b.includes('cognitiveservices.azure.')
+    || b.includes('aoai.azure.')
+    || b.includes('azure-api.')
+    || b.includes('azurefd.')
+    || b.includes('windows.net/openai')
+  )
+}
+
 export class CodexApiClient {
   private apiKey: string | null = null
-  private baseUrl = 'https://api.openai.com/v1'
-  /** Org/project ChatGPT OAuth token for subscribers. Overrides apiKey when set. */
+  /** Populated lazily in resolvedBaseUrl() based on which auth is active. */
+  private explicitBaseUrl: string | null = null
+  /** ChatGPT OAuth access token (Plus/Pro/Enterprise subscribers). */
   private chatgptAccessToken: string | null = null
   /**
-   * previous_response_id threaded across turns so the server sees a
-   * contiguous conversation and the prompt cache hits every turn.
-   * Keyed by session-ish model+baseUrl. Cleared when the user starts
-   * a fresh conversation (handled externally via clearChainForSession).
+   * Optional `chatgpt-account-id` (org slug like `org_mine`). codex-rs
+   * decodes it from the companion id_token JWT's
+   * `https://api.openai.com/auth.chatgpt_account_id` claim and only
+   * sends the header when present. We accept it directly — callers who
+   * have the id_token can parse and forward it; if absent, the header
+   * is simply omitted (matching codex-rs behavior).
    */
-  private chainedResponseId: string | null = null
+  private chatgptAccountId: string | null = null
   /**
    * Stable per-session identifier used as the Responses API
-   * `prompt_cache_key`. Per codex-rs/core/src/client.rs, the cache key
-   * must be *stable* across turns of the same conversation — it's the
-   * server-side routing hint that lets identical prefixes land on a
-   * node with the KV cache warm. Using the previous_response_id here
-   * (which changes every turn) defeats caching entirely.
-   *
-   * Generated lazily on first use; rotated by clearChain() when the
-   * caller starts a fresh conversation.
+   * `prompt_cache_key` AND the `session_id` / `x-client-request-id`
+   * headers. Per codex-rs/core/src/client.rs this value must stay
+   * identical across every turn of the same conversation — it's the
+   * sticky-routing hint that lets identical prefixes land on a KV-cache
+   * warm node. Generated lazily; rotated by clearChain().
    */
   private cacheSessionId: string | null = null
 
-  configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string }): void {
+  configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string; chatgptAccountId?: string; chatgptIdToken?: string }): void {
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
-    if (opts.baseUrl) this.baseUrl = opts.baseUrl
+    if (opts.baseUrl) this.explicitBaseUrl = opts.baseUrl
     if (opts.chatgptAccessToken !== undefined) this.chatgptAccessToken = opts.chatgptAccessToken
+    if (opts.chatgptAccountId !== undefined) this.chatgptAccountId = opts.chatgptAccountId
+    // Auto-extract the account id from the id_token (preferred, carries
+    // the claim natively) or from the access_token as a fallback. codex-rs
+    // reads this claim from the id_token on every login/refresh and
+    // caches it alongside the tokens; doing it here means callers who
+    // only hand us tokens still get the ChatGPT-Account-ID header routed
+    // to the right cache partition.
+    if (!this.chatgptAccountId) {
+      const source = opts.chatgptIdToken ?? opts.chatgptAccessToken ?? this.chatgptAccessToken
+      if (source) {
+        const extracted = extractChatGPTAccountIdFromJwt(source)
+        if (extracted) this.chatgptAccountId = extracted
+      }
+    }
   }
 
   get isConfigured(): boolean {
     return !!(this.apiKey || this.chatgptAccessToken)
   }
 
-  /** Reset the previous_response_id chain (new conversation). */
-  clearChain(): void {
-    this.chainedResponseId = null
-    // Rotate the cache session id too — a fresh conversation should not
-    // share a prompt_cache_key with the prior one, otherwise stale cache
-    // entries can get routed to this request and the server may serve a
-    // prefix that no longer matches our actual input.
-    this.cacheSessionId = null
+  /**
+   * Resolve the base URL codex-rs-style: if the caller provided one,
+   * use it verbatim; otherwise pick `chatgpt.com/backend-api/codex`
+   * when a ChatGPT access token is active (AuthMode::Chatgpt), else
+   * the standard OpenAI API endpoint.
+   * Ref: codex-rs/model-provider-info/src/lib.rs to_api_provider.
+   */
+  get baseUrl(): string {
+    if (this.explicitBaseUrl) return this.explicitBaseUrl
+    if (this.chatgptAccessToken) return CHATGPT_BASE_URL
+    return DEFAULT_API_BASE_URL
   }
 
-  /** Current chained response id (for debugging). */
-  get currentChain(): string | null {
-    return this.chainedResponseId
+  /** Azure wire-base detection. Only Azure sets `store: true` by default. */
+  get isAzureResponsesEndpoint(): boolean {
+    return isAzureResponsesBaseUrl(this.baseUrl)
   }
 
   /**
-   * Stable `prompt_cache_key` for the current conversation. Generated
-   * lazily on first access and held until `clearChain()` rotates it.
-   * Uses `crypto.randomUUID()` when available (Node ≥ 14.17, browsers);
-   * falls back to a timestamp+random id otherwise.
+   * Rotate the cache session id. Call when starting a fresh
+   * conversation so stale KV-cache entries don't get routed to the
+   * new turn's prefix.
+   */
+  clearChain(): void {
+    this.cacheSessionId = null
+  }
+
+  /**
+   * Stable `prompt_cache_key` / `session_id` / `x-client-request-id`
+   * for the current conversation. UUID v4 via `crypto.randomUUID()`
+   * when available (Node ≥ 14.17), timestamp+random fallback otherwise.
    */
   get sessionCacheKey(): string {
     if (!this.cacheSessionId) {
-      // Lazy require keeps this module importable from contexts without
-      // node:crypto (tests, edge runtimes).
       // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
       const crypto = require('crypto') as typeof import('crypto')
       this.cacheSessionId = typeof crypto.randomUUID === 'function'
@@ -217,9 +389,31 @@ export class CodexApiClient {
   }
 
   /**
-   * Stream a Responses API call. Yields parsed SSE events. The caller is
-   * responsible for translating them into its own IR and for executing
-   * any tool calls the model emits.
+   * Persistent installation UUID — disk-backed under `$CODEX_HOME` (or
+   * `~/.claudex`). codex-rs ships this on every call as
+   * `x-codex-installation-id` in `client_metadata`; backends aggregate
+   * cache + quota against it. Regenerating per-process defeats both.
+   * Ref: codex-rs/core/src/installation_id.rs
+   */
+  get installationId(): string {
+    return resolveInstallationId()
+  }
+
+  /**
+   * Per-turn window id codex-rs sends as `x-codex-window-id`. Native
+   * bumps the generation when the context window is compacted; we stay
+   * at `0` for now since the outer loop doesn't expose that signal yet.
+   * Format: `<conversation_id>:<window_generation>`.
+   * Ref: codex-rs/core/src/client.rs current_window_id
+   */
+  get windowId(): string {
+    return `${this.sessionCacheKey}:0`
+  }
+
+  /**
+   * Stream a Responses API call. Yields parsed SSE events. The caller
+   * is responsible for translating them into its own IR and for
+   * executing any tool calls the model emits.
    *
    * Retry: initial request retried on 429/5xx with exponential backoff
    * and Retry-After support. Mid-stream errors surface to the caller.
@@ -228,12 +422,19 @@ export class CodexApiClient {
     request: CodexResponsesRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<CodexStreamEvent> {
-    // Thread previous_response_id if the caller didn't set one explicitly.
+    // `store` defaults to the Azure-only behavior codex-rs ships with.
+    // Callers can still override by passing `store` explicitly. We also
+    // inject `client_metadata.x-codex-installation-id` so the backend
+    // aggregates this call against the installation's cache bucket (native
+    // codex sends this on every /responses POST).
     const body: CodexResponsesRequest = {
       ...request,
       stream: true,
-      store: request.store ?? true,
-      previous_response_id: request.previous_response_id ?? this.chainedResponseId ?? undefined,
+      store: request.store ?? this.isAzureResponsesEndpoint,
+      client_metadata: {
+        ...(request.client_metadata ?? {}),
+        'x-codex-installation-id': this.installationId,
+      },
     }
 
     const response = await retryWithBackoff(
@@ -286,13 +487,7 @@ export class CodexApiClient {
               // The event field is authoritative; fall back to parsed.type
               // if the server omitted an explicit `event:` line.
               const type = currentEvent ?? parsed.type ?? 'unknown'
-              const ev = { ...parsed, type } as CodexStreamEvent
-              // Remember the terminal response id for chaining.
-              if (ev.type === 'response.completed' || ev.type === 'response.created') {
-                const id = (ev as any).response?.id
-                if (id) this.chainedResponseId = id
-              }
-              yield ev
+              yield { ...parsed, type } as CodexStreamEvent
             } catch {
               // Skip malformed JSON payloads rather than crashing the stream.
             }
@@ -311,7 +506,15 @@ export class CodexApiClient {
    * Rarely used — the agent loop always streams. Present for parity.
    */
   async createResponse(request: CodexResponsesRequest, signal?: AbortSignal): Promise<unknown> {
-    const body = { ...request, stream: false, store: request.store ?? true }
+    const body: CodexResponsesRequest = {
+      ...request,
+      stream: false,
+      store: request.store ?? this.isAzureResponsesEndpoint,
+      client_metadata: {
+        ...(request.client_metadata ?? {}),
+        'x-codex-installation-id': this.installationId,
+      },
+    }
     return retryWithBackoff(
       async () => {
         const resp = await fetch(`${this.baseUrl}/responses`, {
@@ -332,27 +535,36 @@ export class CodexApiClient {
   }
 
   private buildHeaders(): Record<string, string> {
+    const sid = this.sessionCacheKey
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
-      // codex-rs sends the conversation id as an HTTP header (not just
-      // a body field). The ChatGPT backend uses this header for sticky
-      // cache routing — without it, every turn lands on a different
-      // backend node and the prompt cache never hits. Mirror its shape.
-      // Ref: codex-rs/codex-api/src/requests/headers.rs build_conversation_headers.
-      'session_id': this.sessionCacheKey,
-      // codex-rs also sends `originator` so the server segments cache
-      // per-client. We mirror codex-cli's value so the backend treats
-      // us as the same client family.
-      'originator': 'codex_cli_rs',
-      'OpenAI-Beta': 'responses=experimental',
+      // codex-rs: build_conversation_headers → `session_id: <conv_id>`.
+      // Backend uses this for sticky cache routing so the KV-cache-warm
+      // node handles every turn of the same conversation.
+      'session_id': sid,
+      // codex-rs: inserts `x-client-request-id: <conv_id>` on every
+      // Responses POST (endpoint/responses.rs:89-91). Same id as
+      // session_id — this is the client-side correlation hint.
+      'x-client-request-id': sid,
+      // codex-rs: build_responses_identity_headers always stamps
+      // `x-codex-window-id: <conv_id>:<gen>` (client.rs:569-571). The
+      // backend uses it to scope cache + context window state; requests
+      // without it land in an "unknown client" partition on chatgpt.com.
+      'x-codex-window-id': this.windowId,
+      // codex-rs: default_headers() sets `originator: codex_cli_rs`
+      // (login/src/auth/default_client.rs). Backend segments cache per
+      // originator; native codex lands under this key.
+      'originator': DEFAULT_ORIGINATOR,
+      'User-Agent': getCodexUserAgent(),
     }
     if (this.chatgptAccessToken) {
       headers['Authorization'] = `Bearer ${this.chatgptAccessToken}`
-      // codex-rs sends the account id from the OAuth token. We don't
-      // have the account-id decoded here; send empty to preserve the
-      // header name (some gateways require the header even if blank).
-      headers['chatgpt-account-id'] = ''
+      // codex-rs only emits ChatGPT-Account-ID when the JWT actually
+      // carries chatgpt_account_id. Empty string is not equivalent —
+      // some gateways treat empty as "wrong account", triggering 401 or
+      // worse, misrouting cache. Skip the header when unknown.
+      if (this.chatgptAccountId) headers['ChatGPT-Account-ID'] = this.chatgptAccountId
     } else if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`
     }

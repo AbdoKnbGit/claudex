@@ -23,7 +23,12 @@ export const openrouterTransformer: Transformer = {
   supportsStrictMode: () => true,
 
   clampMaxTokens(requested: number): number {
-    return requested
+    // OpenRouter reserves credit = max_tokens * price upfront. The upstream
+    // 32k default from context.ts triggers 402 "requires more credits, or
+    // fewer max_tokens" on free/low-credit accounts. 8192 fits typical
+    // free credit allowances and still leaves room for long tool arguments
+    // and multi-line code emissions.
+    return requested > 8192 ? 8192 : requested
   },
 
   buildHeaders(_apiKey: string): Record<string, string> {
@@ -34,7 +39,10 @@ export const openrouterTransformer: Transformer = {
   },
 
   transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
-    if (ctx.isReasoning && ctx.reasoningEffort) {
+    // Only emit the reasoning knob for models that actually support it.
+    // Llama-4 / prompt-guard / base-chat Llamas routed via Vertex return
+    // "thinking is not supported by this model" when reasoning is set.
+    if (ctx.isReasoning && ctx.reasoningEffort && openrouterModelSupportsReasoning(body.model)) {
       body.reasoning = { effort: ctx.reasoningEffort }
     }
     return body
@@ -76,4 +84,19 @@ export const openrouterTransformer: Transformer = {
     if (m.includes('google/gemini')) return 'last-only'
     return 'none'
   },
+}
+
+function openrouterModelSupportsReasoning(model: string): boolean {
+  const m = model.toLowerCase()
+  // Known reasoning-capable families on OpenRouter:
+  if (m.includes('deepseek-r1') || m.includes('deepseek/deepseek-r')) return true
+  if (m.includes('qwen/qwq') || m.includes('qwen3')) return true
+  if (m.includes('openai/o1') || m.includes('openai/o3') || m.includes('openai/o4')) return true
+  if (m.includes('openai/gpt-5')) return true
+  if (m.includes('anthropic/claude-3-7') || m.includes('anthropic/claude-sonnet-4') || m.includes('anthropic/claude-opus-4')) return true
+  if (m.includes('google/gemini-2.5') || m.includes('google/gemini-3')) return true
+  if (m.includes('xai/grok-3') || m.includes('xai/grok-4')) return true
+  // Everything else (including base Llama, Llama-4, prompt-guard,
+  // orpheus, gemma, mistral-small, etc.) — no reasoning knob.
+  return false
 }

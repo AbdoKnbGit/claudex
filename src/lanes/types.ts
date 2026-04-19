@@ -83,8 +83,12 @@ export interface Lane {
   /**
    * List models available through this lane.
    * Used by /models command.
+   *
+   * `providerFilter` narrows the result to a single registered sub-provider
+   * on shared lanes like openai-compat (e.g. "groq" vs. "openrouter").
+   * Lanes that serve a single provider can ignore it.
    */
-  listModels(): Promise<ModelInfo[]>
+  listModels(providerFilter?: string): Promise<ModelInfo[]>
 
   /**
    * Map a user-facing model name to the provider's actual model ID.
@@ -130,6 +134,14 @@ export interface LaneProviderCallParams {
   stop_sequences?: string[]
   thinking?: ProviderRequestParams['thinking']
   signal: AbortSignal
+  /**
+   * Which sub-provider the shim was built for (e.g. 'groq',
+   * 'openrouter', 'deepseek'). Shared lanes like openai-compat use
+   * this to disambiguate when the same model ID is hosted on multiple
+   * providers — `openai/gpt-oss-120b` lives on both Groq and OpenRouter;
+   * this hint is the ONLY reliable way to honor the user's selection.
+   */
+  providerHint?: string
 }
 
 // ─── Lane Run Context ────────────────────────────────────────────

@@ -120,7 +120,20 @@ export class OpenAICompatLane implements Lane {
     this.configs.set(name, { apiKey, baseUrl })
   }
 
-  private getConfigForModel(model: string): { apiKey: string; baseUrl: string; provider: ProviderType } | null {
+  private getConfigForModel(
+    model: string,
+    providerHint?: string,
+  ): { apiKey: string; baseUrl: string; provider: ProviderType } | null {
+    // Provider-selection wins. The shim was built for a specific
+    // sub-provider (the user picked it from /models), and the same model
+    // ID can live on multiple hosts (`openai/gpt-oss-120b` is on both
+    // Groq and OpenRouter). When the hint names a registered config, use
+    // it directly — don't fall through to the model-name heuristics.
+    if (providerHint && this.configs.has(providerHint)) {
+      const c = this.configs.get(providerHint)!
+      return { ...c, provider: providerHint as ProviderType }
+    }
+
     const m = model.toLowerCase()
 
     // Explicit routing: model prefix → provider config
@@ -137,6 +150,11 @@ export class OpenAICompatLane implements Lane {
       return { ...c, provider: 'mistral' }
     }
     // Qwen routing moved to the dedicated Qwen lane. Compat never sees qwen-*.
+    // `openai/gpt-oss-*` is intentionally NOT pinned to Groq here —
+    // the same ID is hosted on both Groq and OpenRouter; the provider
+    // hint above is the authoritative signal for picking one. This
+    // slash-qualified fallback only fires when the hint didn't match
+    // any registered config (e.g. a direct call without a shim).
     if (this.configs.has('openrouter') && m.includes('/')) {
       const c = this.configs.get('openrouter')!
       return { ...c, provider: 'openrouter' }
@@ -174,9 +192,9 @@ export class OpenAICompatLane implements Lane {
   async *streamAsProvider(
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
-    const { model, messages, system, tools, max_tokens, thinking, temperature, stop_sequences, signal } = params
+    const { model, messages, system, tools, max_tokens, thinking, temperature, stop_sequences, signal, providerHint } = params
 
-    const cfg = this.getConfigForModel(model)
+    const cfg = this.getConfigForModel(model, providerHint)
     if (!cfg) {
       throw new Error(`openai-compat lane: no provider configured for model "${model}". Call registerProvider() or set an env var (e.g. DEEPSEEK_API_KEY).`)
     }
@@ -189,18 +207,24 @@ export class OpenAICompatLane implements Lane {
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
 
+    // Per-model tool filter: small-tier models (e.g. Groq Llama on free
+    // TPM) get a curated subset so the request fits the budget.
+    const transformerForTools = getTransformer(provider as ProviderId)
+    const filteredTools = transformerForTools.filterTools?.(model, tools) ?? tools
+
     // Tool conversion → OpenAI function tools with per-provider schema
     // cleanup (strip $schema / $id / additionalProperties / strict etc.).
     // Every function tool gets the STRICT PARAMETERS description hint,
     // plus function.strict: true when the provider honors it.
-    const openaiTools = buildOpenAITools(tools, provider)
+    const openaiTools = buildOpenAITools(filteredTools, provider)
 
     // Prepend OPENAI_COMPAT_TOOL_USAGE_RULES to the system message when
     // tools are present — in-context reminder of schema authority for
     // providers that don't enforce `strict: true` server-side (Mistral,
-    // generic long-tail). Cheap to include everywhere since providers
-    // that DO enforce server-side just see an extra system note.
-    const systemText = openaiTools.length > 0
+    // generic long-tail). Small-tier models (Groq Llama free TPM) can
+    // opt out via `skipToolUsagePreamble` to save input tokens.
+    const skipPreamble = transformerForTools.skipToolUsagePreamble?.(model) ?? false
+    const systemText = openaiTools.length > 0 && !skipPreamble
       ? (rawSystemText
           ? `${OPENAI_COMPAT_TOOL_USAGE_RULES}\n${rawSystemText}`
           : OPENAI_COMPAT_TOOL_USAGE_RULES)
@@ -535,15 +559,22 @@ export class OpenAICompatLane implements Lane {
     throw new Error('OpenAICompatLane.run (lane-owns-loop) is not wired yet — use streamAsProvider via LaneBackedProvider.')
   }
 
-  async listModels(): Promise<ModelInfo[]> {
+  async listModels(providerFilter?: string): Promise<ModelInfo[]> {
     // Query /v1/models on every configured provider in parallel, cache
-    // for 5 minutes. Errors on individual providers don't block the
-    // rest — a slow Ollama install shouldn't delay Groq's list.
+    // per-provider for 5 minutes. Errors on individual providers don't
+    // block the rest — a slow Ollama install shouldn't delay Groq's list.
+    //
+    // When `providerFilter` is given, only that sub-provider is queried
+    // and returned, so /models groq only shows Groq models (not the
+    // union of every compat provider's catalog).
     const now = Date.now()
-    if (_modelsCache && now - _modelsCacheAt < MODELS_CACHE_TTL_MS) {
-      return _modelsCache
+    const cacheKey = providerFilter ?? '__all__'
+    const cached = _modelsCacheByProvider.get(cacheKey)
+    if (cached && now - cached.at < MODELS_CACHE_TTL_MS) {
+      return cached.models
     }
     const entries = Array.from(this.configs.entries())
+      .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
       const url = `${normalizeBaseUrl(cfg.baseUrl)}/models`
       const headers: Record<string, string> = { 'Accept': 'application/json' }
@@ -551,19 +582,22 @@ export class OpenAICompatLane implements Lane {
       const resp = await fetch(url, { headers, method: 'GET' })
       if (!resp.ok) return []
       const data = await resp.json() as { data?: Array<{ id?: string; owned_by?: string }> }
-      return (data.data ?? [])
+      const raw = (data.data ?? [])
         .filter(m => typeof m.id === 'string')
         .map(m => ({
           id: m.id as string,
           name: m.id as string,
         }))
+      // Per-provider catalog filter: e.g. Groq hides whisper/preview
+      // models so `/models` only shows chat-capable production IDs.
+      const transformer = getTransformer(providerName as ProviderId)
+      return transformer.filterModelCatalog?.(raw) ?? raw
     }))
     const out: ModelInfo[] = []
     for (const r of results) {
       if (r.status === 'fulfilled') out.push(...r.value)
     }
-    _modelsCache = out
-    _modelsCacheAt = now
+    _modelsCacheByProvider.set(cacheKey, { models: out, at: now })
     return out
   }
 
@@ -593,9 +627,10 @@ export class OpenAICompatLane implements Lane {
 // ─── Helpers ─────────────────────────────────────────────────────
 
 // ─── Per-lane /v1/models cache ────────────────────────────────────
+// Keyed by provider filter so `/models groq` doesn't share state with
+// `/models openrouter`. Unfiltered calls use the `__all__` key.
 
-let _modelsCache: ModelInfo[] | null = null
-let _modelsCacheAt = 0
+const _modelsCacheByProvider = new Map<string, { models: ModelInfo[]; at: number }>()
 const MODELS_CACHE_TTL_MS = 5 * 60_000
 
 /**

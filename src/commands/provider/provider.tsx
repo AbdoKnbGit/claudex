@@ -56,11 +56,15 @@ import TextInput from '../../components/TextInput.js'
  * CLIProxyAPI/Antigravity/Codex are implicit engines behind Gemini &
  * OpenAI OAuth — not listed as separate rows.
  */
+// `groq` is intentionally hidden — the free / on-demand TPM budget is
+// too tight for claudex's tool suite. Restoring it = add `'groq'` back
+// here + in SELECTABLE_PROVIDERS + flip GROQ_ENABLED in
+// src/lanes/openai-compat/index.ts. No code was removed; the transformer,
+// auth flow, and env detection (CLAUDE_CODE_USE_GROQ) stay wired.
 const MANAGEABLE_PROVIDERS = [
   'openai',
   'gemini',
   'openrouter',
-  'groq',
   'nim',
   'deepseek',
   'ollama',

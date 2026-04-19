@@ -115,4 +115,33 @@ export interface Transformer {
    *   'last-only' — relocate to last content block (OpenRouter cap)
    */
   cacheControlMode(model: string): 'none' | 'passthrough' | 'last-only'
+
+  /**
+   * Optional post-filter on the provider's /v1/models response. Used
+   * when the upstream catalog contains non-chat (whisper, TTS) or
+   * preview/retired models we don't want surfaced in `/models`. Default
+   * is no filter (pass through).
+   */
+  filterModelCatalog?(
+    models: Array<{ id: string; name?: string }>,
+  ): Array<{ id: string; name?: string }>
+
+  /**
+   * Optional per-model tool filter. Used to trim the tool array for
+   * models with tight input-token / TPM budgets (e.g. Groq Llama on
+   * free tier: 6k/12k TPM). Returning a subset drops the rest. Default
+   * is no filter — every tool passes through.
+   *
+   * The filter runs BEFORE schema sanitization and strict-mode shaping,
+   * so it sees the raw Anthropic-format tool names (Bash, Read, Agent,
+   * mcp__github__*, …) as they arrive from the caller.
+   */
+  filterTools?<T extends { name: string }>(model: string, tools: T[]): T[]
+
+  /**
+   * Optional per-model hint: skip the OPENAI_COMPAT_TOOL_USAGE_RULES
+   * preamble when tokens are scarce. Returning true means the lane
+   * sends the caller's system text verbatim without the preamble.
+   */
+  skipToolUsagePreamble?(model: string): boolean
 }

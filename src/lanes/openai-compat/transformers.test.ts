@@ -107,14 +107,106 @@ function main(): void {
     assert(delta['reasoning_content'] === 'thinking hard',
       `expected reasoning_content to be filled, got ${JSON.stringify(delta)}`)
   })
-  test('groq adds reasoning_effort when reasoning requested', () => {
-    const body = mkBody('llama-3.3-70b-reasoning')
-    TRANSFORMERS.groq.transformRequest(body, mkCtx('llama-3.3-70b-reasoning', true))
+  test('groq adds reasoning_effort for gpt-oss (reasoning-capable)', () => {
+    const body = mkBody('openai/gpt-oss-20b')
+    TRANSFORMERS.groq.transformRequest(body, mkCtx('openai/gpt-oss-20b', true))
     assert(body.reasoning_effort === 'medium', `reasoning_effort=${body.reasoning_effort}`)
   })
-  test('groq drops additionalProperties from schema', () => {
+  test('groq omits reasoning_effort for plain Llama (400s otherwise)', () => {
+    const body = mkBody('llama-3.3-70b-versatile')
+    TRANSFORMERS.groq.transformRequest(body, mkCtx('llama-3.3-70b-versatile', true))
+    assert(body.reasoning_effort === undefined,
+      `reasoning_effort should be undefined on llama-3.x; got ${body.reasoning_effort}`)
+  })
+  test('groq /models catalog keeps the 4 production chat models only', () => {
+    const raw = [
+      { id: 'llama-3.1-8b-instant' },
+      { id: 'llama-3.3-70b-versatile' },
+      { id: 'openai/gpt-oss-20b' },
+      { id: 'openai/gpt-oss-120b' },
+      { id: 'openai/gpt-oss-safeguard-20b' },
+      { id: 'whisper-large-v3' },
+      { id: 'groq/compound' },
+      { id: 'groq/compound-mini' },
+      { id: 'allam-2-7b' },
+    ]
+    const filtered = TRANSFORMERS.groq.filterModelCatalog?.(raw) ?? raw
+    const ids = filtered.map(m => m.id)
+    assert(ids.includes('openai/gpt-oss-20b'), 'expected openai/gpt-oss-20b kept')
+    assert(ids.includes('openai/gpt-oss-120b'), 'expected openai/gpt-oss-120b kept')
+    assert(ids.includes('llama-3.1-8b-instant'), 'expected llama-3.1-8b-instant kept (tool filter fits the 6k TPM budget)')
+    assert(ids.includes('llama-3.3-70b-versatile'), 'expected llama-3.3-70b-versatile kept (tool filter fits the 12k TPM budget)')
+    assert(!ids.includes('groq/compound'), 'groq/compound must be dropped')
+    assert(!ids.includes('openai/gpt-oss-safeguard-20b'), 'safeguard variant must be dropped')
+    assert(!ids.includes('whisper-large-v3'), 'whisper is not chat — must be dropped')
+  })
+  test('groq filters tools for llama small-tier (TPM-fit)', () => {
+    const raw = [
+      { name: 'Bash' }, { name: 'Read' }, { name: 'Edit' }, { name: 'Write' },
+      { name: 'Grep' }, { name: 'Glob' }, { name: 'WebSearch' }, { name: 'WebFetch' },
+      { name: 'Agent' }, { name: 'Skill' },
+      { name: 'TaskCreate' }, { name: 'CronCreate' }, { name: 'NotebookEdit' },
+      { name: 'PushNotification' }, { name: 'RemoteTrigger' }, { name: 'ScheduleWakeup' },
+      { name: 'ExitPlanMode' }, { name: 'EnterWorktree' }, { name: 'AskUserQuestion' },
+      { name: 'mcp__github__list_issues' }, { name: 'mcp__slack__send' },
+    ]
+    const kept = TRANSFORMERS.groq.filterTools?.('llama-3.1-8b-instant', raw) ?? raw
+    const names = kept.map(t => t.name)
+    assert(names.includes('Bash'), 'expected Bash kept')
+    assert(names.includes('Read') && names.includes('Edit') && names.includes('Write'),
+      'expected FS tools kept')
+    assert(names.includes('WebSearch') && names.includes('WebFetch'), 'expected web tools kept')
+    assert(names.includes('Agent'), 'expected Agent kept for sub-agent spawning')
+    assert(names.includes('mcp__github__list_issues') && names.includes('mcp__slack__send'),
+      'expected MCP tools to pass through')
+    assert(!names.includes('TaskCreate'), 'TaskCreate should be dropped')
+    assert(!names.includes('CronCreate'), 'CronCreate should be dropped')
+    assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped')
+  })
+  test('groq filters tools for gpt-oss too (8k TPM on-demand cap)', () => {
+    const raw = [
+      { name: 'Bash' }, { name: 'Read' }, { name: 'Edit' },
+      { name: 'TaskCreate' }, { name: 'NotebookEdit' }, { name: 'PushNotification' },
+      { name: 'mcp__github__list_issues' },
+    ]
+    const kept = TRANSFORMERS.groq.filterTools?.('openai/gpt-oss-120b', raw) ?? raw
+    const names = kept.map(t => t.name)
+    assert(names.includes('Bash') && names.includes('Read') && names.includes('Edit'),
+      'expected core FS/shell kept for gpt-oss')
+    assert(names.includes('mcp__github__list_issues'),
+      'expected MCP tools to pass through for gpt-oss')
+    assert(!names.includes('TaskCreate'), 'TaskCreate should be dropped for gpt-oss (TPM budget)')
+    assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped for gpt-oss')
+    assert(!names.includes('PushNotification'), 'PushNotification should be dropped for gpt-oss')
+  })
+  test('groq skips tool-usage preamble for every supported model (TPM budget)', () => {
+    assert(TRANSFORMERS.groq.skipToolUsagePreamble?.('llama-3.1-8b-instant') === true,
+      'expected preamble skipped for llama-3.1-8b')
+    assert(TRANSFORMERS.groq.skipToolUsagePreamble?.('llama-3.3-70b-versatile') === true,
+      'expected preamble skipped for llama-3.3-70b')
+    assert(TRANSFORMERS.groq.skipToolUsagePreamble?.('openai/gpt-oss-20b') === true,
+      'expected preamble skipped for gpt-oss-20b (8k TPM)')
+    assert(TRANSFORMERS.groq.skipToolUsagePreamble?.('openai/gpt-oss-120b') === true,
+      'expected preamble skipped for gpt-oss-120b (8k TPM)')
+  })
+  test('groq contextExceededMarkers cover TPM rate-limit phrases', () => {
+    const markers = TRANSFORMERS.groq.contextExceededMarkers()
+    const lower = markers.map(m => m.toLowerCase())
+    assert(lower.some(m => 'request too large'.includes(m) || m === 'request too large'),
+      'expected "request too large" marker for Groq TPM 413')
+    assert(lower.some(m => m === 'tokens per minute' || 'tokens per minute'.includes(m)),
+      'expected "tokens per minute" marker')
+    assert(lower.some(m => m === 'reduce the length of the messages'),
+      'expected "reduce the length of the messages" marker (per litellm + opencode-dev)')
+  })
+  test('groq does NOT support strict mode (Llama validator is too strict)', () => {
+    assert(!TRANSFORMERS.groq.supportsStrictMode(),
+      'groq strict mode would require every property in `required`; tools have optional fields')
+  })
+  test('groq keeps additionalProperties in schemas (not dropped)', () => {
     const drop = TRANSFORMERS.groq.schemaDropList()
-    assert(drop.has('additionalProperties'), 'groq should drop additionalProperties')
+    assert(!drop.has('additionalProperties'),
+      'groq should NOT drop additionalProperties — keeps it as-is since strict is off')
   })
 
   // ── Mistral quirks ──────────────────────────────────────────────
