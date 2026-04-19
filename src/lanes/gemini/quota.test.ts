@@ -136,6 +136,35 @@ function main(): void {
     assert(cls.kind === 'transient', `wanted transient, got ${cls.kind}`)
   })
 
+  // ── 503 "No capacity" UNAVAILABLE → retryable-quota (rotates accounts) ──
+  test('503 "No capacity" UNAVAILABLE → retryable-quota', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 503,
+        message: 'No capacity available for model gemini-3.1-pro-high on the server',
+        status: 'UNAVAILABLE',
+      },
+    })
+    const cls = classifyGeminiError(503, body)
+    assert(cls.kind === 'retryable-quota', `wanted retryable-quota, got ${cls.kind}`)
+    assert(isRotationCase(cls), 'should rotate accounts on retry')
+  })
+
+  test('503 RESOURCE_EXHAUSTED → retryable-quota', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 503,
+        message: 'Quota exceeded',
+        details: [{
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason: 'RESOURCE_EXHAUSTED',
+        }],
+      },
+    })
+    const cls = classifyGeminiError(503, body)
+    assert(cls.kind === 'retryable-quota', `wanted retryable-quota, got ${cls.kind}`)
+  })
+
   // ── Validation-required flow ────────────────────────────────────
   test('403 with Help.validationLink → validation-required', () => {
     const body = JSON.stringify({

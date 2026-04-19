@@ -787,6 +787,46 @@ function resolveThinkingBudget(
 }
 
 /**
+ * Build the right shape of `thinkingConfig` for the target model.
+ *
+ * Gemini 3.x Antigravity models advertise LEVEL-based thinking ("low",
+ * "medium", "high") via the model registry — sending `thinkingBudget` on
+ * them defaults to "high" thinking regardless of user intent, because the
+ * server ignores the int and falls back to its model-default level. That
+ * made `gemini-3.1-pro-low` just as slow as `-pro-high` (the root cause
+ * of the "cancer latency" the user reported).
+ *
+ * Rule: when the model name has an explicit `-high` / `-low` / `-medium`
+ * suffix (Antigravity convention), emit `thinkingLevel` in that level.
+ * Otherwise, keep the legacy integer `thinkingBudget` path for 2.x models
+ * and non-suffixed flash/lite variants.
+ */
+function resolveThinkingConfig(
+  model: string,
+  thinkingBudget: number,
+): Record<string, unknown> {
+  const lower = model.toLowerCase()
+  // Match explicit suffix first — the suffix encodes the user's choice.
+  let level: 'low' | 'medium' | 'high' | null = null
+  if (/-pro-high$/.test(lower)) level = 'high'
+  else if (/-pro-low$/.test(lower)) level = 'low'
+  else if (/-pro-medium$/.test(lower)) level = 'medium'
+  else if (/^gemini-3-flash$/.test(lower)) level = 'low' // Antigravity flash defaults to "low"
+
+  if (level) {
+    return {
+      thinkingLevel: level,
+      includeThoughts: thinkingBudget !== 0,
+    }
+  }
+  // Legacy integer budget for 2.x, preview-flash-lite, etc.
+  return {
+    thinkingBudget,
+    includeThoughts: thinkingBudget !== 0,
+  }
+}
+
+/**
  * @deprecated Used by the lane-owns-loop `run()` scaffold only. The
  * real path (`streamAsProvider`) already receives a pre-assembled
  * `system` string from `query.ts`. When `run()` is wired end-to-end
@@ -1128,6 +1168,19 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
     ? `${GEMINI_TOOL_USAGE_RULES}\n${systemText}`
     : systemText
 
+  // Antigravity pro/flash models (gemini-3.x family) expose a LEVEL-based
+  // thinking API (low/medium/high) rather than the legacy budget-int API.
+  // If we send `thinkingBudget: -1` (dynamic) on these, the server defaults
+  // to "high" thinking — which is why `-pro-low` was previously taking
+  // just as long as `-pro-high`. Translate model name suffix → thinking
+  // level to honor the user's choice.
+  //
+  //   gemini-3.1-pro-high → thinkingLevel: "high"
+  //   gemini-3.1-pro-low  → thinkingLevel: "low"
+  //   gemini-3-flash      → thinkingLevel: "low"   (flash default)
+  //   (other -flash, -lite preview, 2.5 family)   → thinkingBudget (legacy)
+  const thinkingConfig = resolveThinkingConfig(model, thinkingBudget)
+
   const request: Record<string, unknown> = {
     model,
     contents,
@@ -1135,10 +1188,7 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
       maxOutputTokens,
       topP: 0.95,
       topK: 64,
-      thinkingConfig: {
-        thinkingBudget,
-        includeThoughts: thinkingBudget !== 0,
-      },
+      thinkingConfig,
     },
     // Safety categories OFF — matches gemini-cli and CLIProxyAPI defaults so
     // the model behaves the same way it does in its home environment.

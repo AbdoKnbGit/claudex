@@ -166,6 +166,40 @@ function _cliOnboardHeaders(accessToken: string): Record<string, string> {
 // ─── Onboarding ──────────────────────────────────────────────────────
 
 /**
+ * Fetch with retry on transient failures (5xx / network). Used for
+ * onboarding calls where the first-request latency matters — without
+ * this, a single 503 from Code Assist forces the user to retry their
+ * prompt manually. Up to 3 attempts with 500/1500/3000 ms backoff.
+ *
+ * 4xx responses are NOT retried — those are terminal (bad token,
+ * unauthorized, etc.) and callers surface them as-is.
+ */
+async function _fetchWithTransientRetry(
+  url: string,
+  init: RequestInit,
+  opts: { maxAttempts?: number } = {},
+): Promise<Response> {
+  const maxAttempts = opts.maxAttempts ?? 3
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, init)
+      if (res.ok) return res
+      // 4xx → surface immediately; retrying won't help.
+      if (res.status >= 400 && res.status < 500) return res
+      // 5xx → retry with backoff unless we're out of attempts.
+      if (attempt >= maxAttempts) return res
+      lastErr = new Error(`HTTP ${res.status}`)
+    } catch (e) {
+      lastErr = e
+      if (attempt >= maxAttempts) throw e
+    }
+    await new Promise(r => setTimeout(r, 500 * Math.pow(3, attempt - 1)))
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+}
+
+/**
  * Ensure the user is onboarded to Code Assist and return the project ID.
  *
  * Each executor type (CLI vs Antigravity) has its own cache and uses
@@ -193,7 +227,7 @@ export async function ensureCodeAssistReady(
     },
   }
 
-  const loadRes = await fetch(`${CODE_ASSIST_BASE}:loadCodeAssist`, {
+  const loadRes = await _fetchWithTransientRetry(`${CODE_ASSIST_BASE}:loadCodeAssist`, {
     method: 'POST',
     headers,
     body: JSON.stringify(loadReqBody),
@@ -304,7 +338,7 @@ async function _onboardUser(
 
     let res: Response
     try {
-      res = await fetch(`${CODE_ASSIST_BASE}:onboardUser`, {
+      res = await _fetchWithTransientRetry(`${CODE_ASSIST_BASE}:onboardUser`, {
         method: 'POST',
         headers,
         body: bodyJson,

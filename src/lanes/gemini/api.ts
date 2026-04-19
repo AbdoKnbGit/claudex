@@ -183,6 +183,83 @@ class GeminiApiClient {
   }
 
   /**
+   * Refresh an expired OAuth access_token and update in-memory / disk state.
+   *
+   * Two paths:
+   *  - Rotation-picked Antigravity account (accountEmail set): refresh the
+   *    account's own refresh_token and write the new access_token back into
+   *    the rotation store via `rotation.add()` (upsert semantics).
+   *  - Single-token path (no accountEmail): delegate to `refreshGeminiOAuth`,
+   *    which writes provider-keys.json and calls reloadGeminiLaneAuth so
+   *    THIS client's in-memory token is updated too.
+   *
+   * Returns the new access token, or null if refresh is impossible (no
+   * refresh_token stored, or the refresh endpoint rejected our creds).
+   *
+   * Called on 401 (access_token expired) and as a secondary remedy on 403
+   * (Google occasionally returns 403 "does not have permission" for expired
+   * tokens instead of 401, so we try both remedies there).
+   */
+  private async _refreshOAuthToken(
+    executor: 'cli' | 'antigravity',
+    accountEmail?: string,
+  ): Promise<string | null> {
+    try {
+      if (accountEmail && executor === 'antigravity') {
+        const rotation = getAntigravityRotation()
+        const account = rotation.list().find(a => a.email === accountEmail)
+        if (!account || !account.refreshToken) return null
+        const { refreshAccessToken } = await import('../shared/antigravity_auth.js')
+        const tokens = await refreshAccessToken(account.refreshToken)
+        rotation.add({
+          ...account,
+          accessToken: tokens.access_token,
+          expires: Date.now() + tokens.expires_in * 1000,
+          refreshToken: tokens.refresh_token ?? account.refreshToken,
+        })
+        return tokens.access_token
+      }
+      const { refreshGeminiOAuth } = await import('../../services/api/auth/google_oauth.js')
+      const { loadProviderKey } = await import('../../services/api/auth/api_key_manager.js')
+      const storageKey = executor === 'cli' ? 'gemini_oauth_cli' : 'gemini_oauth_antigravity'
+      const raw = loadProviderKey(storageKey)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as { refreshToken?: string }
+      if (!parsed.refreshToken) return null
+      // refreshGeminiOAuth saves the new blob AND reloads geminiApi in-memory.
+      return await refreshGeminiOAuth(executor, parsed.refreshToken)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Strip thought-signature fields from every part in contents[].
+   *
+   * Google occasionally rejects requests with 400 "Corrupted thought
+   * signature" when a previously-issued signature is stale (e.g. after
+   * rotating to a different Antigravity account mid-conversation, or when
+   * the legacy adapter emits the `skip_thought_signature_validator`
+   * sentinel on Gemini 3.x pro, which has started refusing it). The
+   * signatures are a latency/continuity hint — dropping them only costs
+   * us a re-think on the next turn. Safer than failing the request.
+   */
+  private _stripThoughtSignaturesFromBody(body: any): void {
+    if (!body || typeof body !== 'object') return
+    const contents = body.contents
+    if (!Array.isArray(contents)) return
+    for (const content of contents) {
+      if (!content || !Array.isArray(content.parts)) continue
+      for (const part of content.parts) {
+        if (part && typeof part === 'object') {
+          delete part.thoughtSignature
+          delete part.thought_signature
+        }
+      }
+    }
+  }
+
+  /**
    * Stream a generateContent request. Returns an async iterable of chunks.
    * Uses Server-Sent Events (SSE) format.
    *
@@ -209,6 +286,7 @@ class GeminiApiClient {
       // the next attempt (before this fix, projectId was captured once
       // outside retryWithBackoff and the cleared cache was moot).
       let reonboardsLeft = 1
+      let sigStripsLeft = 1
       const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
       const rotation = getAntigravityRotation()
 
@@ -272,13 +350,43 @@ class GeminiApiClient {
               }
             }
 
-            // Stale-project 403: clear cache + recurse once within this
-            // retry attempt so the user doesn't pay an extra backoff wait
-            // for a case we can fix immediately. Budget: one re-onboard
-            // per request — if it happens twice, something else is wrong.
+            // Auth-stale recovery — fix side state + recurse once within
+            // this retry attempt so the user doesn't pay a full backoff
+            // wait for a case we can fix immediately. Budget: one
+            // re-onboard per request — if it happens twice, something
+            // else is wrong.
+            //
+            //   401 → expired access_token. Refresh it; project cache is
+            //         fine and re-onboarding would be wasteful.
+            //   403 "does not have permission" → usually stale project
+            //         cache (re-onboard), but Google occasionally returns
+            //         403 for silently-expired tokens, so refresh too.
             if (cls.kind === 'auth-stale' && reonboardsLeft > 0) {
               reonboardsLeft--
-              clearCodeAssistCache(executor)
+              if (resp.status === 401) {
+                await this._refreshOAuthToken(executor, accountEmail)
+              } else {
+                clearCodeAssistCache(executor)
+                await this._refreshOAuthToken(executor, accountEmail)
+              }
+              throw new GeminiApiError(resp.status, errText, 0, {
+                kind: 'transient',
+                details: cls.details,
+                retryAfterMs: 0,
+              })
+            }
+
+            // 400 "Corrupted thought signature" — strip all signatures
+            // from contents[].parts[] and retry once. The signatures are
+            // a continuity hint; dropping them trades a re-think for
+            // the request not failing outright.
+            if (
+              resp.status === 400
+              && /corrupted thought signature/i.test(errText)
+              && sigStripsLeft > 0
+            ) {
+              sigStripsLeft--
+              this._stripThoughtSignaturesFromBody(body)
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -404,6 +512,7 @@ class GeminiApiClient {
     const oauthRouting = this._tokenForModel(model)
     if (oauthRouting) {
       let reonboardsLeft = 1
+      let sigStripsLeft = 1
       const url = `${CODE_ASSIST_BASE}:generateContent`
       const rotation = getAntigravityRotation()
 
@@ -462,7 +571,26 @@ class GeminiApiClient {
 
             if (cls.kind === 'auth-stale' && reonboardsLeft > 0) {
               reonboardsLeft--
-              clearCodeAssistCache(executor)
+              if (resp.status === 401) {
+                await this._refreshOAuthToken(executor, accountEmail)
+              } else {
+                clearCodeAssistCache(executor)
+                await this._refreshOAuthToken(executor, accountEmail)
+              }
+              throw new GeminiApiError(resp.status, errText, 0, {
+                kind: 'transient',
+                details: cls.details,
+                retryAfterMs: 0,
+              })
+            }
+
+            if (
+              resp.status === 400
+              && /corrupted thought signature/i.test(errText)
+              && sigStripsLeft > 0
+            ) {
+              sigStripsLeft--
+              this._stripThoughtSignaturesFromBody(body)
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,

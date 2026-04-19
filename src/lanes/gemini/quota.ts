@@ -219,6 +219,25 @@ export function classifyGeminiError(
     return { kind: 'transient', details, retryAfterMs }
   }
 
+  if (status === 503) {
+    // Google returns 503 UNAVAILABLE when a specific model is out of
+    // capacity ("No capacity available for model X"). That's a per-account
+    // quota signal: rotating to a different Antigravity account on retry
+    // usually succeeds. Classify as retryable-quota so recordRateLimit
+    // fires in api.ts and _tokenForModel hops accounts on the next attempt.
+    // Single-account users still get backoff retry (isBackoffRetryCase
+    // covers retryable-quota) — no regression for them.
+    const isCapacityOrUnavailable =
+      lowered.includes('no capacity')
+      || lowered.includes('"status":"unavailable"')
+      || lowered.includes('"status": "unavailable"')
+      || details.reason === 'RESOURCE_EXHAUSTED'
+    if (isCapacityOrUnavailable) {
+      return { kind: 'retryable-quota', details, retryAfterMs }
+    }
+    return { kind: 'transient', details, retryAfterMs }
+  }
+
   if (status >= 500 && status < 600) {
     return { kind: 'transient', details, retryAfterMs }
   }
