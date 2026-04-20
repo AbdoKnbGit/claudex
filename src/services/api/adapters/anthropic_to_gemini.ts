@@ -229,8 +229,8 @@ const SYNTHETIC_THOUGHT_SIGNATURE = 'skip_thought_signature_validator'
 
 export type GeminiPart =
   | { text: string; thought?: boolean }
-  | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
-  | { functionResponse: { name: string; response: { content: string } } }
+  | { functionCall: { id?: string; name: string; args: Record<string, unknown> }; thoughtSignature?: string }
+  | { functionResponse: { id?: string; name: string; response: { content: string } } }
   | { inlineData: { mimeType: string; data: string } }
 
 export interface GeminiFunctionDeclaration {
@@ -680,8 +680,14 @@ function convertMessages(
           const sig = block._gemini_thought_signature
             ?? getThoughtSignature(block.id ?? '')
             ?? SYNTHETIC_THOUGHT_SIGNATURE
+          // Carry the Anthropic tool_use.id on functionCall.id. Pure Gemini
+          // ignores unknown fields, but Antigravity's proxy uses this to
+          // populate `tool_use.id` when it converts the request to Claude
+          // format — without it, Claude rejects with "tool_use.id: Field
+          // required". Matches 9router's openai-to-gemini converter.
           const fcPart: Record<string, unknown> = {
             functionCall: {
+              ...(block.id ? { id: block.id } : {}),
               name: block.name ?? '',
               args: (block.input as Record<string, unknown>) ?? {},
             },
@@ -712,12 +718,17 @@ function convertMessages(
             : Array.isArray(block.content)
               ? block.content.map(c => c.text ?? '').join('')
               : ''
+          // Carry tool_use_id on functionResponse.id — same reason as the
+          // functionCall.id above: Antigravity's proxy uses it to emit
+          // `tool_result.tool_use_id` that references the matching tool_use
+          // in the assistant's prior turn.
           parts.push({
             functionResponse: {
+              ...(block.tool_use_id ? { id: block.tool_use_id } : {}),
               name: funcName,
               response: { content },
             },
-          })
+          } as GeminiPart)
           break
         }
 
