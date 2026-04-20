@@ -62,8 +62,8 @@ interface GeminiContent {
 
 type GeminiPart =
   | { text: string }
-  | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
-  | { functionResponse: { name: string; response: { content: string } } }
+  | { functionCall: { id?: string; name: string; args: Record<string, unknown> }; thoughtSignature?: string }
+  | { functionResponse: { id?: string; name: string; response: { content: string } } }
   | { thought: boolean; text: string }
   | { inlineData: { mimeType: string; data: string } }
 
@@ -919,8 +919,16 @@ function convertHistoryToGemini(
               // NOT inside functionCall — the proto has it at Part level.
               // Only emit when we captured a real one from the prior turn;
               // the server rejects placeholder/synthetic values.
+              // Carry block.id on functionCall.id — Antigravity's Gemini→
+              // Anthropic bridge uses it to populate tool_use.id on the
+              // request it forwards to Claude. Without it Claude rejects
+              // with "messages.N.content.M.tool_use.id: Field required".
               const fc: GeminiPart = {
-                functionCall: { name: nativeName, args: nativeInput },
+                functionCall: {
+                  ...(block.id ? { id: block.id } : {}),
+                  name: nativeName,
+                  args: nativeInput,
+                },
                 ...(block._gemini_thought_signature && {
                   thoughtSignature: block._gemini_thought_signature,
                 }),
@@ -937,8 +945,11 @@ function convertHistoryToGemini(
             // inlineData parts — stringifying base64 images into a text
             // JSON blob would dump raw bytes into the model's context.
             const { text, images } = splitToolResultContent(block.content)
+            // Carry tool_use_id on functionResponse.id so Antigravity can
+            // round-trip Claude's tool_use_id → tool_result matching.
             parts.push({
               functionResponse: {
+                ...(id ? { id } : {}),
                 name: nativeName,
                 response: { content: text },
               },
