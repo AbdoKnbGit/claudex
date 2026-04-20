@@ -218,6 +218,7 @@ export class GeminiLane implements Lane {
       thoughtSignature?: string
       blockIndex: number
       anthropicToolUseId: string
+      anthropicToolUseIdFromServer: boolean
     } | null = null
 
     function mergeArgsIntoCurrent(raw: unknown): void {
@@ -430,6 +431,7 @@ export class GeminiLane implements Lane {
             // the complete input.
             if (part.functionCall) {
               const fc = part.functionCall as {
+                id?: string
                 name?: string
                 args?: unknown
               }
@@ -448,6 +450,12 @@ export class GeminiLane implements Lane {
                 if (thoughtSignature && !currentCall.thoughtSignature) {
                   currentCall.thoughtSignature = thoughtSignature
                 }
+                // Late-arriving id (Antigravity → Claude occasionally splits
+                // the id across chunks) — backfill onto the in-progress call.
+                if (typeof fc.id === 'string' && fc.id && !currentCall.anthropicToolUseIdFromServer) {
+                  currentCall.anthropicToolUseId = fc.id
+                  currentCall.anthropicToolUseIdFromServer = true
+                }
                 continue
               }
 
@@ -464,12 +472,14 @@ export class GeminiLane implements Lane {
                 thinkingText = ''
               }
 
-              // UUID rather than Date.now()+blockIndex to avoid collisions
-              // under concurrent tool calls in the same millisecond (two
-              // functionCalls streamed back-to-back in one chunk will share
-              // the same timestamp). Server doesn't read this id; it's used
-              // only to match tool_use → tool_result downstream.
-              const anthropicToolUseId = `toolu_gem_${randomUUID()}`
+              // Prefer the server-supplied id (Antigravity/Claude emits
+              // `functionCall.id` carrying Claude's original tool_use.id —
+              // preserving it keeps the id round-trip intact so the next
+              // turn's tool_result references an id Claude actually issued).
+              // Fall back to a synthetic toolu_gem_<uuid> when absent — that
+              // covers pure Gemini, which never emits ids.
+              const serverId = typeof fc.id === 'string' && fc.id ? fc.id : null
+              const anthropicToolUseId = serverId ?? `toolu_gem_${randomUUID()}`
               currentCall = {
                 nativeName: name,
                 args: {},
@@ -477,6 +487,7 @@ export class GeminiLane implements Lane {
                 thoughtSignature,
                 blockIndex,
                 anthropicToolUseId,
+                anthropicToolUseIdFromServer: serverId !== null,
               }
               blockIndex++
               mergeArgsIntoCurrent(fc.args)
