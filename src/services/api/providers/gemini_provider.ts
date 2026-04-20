@@ -168,6 +168,8 @@ const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'gemini-3.1-pro-high',                 name: 'Gemini 3.1 Pro · high thinking' },
   { id: 'gemini-3.1-pro-low',                  name: 'Gemini 3.1 Pro · low thinking' },
   { id: 'gemini-3-flash',                      name: 'Gemini 3 Flash' },
+  { id: 'claude-sonnet-4-6',                   name: 'Claude Sonnet 4.6 (via Antigravity)' },
+  { id: 'claude-opus-4-6-thinking',            name: 'Claude Opus 4.6 · thinking (via Antigravity)' },
 ]
 
 /**

@@ -53,10 +53,15 @@ export const CODE_ASSIST_BASE = 'https://cloudcode-pa.googleapis.com/v1internal'
 export type GeminiExecutor = 'cli' | 'antigravity'
 
 // Antigravity-specific models — everything else is Gemini CLI.
+// Includes Claude models that Antigravity re-sells through the same
+// Code Assist proxy (cloudcode-pa). They share the `userAgent: "antigravity"`
+// envelope but need small content-level fixes (see wrapForCodeAssist).
 const ANTIGRAVITY_MODEL_SET = new Set([
   'gemini-3.1-pro-high',
   'gemini-3.1-pro-low',
   'gemini-3-flash',
+  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
 ])
 
 /** Determine which executor a model belongs to. */
@@ -434,11 +439,21 @@ export function wrapForCodeAssist(
   // deletes request.generationConfig.maxOutputTokens for Gemini models).
   const request = { ...innerRequest }
   delete request.safetySettings
-  if (!model.includes('claude')) {
+  const isClaude = model.includes('claude')
+  if (!isClaude) {
     const gc = request.generationConfig as Record<string, unknown> | undefined
     if (gc) {
       delete gc.maxOutputTokens
     }
+  }
+
+  // Claude-on-Antigravity content massaging (from CLIProxyAPI's antigravity
+  // transformRequest): functionResponse parts force role "user" (Claude's
+  // tool-result convention), and thought-only / thoughtSignature-only parts
+  // that don't carry a functionCall or text are dropped — Claude rejects
+  // them as empty parts otherwise.
+  if (isClaude) {
+    _applyClaudeContentFixes(request)
   }
 
   // Generate stable session ID from first user message (matches CLIProxyAPI's
@@ -513,6 +528,43 @@ export function antigravityApiHeaders(accessToken: string): Record<string, strin
     'Content-Type': 'application/json',
     Authorization: `Bearer ${accessToken}`,
     'User-Agent': `antigravity/1.21.9 ${os}/${arch}`,
+  }
+}
+
+/**
+ * Apply Claude-on-Antigravity content fixes in place.
+ *
+ * Antigravity re-sells Claude 4.6 through the same Code Assist proxy, but
+ * the bridge on Google's side treats Claude's content list slightly
+ * differently from Gemini's:
+ *
+ *   1. Any content whose parts contain a `functionResponse` must have
+ *      role="user" (Claude's tool-result messages are user-role).
+ *   2. Parts that are pure `{thought: true}` with no functionCall are
+ *      dropped — Claude rejects empty thought blobs (Gemini 3.x sends
+ *      these, Claude doesn't accept them).
+ *   3. Parts that carry only a `thoughtSignature` with no functionCall
+ *      and no text are dropped for the same reason.
+ *
+ * Mirrors CLIProxyAPI's antigravity executor transformRequest().
+ */
+function _applyClaudeContentFixes(request: Record<string, unknown>): void {
+  const contents = request.contents
+  if (!Array.isArray(contents)) return
+  for (let i = 0; i < contents.length; i++) {
+    const c = contents[i] as { role?: string; parts?: Array<Record<string, unknown>> } | null
+    if (!c || !Array.isArray(c.parts)) continue
+    const hasFunctionResponse = c.parts.some(p => p && typeof p === 'object' && 'functionResponse' in p)
+    const role = hasFunctionResponse ? 'user' : c.role
+    const parts = c.parts.filter(p => {
+      if (!p || typeof p !== 'object') return true
+      const hasFunctionCall = 'functionCall' in p
+      const hasText = 'text' in p && typeof (p as { text?: unknown }).text === 'string'
+      if ('thought' in p && !hasFunctionCall) return false
+      if ('thoughtSignature' in p && !hasFunctionCall && !hasText) return false
+      return true
+    })
+    contents[i] = { ...c, role, parts }
   }
 }
 
