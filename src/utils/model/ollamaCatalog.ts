@@ -44,37 +44,28 @@ function debugLog(message: string): void {
 
 // ─── Approved cloud model list ─────────────────────────────────────
 //
-// Matches amelioration.txt — these are the models we pre-pull on first
-// launch and always show in the /models picker under "Cloud".
+// These are the cloud aliases we pre-pull on install / first launch and
+// always show in the /models picker under "Cloud". Only `:cloud` aliases
+// that actually resolve against the Ollama registry are listed — each
+// entry must return success for `ollama pull <id>`.
+//
+// KEEP IN SYNC with scripts/postinstall.mjs (OLLAMA_CLOUD_MODELS).
 export const CLOUD_MODELS_LIST: readonly string[] = [
   'glm-5.1:cloud',
   'glm-5:cloud',
   'glm-4.7:cloud',
   'glm-4.6:cloud',
-  'glm-ocr',
   'kimi-k2.5:cloud',
-  'kimi-k2:cloud',
   'kimi-k2-thinking:cloud',
   'qwen3.5:cloud',
-  'qwen3-coder:cloud',
   'qwen3-coder-next:cloud',
-  'qwen3-vl:cloud',
-  'qwen3-next:cloud',
   'minimax-m2.7:cloud',
   'minimax-m2.5:cloud',
   'minimax-m2.1:cloud',
   'minimax-m2:cloud',
-  'devstral-small-2:cloud',
-  'devstral-2:cloud',
-  'mistral-large-3:cloud',
-  'ministral-3:cloud',
   'nemotron-3-super:cloud',
-  'nemotron-3-nano:cloud',
-  'deepseek-v3.1:cloud',
   'deepseek-v3.2:cloud',
   'gemini-3-flash-preview:cloud',
-  'gemma4:cloud',
-  'rnj-1:cloud',
 ]
 
 // ─── Thinking-mode cloud models ────────────────────────────────────
@@ -88,11 +79,9 @@ export const THINKING_CLOUD_MODELS: ReadonlySet<string> = new Set([
   'glm-4.7:cloud',
   'glm-4.6:cloud',
   'kimi-k2-thinking:cloud',
-  'qwen3-next:cloud',
   'qwen3.5:cloud',
   'minimax-m2.7:cloud',
   'minimax-m2.5:cloud',
-  'deepseek-v3.1:cloud',
   'deepseek-v3.2:cloud',
 ])
 

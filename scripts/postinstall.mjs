@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * Claudex postinstall — downloads the platform-correct ripgrep binary.
+ * Claudex postinstall — downloads the platform-correct ripgrep binary
+ * and pre-pulls the approved Ollama cloud model aliases.
  *
  * Runs automatically after `npm install -g @abdoknbgit/claudex`.
  * Skips silently on any error so a network hiccup never breaks the install.
- * The CLI falls back to a system `rg` if the vendored binary is absent.
+ * The CLI falls back to a system `rg` if the vendored binary is absent,
+ * and first-launch code will retry any missed Ollama pulls.
  */
 
 import { existsSync, mkdirSync, createWriteStream, unlinkSync, readdirSync, renameSync } from 'fs';
@@ -14,6 +16,25 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import https from 'https';
 import { tmpdir } from 'os';
+
+// KEEP IN SYNC with src/utils/model/ollamaCatalog.ts (CLOUD_MODELS_LIST).
+const OLLAMA_CLOUD_MODELS = [
+  'glm-5.1:cloud',
+  'glm-5:cloud',
+  'glm-4.7:cloud',
+  'glm-4.6:cloud',
+  'kimi-k2.5:cloud',
+  'kimi-k2-thinking:cloud',
+  'qwen3.5:cloud',
+  'qwen3-coder-next:cloud',
+  'minimax-m2.7:cloud',
+  'minimax-m2.5:cloud',
+  'minimax-m2.1:cloud',
+  'minimax-m2:cloud',
+  'nemotron-3-super:cloud',
+  'deepseek-v3.2:cloud',
+  'gemini-3-flash-preview:cloud',
+];
 
 const RG_VERSION = '14.1.1';
 
@@ -138,7 +159,34 @@ function moveNestedBinary(destDir, binaryName) {
   }
 }
 
-main().catch(() => {
-  // Never let postinstall errors propagate and break npm install
-  process.exit(0);
-});
+/**
+ * Pre-pull the approved Ollama cloud aliases so the /models picker shows
+ * them as ready to use. Cloud aliases resolve instantly (just register a
+ * client-side reference), so the cost is a handful of fast round-trips.
+ * Any failure — Ollama not installed, daemon not running, network hiccup,
+ * model missing — is swallowed; first-launch code retries what's missing.
+ */
+function primeOllamaCloudModels() {
+  // Detect ollama CLI first so we skip silently on machines without it.
+  const probe = spawnSync('ollama', ['--version'], { stdio: 'ignore', timeout: 5000 });
+  if (probe.status !== 0) return;
+
+  console.log(`[claudex] Pre-pulling ${OLLAMA_CLOUD_MODELS.length} Ollama cloud aliases...`);
+  let ok = 0;
+  let fail = 0;
+  for (const model of OLLAMA_CLOUD_MODELS) {
+    const res = spawnSync('ollama', ['pull', model], {
+      stdio: 'ignore',
+      timeout: 60_000,
+    });
+    if (res.status === 0) ok += 1; else fail += 1;
+  }
+  console.log(`[claudex] Ollama pre-pull: ${ok} ok, ${fail} skipped/failed (first launch will retry).`);
+}
+
+main()
+  .catch(() => { /* never propagate — ripgrep is optional */ })
+  .finally(() => {
+    try { primeOllamaCloudModels(); } catch { /* swallow */ }
+    process.exit(0);
+  });
