@@ -642,10 +642,19 @@ class GeminiApiClient {
    * Assist doesn't expose /v1beta/models and cloud-platform tokens are
    * rejected as restricted_client), or the live API-key catalog otherwise.
    */
-  async listModels(): Promise<ModelInfo[]> {
+  async listModels(providerFilter?: string): Promise<ModelInfo[]> {
+    // `providerFilter` is how the UX split between the Gemini row and the
+    // Antigravity row lands here: both routes go through this same lane
+    // (Code Assist proxy), they differ only in which OAuth token + body
+    // envelope gets used. When the caller is the dedicated Antigravity
+    // provider we must return ONLY the pro/flash-3 ids (which the lane
+    // routes to cloudcode-pa with userAgent=antigravity); when the caller
+    // is plain Gemini we return ONLY the free-tier CLI models.
     if (this.hasOAuth) {
+      const showCli = providerFilter !== 'antigravity'
+      const showAntigravity = providerFilter !== 'gemini'
       const models: ModelInfo[] = []
-      if (this.cliOAuthToken) {
+      if (showCli && this.cliOAuthToken) {
         models.push(
           { id: 'gemini-3-flash-preview',        name: 'Gemini 3 Flash (preview)' },
           { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (preview)' },
@@ -653,7 +662,7 @@ class GeminiApiClient {
           { id: 'gemini-2.5-flash-lite',         name: 'Gemini 2.5 Flash Lite' },
         )
       }
-      if (this.antigravityOAuthToken) {
+      if (showAntigravity && this.antigravityOAuthToken) {
         models.push(
           { id: 'gemini-3.1-pro-high',    name: 'Gemini 3.1 Pro · high thinking' },
           { id: 'gemini-3.1-pro-low',     name: 'Gemini 3.1 Pro · low thinking' },

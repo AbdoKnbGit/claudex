@@ -206,15 +206,18 @@ export function validateKeyFormat(
 /**
  * Delete all credentials (API key + OAuth tokens) for a provider.
  *
- * Gemini has two OAuth variants — the Gemini CLI flow and the Antigravity
- * flow — stored under separate keys. A logout must wipe both, plus the
- * legacy `${provider}_oauth` key, so re-login starts from a clean slate.
+ * Gemini and Antigravity both store Google OAuth tokens but under
+ * separate keys, and they are now independent provider rows, so a
+ * Gemini logout must NOT touch Antigravity tokens (and vice versa).
  */
 export function deleteAllProviderCredentials(provider: string): void {
   deleteProviderKey(provider)
   deleteProviderKey(`${provider}_oauth`)
   if (provider === 'gemini') {
     deleteProviderKey('gemini_oauth_cli')
+    deleteProviderKey('gemini_oauth')
+  }
+  if (provider === 'antigravity') {
     deleteProviderKey('gemini_oauth_antigravity')
   }
 }

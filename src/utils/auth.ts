@@ -1744,12 +1744,13 @@ export type ProviderAuthMethod = 'api_key' | 'oauth' | 'none'
 
 /** Supported auth methods per provider */
 export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
-  openai:     ['api_key', 'oauth'],
-  gemini:     ['api_key', 'oauth'],
-  openrouter: ['api_key'],
-  groq:       ['api_key'],
-  nim:        ['api_key'],
-  deepseek:   ['api_key'],
+  openai:      ['api_key', 'oauth'],
+  gemini:      ['api_key', 'oauth'],
+  antigravity: ['oauth'],
+  openrouter:  ['api_key'],
+  groq:        ['api_key'],
+  nim:         ['api_key'],
+  deepseek:    ['api_key'],
 }
 
 /**
@@ -1792,6 +1793,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'groq':        return process.env.GROQ_API_KEY ?? _loadStoredKey('groq')
     case 'nim':         return process.env.NIM_API_KEY ?? _loadStoredKey('nim')
     case 'gemini':      return process.env.GEMINI_API_KEY ?? _loadStoredKey('gemini')
+    case 'antigravity': return null  // OAuth-only provider
     case 'deepseek':    return process.env.DEEPSEEK_API_KEY ?? _loadStoredKey('deepseek')
     case 'ollama':      return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama') ?? 'ollama'
     default:            return getAnthropicApiKey()
@@ -1816,11 +1818,14 @@ function _loadStoredOAuthToken(provider: string): string | null {
     if (!existsSync(keysFile)) return null
     const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
 
-    // Gemini has dual OAuth (CLI + Antigravity) — check both keys.
+    // Gemini now uses the CLI-tier OAuth only — Antigravity has its own
+    // provider row that reads gemini_oauth_antigravity directly.
     if (provider === 'gemini') {
       return _tryParseToken(data?.keys?.['gemini_oauth_cli'])
-          ?? _tryParseToken(data?.keys?.['gemini_oauth_antigravity'])
           ?? _tryParseToken(data?.keys?.['gemini_oauth'])  // legacy
+    }
+    if (provider === 'antigravity') {
+      return _tryParseToken(data?.keys?.['gemini_oauth_antigravity'])
     }
 
     const oauthKey = `${provider}_oauth`
@@ -1849,14 +1854,15 @@ function _tryParseToken(stored: string | undefined): string | null {
  */
 export function getProviderBaseUrl(provider: APIProvider): string {
   switch (provider) {
-    case 'openai':     return process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'
-    case 'openrouter': return 'https://openrouter.ai/api/v1'
-    case 'groq':       return 'https://api.groq.com/openai/v1'
-    case 'nim':        return process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1'
-    case 'gemini':     return 'https://generativelanguage.googleapis.com/v1beta'
-    case 'deepseek':   return process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
-    case 'ollama':     return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
-    default:           return process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
+    case 'openai':      return process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'
+    case 'openrouter':  return 'https://openrouter.ai/api/v1'
+    case 'groq':        return 'https://api.groq.com/openai/v1'
+    case 'nim':         return process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1'
+    case 'gemini':      return 'https://generativelanguage.googleapis.com/v1beta'
+    case 'antigravity': return 'https://cloudcode-pa.googleapis.com/v1internal'
+    case 'deepseek':    return process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
+    case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
+    default:            return process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
   }
 }
 
@@ -1909,14 +1915,15 @@ export function validateProviderAuth(provider: APIProvider): { valid: boolean; m
 
 function _getApiKeyEnvName(provider: APIProvider): string {
   switch (provider) {
-    case 'openai':     return 'OPENAI_API_KEY'
-    case 'openrouter': return 'OPENROUTER_API_KEY'
-    case 'groq':       return 'GROQ_API_KEY'
-    case 'nim':        return 'NIM_API_KEY'
-    case 'gemini':     return 'GEMINI_API_KEY'
-    case 'deepseek':   return 'DEEPSEEK_API_KEY'
-    case 'ollama':     return 'OLLAMA_API_KEY'
-    default:           return 'ANTHROPIC_API_KEY'
+    case 'openai':      return 'OPENAI_API_KEY'
+    case 'openrouter':  return 'OPENROUTER_API_KEY'
+    case 'groq':        return 'GROQ_API_KEY'
+    case 'nim':         return 'NIM_API_KEY'
+    case 'gemini':      return 'GEMINI_API_KEY'
+    case 'antigravity': return '(OAuth only — no API key)'
+    case 'deepseek':    return 'DEEPSEEK_API_KEY'
+    case 'ollama':      return 'OLLAMA_API_KEY'
+    default:            return 'ANTHROPIC_API_KEY'
   }
 }
 

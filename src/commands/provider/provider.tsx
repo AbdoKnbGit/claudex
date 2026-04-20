@@ -64,6 +64,7 @@ import TextInput from '../../components/TextInput.js'
 const MANAGEABLE_PROVIDERS = [
   'openai',
   'gemini',
+  'antigravity',
   'openrouter',
   'nim',
   'deepseek',
@@ -83,12 +84,15 @@ type KeyedProvider = Exclude<ManageableProvider, 'ollama'>
 type AuthState = 'oauth' | 'api_key' | 'inactive'
 
 function getAuthState(provider: KeyedProvider): AuthState {
-  // Gemini dual OAuth: check both CLI and Antigravity keys.
+  // Gemini row = CLI-tier OAuth (free flash/lite) or AI Studio API key.
   if (provider === 'gemini') {
-    if (hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth_antigravity') || hasStoredKey('gemini_oauth')) {
-      return 'oauth'
-    }
+    if (hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth')) return 'oauth'
     if (hasStoredKey('gemini')) return 'api_key'
+    return 'inactive'
+  }
+  // Antigravity row = its own Google-login OAuth pool.
+  if (provider === 'antigravity') {
+    if (hasStoredKey('gemini_oauth_antigravity')) return 'oauth'
     return 'inactive'
   }
   if (hasStoredKey(`${provider}_oauth`)) return 'oauth'
@@ -96,11 +100,10 @@ function getAuthState(provider: KeyedProvider): AuthState {
   return 'inactive'
 }
 
-/** Detailed Gemini auth state — which OAuth flows are active. */
-function getGeminiDetailedState(): { cliOAuth: boolean; antigravityOAuth: boolean; apiKey: boolean } {
+/** Detailed Gemini auth state — shows CLI-tier OAuth + AI Studio API key. */
+function getGeminiDetailedState(): { cliOAuth: boolean; apiKey: boolean } {
   return {
-    cliOAuth: hasStoredKey('gemini_oauth_cli'),
-    antigravityOAuth: hasStoredKey('gemini_oauth_antigravity') || hasStoredKey('gemini_oauth'),
+    cliOAuth: hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth'),
     apiKey: hasStoredKey('gemini'),
   }
 }
@@ -117,10 +120,9 @@ function formatBadge(state: AuthState): string {
 }
 
 function formatGeminiBadge(): string {
-  const { cliOAuth, antigravityOAuth, apiKey } = getGeminiDetailedState()
+  const { cliOAuth, apiKey } = getGeminiDetailedState()
   const parts: string[] = []
   if (cliOAuth) parts.push('CLI')
-  if (antigravityOAuth) parts.push('Pro')
   if (apiKey) parts.push('Key')
   if (parts.length === 0) return chalk.dim('[   –   ]')
   return chalk.green(`[${parts.join(' + ')} ✅]`)
@@ -209,10 +211,10 @@ function buildConfigureOptions(
 
   const options: ConfigureOption[] = []
 
-  // Gemini: check all credential stores.
+  // Gemini: check CLI-tier OAuth + API key (Antigravity has its own row).
   if (provider === 'gemini') {
     const gemini = getGeminiDetailedState()
-    if (gemini.cliOAuth || gemini.antigravityOAuth || gemini.apiKey) {
+    if (gemini.cliOAuth || gemini.apiKey) {
       options.push({ kind: 'deactivate' })
     }
   } else {
@@ -300,9 +302,12 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
 
   function handleDeactivate(provider: KeyedProvider) {
     deleteAllProviderCredentials(provider)
-    // Gemini dual OAuth: also clear CLI + Antigravity keys.
     if (provider === 'gemini') {
+      // Gemini row = CLI-tier only; Antigravity has its own row.
       deleteProviderKey('gemini_oauth_cli')
+      deleteProviderKey('gemini_oauth')
+    }
+    if (provider === 'antigravity') {
       deleteProviderKey('gemini_oauth_antigravity')
     }
     refresh()

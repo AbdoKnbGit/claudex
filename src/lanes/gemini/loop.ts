@@ -745,8 +745,8 @@ export class GeminiLane implements Lane {
     return { stopReason: 'max_turns', usage: totalUsage }
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    return geminiApi.listModels()
+  async listModels(providerFilter?: string): Promise<ModelInfo[]> {
+    return geminiApi.listModels(providerFilter)
   }
 
   resolveModel(model: string): string {

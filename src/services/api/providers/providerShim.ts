@@ -87,8 +87,13 @@ function _ensureLanesInitialized(): void {
 // - DeepSeek / Groq / NIM / Ollama / OpenRouter → openai-compat lane.
 function _laneNameForProvider(provider: APIProvider): string {
   switch (provider) {
-    case 'openai': return 'codex'
-    case 'gemini': return 'gemini'
+    case 'openai':      return 'codex'
+    case 'gemini':      return 'gemini'
+    // Antigravity rides the same lane as Gemini — the lane's
+    // executorForModel() sends gemini-3-* to cloudcode-pa via the
+    // antigravity OAuth pool. Lane picks the right executor and creds
+    // per-model, the provider split is purely a UX surface.
+    case 'antigravity': return 'gemini'
     case 'deepseek':
     case 'groq':
     case 'nim':
@@ -167,22 +172,29 @@ function createProvider(provider: APIProvider): BaseProvider {
     }
     case 'gemini': {
       if (authMethod === 'oauth') {
-        // Dual OAuth: load both stored tokens synchronously.
-        // Async refresh already happened in client.ts pre-flight
-        // (resolveProviderAuth → _getValidOAuthToken).
+        // CLI-tier OAuth only — Antigravity has its own provider row.
         const cliToken = _readStoredGeminiToken('gemini_oauth_cli')
-        const antigravityToken = _readStoredGeminiToken('gemini_oauth_antigravity')
-        // Pre-warm Code Assist onboarding in background to cut
-        // first-request latency — the project ID gets cached to disk.
-        warmupCodeAssist(cliToken ?? undefined, antigravityToken ?? undefined)
+        warmupCodeAssist(cliToken ?? undefined, undefined)
         return new GeminiProvider({
           apiKey: apiKey ?? '',
           baseUrl,
           cliOAuthToken: cliToken ?? undefined,
-          antigravityOAuthToken: antigravityToken ?? undefined,
         })
       }
       return new GeminiProvider({ apiKey, baseUrl })
+    }
+    case 'antigravity': {
+      // Antigravity is OAuth-only, wrapping the same Gemini provider but
+      // fed ONLY the antigravity OAuth token. Lane's executorForModel()
+      // recognizes the gemini-3-* ids and routes them to cloudcode-pa
+      // with the correct Code Assist body envelope.
+      const antigravityToken = _readStoredGeminiToken('gemini_oauth_antigravity')
+      warmupCodeAssist(undefined, antigravityToken ?? undefined)
+      return new GeminiProvider({
+        apiKey: '',
+        baseUrl,
+        antigravityOAuthToken: antigravityToken ?? undefined,
+      })
     }
     case 'openrouter':
       return new OpenRouterProvider({ apiKey })

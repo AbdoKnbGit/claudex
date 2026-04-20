@@ -175,9 +175,15 @@ function ProviderPickerLogin({
           const name = PROVIDER_DISPLAY_NAMES[p]
           const isOAuth = p === 'openai' || p === 'gemini'
           const isFirstParty = p === 'firstParty'
-          const authType = isFirstParty ? 'OAuth' : p === 'gemini' ? 'Google / Antigravity / API Key' : isOAuth ? 'OAuth / API Key' : 'API Key'
+          const isAntigravity = p === 'antigravity'
+          const authType = isFirstParty ? 'OAuth'
+            : isAntigravity ? 'Google login'
+            : p === 'gemini' ? 'Google / API Key'
+            : isOAuth ? 'OAuth / API Key'
+            : 'API Key'
           const configured = isFirstParty || hasStoredKey(p) || hasStoredKey(`${p}_oauth`)
-            || (p === 'gemini' && (hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth_antigravity')))
+            || (p === 'gemini' && hasStoredKey('gemini_oauth_cli'))
+            || (p === 'antigravity' && hasStoredKey('gemini_oauth_antigravity'))
           const status = configured ? ' [configured]' : ''
 
           return (

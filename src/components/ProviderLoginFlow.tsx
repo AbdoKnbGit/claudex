@@ -25,6 +25,7 @@ interface ProviderMeta {
   keyPrefix: string
   getKeyUrl: string
   supportsOAuth: boolean
+  oauthOnly?: boolean
 }
 
 const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
@@ -39,6 +40,13 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     keyPrefix: 'AIza',
     getKeyUrl: 'https://aistudio.google.com/apikey',
     supportsOAuth: true,
+  },
+  antigravity: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://antigravity.google/',
+    supportsOAuth: true,
+    oauthOnly: true,
   },
   openrouter: {
     envVar: 'OPENROUTER_API_KEY',
@@ -142,21 +150,29 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   const meta = PROVIDER_META[provider]
   const name = PROVIDER_DISPLAY_NAMES[provider]
   const supportsOAuth = meta?.supportsOAuth ?? false
+  const oauthOnly = meta?.oauthOnly ?? false
 
-  // Gemini has 3 login methods; other OAuth providers have 2.
+  // Gemini now = free-tier Google OAuth or Studio API key. Antigravity
+  // has its own provider row and runs the antigravity-tier flow itself.
   const isGemini = provider === 'gemini'
+  const isAntigravity = provider === 'antigravity'
   const methodOptions: { method: AuthMethod; label: string }[] = isGemini
     ? [
-        { method: 'oauth_cli', label: 'Google OAuth (flash/lite models — free tier)' },
-        { method: 'oauth_antigravity', label: 'Antigravity (pro models — 3.1 Pro high/low)' },
-        { method: 'api_key', label: 'API Key' },
+        { method: 'oauth_cli', label: 'Google OAuth (free tier — flash/lite)' },
+        { method: 'api_key', label: 'API Key (AI Studio)' },
       ]
-    : supportsOAuth
+    : isAntigravity
       ? [
-          { method: 'oauth', label: 'OAuth (Browser Login)' },
-          { method: 'api_key', label: 'API Key' },
+          { method: 'oauth_antigravity', label: 'Antigravity login (Gemini 3 Flash / 3.1 Pro high/low)' },
         ]
-      : []
+      : oauthOnly
+        ? [{ method: 'oauth', label: 'OAuth (Browser Login)' }]
+        : supportsOAuth
+          ? [
+              { method: 'oauth', label: 'OAuth (Browser Login)' },
+              { method: 'api_key', label: 'API Key' },
+            ]
+          : []
 
   const [state, setState] = useState<FlowState>(
     methodOptions.length > 0 ? { step: 'choose_method' } : { step: 'api_key_input' },
@@ -241,8 +257,10 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       saveProviderKey(provider, key)
       deleteProviderKey(`${provider}_oauth`)
       if (provider === 'gemini') {
+        // Only clear the CLI-tier Gemini OAuth. The Antigravity OAuth is
+        // owned by its own provider row now — don't nuke it from under
+        // the user just because they added a Studio key.
         deleteProviderKey('gemini_oauth_cli')
-        deleteProviderKey('gemini_oauth_antigravity')
       }
       const envVar = meta?.envVar
       if (envVar) process.env[envVar] = key

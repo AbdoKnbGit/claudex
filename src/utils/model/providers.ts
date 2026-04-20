@@ -4,11 +4,13 @@ import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 
 export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
-  | 'openai' | 'gemini' | 'openrouter' | 'groq' | 'nim' | 'deepseek' | 'ollama'
+  | 'openai' | 'gemini' | 'antigravity'
+  | 'openrouter' | 'groq' | 'nim' | 'deepseek' | 'ollama'
 
 const VALID_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'bedrock', 'vertex', 'foundry',
-  'openai', 'gemini', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
+  'openai', 'gemini', 'antigravity',
+  'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
 ]
 
 // Session-local snapshot of the active provider.
@@ -90,6 +92,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   foundry: 'Azure Foundry',
   openai: 'OpenAI',
   gemini: 'Google Gemini',
+  antigravity: 'Antigravity',
   openrouter: 'OpenRouter',
   groq: 'Groq',
   nim: 'NVIDIA NIM',
@@ -105,7 +108,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 // intact — re-adding `'groq'` to this list and to MANAGEABLE_PROVIDERS
 // (+ flipping GROQ_ENABLED in src/lanes/openai-compat/index.ts) restores it.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'openai', 'gemini', 'openrouter', 'nim', 'deepseek', 'ollama',
+  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'nim', 'deepseek', 'ollama',
 ]
 
 /** Providers that use OpenAI-compatible chat completions API */
@@ -115,7 +118,7 @@ export function isOpenAICompatibleProvider(p: APIProvider): boolean {
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama'].includes(p)
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama'].includes(p)
 }
 
 /** Original Anthropic-native providers (firstParty + cloud partners) */

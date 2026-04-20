@@ -15,6 +15,7 @@
  *   ├────────────┼─────────┼───────┼─────────────────────────────────┤
  *   │ OpenAI     │ ✓       │ ✓     │ Bundled Codex CLI client ID     │
  *   │ Gemini     │ ✓       │ ✓     │ Bundled Gemini CLI client ID    │
+ *   │ Antigravity│ ✗       │ ✓     │ Google OAuth → Code Assist pool │
  *   │ OpenRouter │ ✓       │ ✗     │ API key only                    │
  *   │ Groq       │ ✓       │ ✗     │ API key only                    │
  *   │ NIM        │ ✓       │ ✗     │ API key only                    │
@@ -88,15 +89,12 @@ export async function resolveProviderAuth(provider: APIProvider): Promise<{
  */
 async function _getValidOAuthToken(provider: APIProvider): Promise<string | null> {
   switch (provider) {
-    case 'gemini': {
-      // Refresh both Gemini OAuth types independently.
-      // Either may be null (user didn't login with that flow).
-      const [cli, antigravity] = await Promise.all([
-        getGeminiOAuthToken('cli').catch(() => null),
-        getGeminiOAuthToken('antigravity').catch(() => null),
-      ])
-      return cli ?? antigravity
-    }
+    case 'gemini':
+      // Gemini provider = free-tier CLI OAuth only.
+      // Antigravity lives under its own provider row.
+      return getGeminiOAuthToken('cli').catch(() => null)
+    case 'antigravity':
+      return getGeminiOAuthToken('antigravity').catch(() => null)
     case 'openai':
       return getOpenAIOAuthToken()
     default:
@@ -126,8 +124,10 @@ export async function startProviderOAuth(provider: APIProvider): Promise<{
 
   switch (provider) {
     case 'gemini':
-      // Default to antigravity for backwards compat.
-      // Use startGeminiOAuthFlow() for type-specific flows.
+      // Gemini row = free-tier CLI flow (flash/lite models).
+      return startGeminiOAuth('cli')
+    case 'antigravity':
+      // Antigravity row = paid Code Assist pool (gemini-3-flash, 3.1-pro-*).
       return startGeminiOAuth('antigravity')
     case 'openai':
       return startOpenAIOAuthFlow()
@@ -151,7 +151,12 @@ export async function startGeminiOAuthFlow(type: GeminiOAuthType): Promise<{
  * Returns the new access token, or throws if refresh fails.
  */
 export async function refreshProviderOAuth(provider: APIProvider): Promise<string> {
-  const storedKey = `${provider}_oauth`
+  // Provider → storage key mapping: gemini/antigravity share the same
+  // Google OAuth shape but live under different keys.
+  const storedKey =
+    provider === 'gemini' ? 'gemini_oauth_cli'
+    : provider === 'antigravity' ? 'gemini_oauth_antigravity'
+    : `${provider}_oauth`
   const stored = loadProviderKey(storedKey)
   if (!stored) throw new Error(`No stored OAuth tokens for ${provider}`)
 
@@ -162,6 +167,7 @@ export async function refreshProviderOAuth(provider: APIProvider): Promise<strin
 
   switch (provider) {
     case 'gemini':
+    case 'antigravity':
       return refreshGoogleToken(tokens.refreshToken)
     case 'openai':
       return refreshOpenAIToken(tokens.refreshToken)
@@ -208,9 +214,12 @@ export function getProviderAuthStatus(provider: APIProvider): ProviderAuthStatus
  */
 export function clearProviderOAuth(provider: APIProvider): void {
   deleteProviderKey(`${provider}_oauth`)
-  // Gemini dual OAuth: clear both keys + legacy key.
   if (provider === 'gemini') {
+    // Gemini provider = CLI tier only. Clear legacy dual-key too.
     deleteProviderKey('gemini_oauth_cli')
+    deleteProviderKey('gemini_oauth')
+  }
+  if (provider === 'antigravity') {
     deleteProviderKey('gemini_oauth_antigravity')
   }
 }
@@ -221,6 +230,7 @@ function _envVarName(provider: APIProvider): string {
   const map: Record<string, string> = {
     openai: 'OPENAI_API_KEY',
     gemini: 'GEMINI_API_KEY',
+    antigravity: '(OAuth only)',
     openrouter: 'OPENROUTER_API_KEY',
     groq: 'GROQ_API_KEY',
     nim: 'NIM_API_KEY',

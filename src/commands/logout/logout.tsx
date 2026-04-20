@@ -59,10 +59,10 @@ export async function performLogout({
   if (isThirdPartyProvider(provider)) {
     // Third-party: only delete this provider's credentials
     deleteAllProviderCredentials(provider)
-    // Gemini's Antigravity flow stores accounts outside the regular
-    // provider-key store (multi-account rotation, per-family quotas).
-    // Wipe that store too so nothing survives a logout.
-    if (provider === 'gemini') {
+    // Antigravity stores per-family account rotation outside the regular
+    // provider-key store. Wipe that store on antigravity logout so
+    // nothing survives.
+    if (provider === 'antigravity') {
       try {
         clearAllAntigravityAccounts()
       } catch {
@@ -148,10 +148,12 @@ export async function call(
 function providerIsConfigured(p: APIProvider): boolean {
   if (p === 'firstParty') return true // Anthropic path always does something
   if (hasStoredKey(p) || hasStoredKey(`${p}_oauth`)) return true
-  // Gemini has two parallel OAuth flows (CLI + Antigravity); either one
-  // counts as "configured" and needs to show up in the logout picker.
+  // Gemini row = CLI-tier OAuth only (antigravity has its own row).
   if (p === 'gemini') {
-    return hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth_antigravity')
+    return hasStoredKey('gemini_oauth_cli') || hasStoredKey('gemini_oauth')
+  }
+  if (p === 'antigravity') {
+    return hasStoredKey('gemini_oauth_antigravity')
   }
   return false
 }
@@ -269,15 +271,16 @@ function ProviderPickerLogout({
               const hasOauthCli =
                 p === 'gemini' && hasStoredKey('gemini_oauth_cli')
               const hasOauthAg =
-                p === 'gemini' && hasStoredKey('gemini_oauth_antigravity')
+                p === 'antigravity' && hasStoredKey('gemini_oauth_antigravity')
               const hasOauth =
                 (p !== 'firstParty' && hasStoredKey(`${p}_oauth`)) ||
                 hasOauthCli || hasOauthAg
               const oauthDetail =
-                p === 'gemini' && (hasOauthCli || hasOauthAg)
-                  ? ` (${[hasOauthCli && 'CLI', hasOauthAg && 'Antigravity']
-                      .filter(Boolean).join(' + ')})`
-                  : ''
+                p === 'gemini' && hasOauthCli
+                  ? ' (CLI)'
+                  : p === 'antigravity' && hasOauthAg
+                    ? ' (Google login)'
+                    : ''
               const credLabel =
                 p === 'firstParty'
                   ? 'Anthropic account'
