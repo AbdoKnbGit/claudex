@@ -2167,6 +2167,22 @@ export function REPL({
     // activating conditions hold — leaving the Escape keybinding inactive.
     setAbortController(null);
 
+    // Windows cmd.exe can wedge the stdin data pump mid-stream after an
+    // abort — the TUI stays mounted but new keystrokes never reach Ink's
+    // useInput listeners. Kicking resume() on a short delay re-arms the
+    // pump without touching raw mode or React state. No-op when already
+    // flowing, so it's safe on platforms where the freeze doesn't occur.
+    //
+    // Esc also fires VimTextInput's INSERT→NORMAL transition in the same
+    // tick as this cancel — leaving the user in NORMAL mode with no
+    // visible cursor blink, which looks identical to a freeze. Snap the
+    // mode back to INSERT after React has committed both state updates;
+    // VimTextInput's initialMode useEffect will re-sync its internal mode.
+    setTimeout(() => {
+      try { (process.stdin as NodeJS.ReadStream & { resume?: () => void }).resume?.(); } catch { /* ignore */ }
+      setVimMode('INSERT');
+    }, 50);
+
     // forceEnd() skips the finally path — fire directly (aborted=true).
     void mrOnTurnComplete(messagesRef.current, true);
   }
@@ -4146,6 +4162,18 @@ export function REPL({
       internal_eventEmitter?.off('resume', handleResume);
     };
   }, [internal_eventEmitter]);
+
+  // First-launch freeze mitigation. On Windows cmd.exe, Ink's useInput
+  // listeners sometimes don't receive keystrokes on the very first render
+  // — stdin is mounted but the data pump is paused. Running resume() once
+  // after mount is a no-op when it's already flowing, and unfreezes the
+  // pump when it's not. ~250ms lets Ink bind its listeners first.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { (process.stdin as NodeJS.ReadStream & { resume?: () => void }).resume?.(); } catch { /* ignore */ }
+    }, 250);
+    return () => clearTimeout(t);
+  }, []);
 
   // Derive stop hook spinner suffix from messages state
   const stopHookSpinnerSuffix = useMemo(() => {
