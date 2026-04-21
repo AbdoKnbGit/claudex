@@ -34,6 +34,7 @@ import {
   getIFlowApiKey, getIFlowOAuthToken,
   getKiloCodeOAuthToken,
   getCopilotOAuthToken,
+  getKiroOAuthToken,
 } from '../auth/oauth_services.js'
 import type {
   BaseProvider,
@@ -76,6 +77,11 @@ function _ensureLanesInitialized(): void {
     // stored GH refresh token. The session-cached lane snapshot is stale-
     // tolerant: 401s here surface as "/login github-copilot" prompts.
     const copilotToken = getCopilotOAuthToken() ?? undefined
+    // Kiro: accessToken is the AWS SSO OIDC bearer; profileArn lives in
+    // the stored meta for social-login users and defaults in the lane for
+    // Builder-ID users (who don't get one back from the token endpoint).
+    const kiroToken = getKiroOAuthToken() ?? undefined
+    const kiroProfileArn = _readStoredKiroProfileArn() ?? undefined
     initLanes({
       geminiApiKey: getProviderApiKey('gemini') ?? undefined,
       geminiCliOAuthToken: cliOAuthToken,
@@ -93,6 +99,8 @@ function _ensureLanesInitialized(): void {
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
       copilotApiKey: copilotToken,
+      kiroApiKey: kiroToken,
+      kiroProfileArn: kiroProfileArn,
     })
   } catch {
     // Lane init failure must not break the legacy provider path.
@@ -129,11 +137,12 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'kilocode':
     case 'copilot':
       return 'openai-compat'
-    // Phase 4 stubs still pending an executor (v0.4.2+) — Cursor uses
-    // protobuf, Kiro uses an AWS-signed envelope. /login + /provider work
-    // but chat errors out with a clear message until the executor lands.
-    case 'cursor':
+    // Kiro has its own lane (CodeWhisperer EventStream) — not compat.
     case 'kiro':
+      return 'kiro'
+    // Cursor stub still pending an executor (protobuf wire format).
+    // /login + /provider work but chat errors out until v0.4.3.
+    case 'cursor':
       return '<stub>'
     default:
       return provider as string
@@ -253,16 +262,15 @@ function createProvider(provider: APIProvider): BaseProvider {
         `${provider} chat requires the openai-compat lane to be healthy. ` +
         `Run \`/login\` to authenticate, or check that the OAuth tokens were stored.`,
       )
-    // Stubs still awaiting an executor — OAuth + UI landed in v0.4.0,
-    // chat lands in a follow-up. Cursor uses protobuf, Kiro uses an
-    // AWS-signed envelope, both need their own (non-openai-compat) lane.
+    case 'kiro':
+      // Kiro chat routes through the dedicated kiro lane above. We only
+      // reach this branch when the lane is unhealthy (no stored token).
+      throw new Error(
+        'Kiro chat requires the kiro lane to be healthy. Run `/login kiro` to authenticate.',
+      )
     case 'cursor':
       throw new Error(
         'Cursor chat is not yet implemented — protobuf wire format pending. OAuth + UI work in v0.4.1.',
-      )
-    case 'kiro':
-      throw new Error(
-        'Kiro chat is not yet implemented — AWS-signed envelope pending. OAuth + UI work in v0.4.1.',
       )
     default:
       throw new Error(`Unknown third-party provider: ${provider}`)
@@ -514,6 +522,34 @@ function _refreshGeminiTokenInBackground(
     }
   })()
   _geminiRefreshInFlight.set(storageKey, p)
+}
+
+/**
+ * Read the stored Kiro profileArn (set for social-login users;
+ * undefined for Builder-ID users, who get a hardcoded default in the
+ * lane itself). Synchronous — used during lane init.
+ */
+function _readStoredKiroProfileArn(): string | null {
+  try {
+    const raw = loadProviderKey('kiro_oauth')
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { meta?: { profileArn?: string } }
+    return parsed.meta?.profileArn ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reconfigure the Kiro lane's in-memory auth from whatever is currently
+ * on disk. Called by /login kiro after it writes new tokens so the
+ * session picks them up without a process restart.
+ */
+export async function reloadKiroLaneAuth(): Promise<void> {
+  const accessToken = getKiroOAuthToken() ?? undefined
+  const profileArn = _readStoredKiroProfileArn() ?? undefined
+  const { kiroLane } = await import('../../../lanes/kiro/index.js')
+  kiroLane.configure({ accessToken, profileArn })
 }
 
 /**

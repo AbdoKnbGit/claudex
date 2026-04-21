@@ -37,6 +37,7 @@ import { initCodexLane } from './codex/index.js'
 import { initOpenAICompatLane } from './openai-compat/index.js'
 import { initQwenLane } from './qwen/index.js'
 import { initClaudeLane } from './claude/index.js'
+import { initKiroLane } from './kiro/index.js'
 
 /**
  * Initialize all lanes with available auth credentials.
@@ -83,6 +84,11 @@ export function initLanes(opts?: {
   /** GitHub Copilot internal token (NOT the GH OAuth access token — see
    *  oauth_services.ts::completeCopilotOAuth). */
   copilotApiKey?: string
+  /** Kiro OAuth access token (AWS SSO OIDC). */
+  kiroApiKey?: string
+  /** Kiro profileArn (optional — social-login users have one, Builder-ID
+   *  users don't; the lane falls back to a public default when unset). */
+  kiroProfileArn?: string
 }): void {
   // ── Claude lane (registration-only: Anthropic traffic uses
   //    services/api/claude.ts directly — this lane exists for /lane
@@ -109,6 +115,17 @@ export function initLanes(opts?: {
   // keeps no qwen provider after Phase 2B.
   initQwenLane({
     apiKey: opts?.qwenApiKey,
+  })
+
+  // ── Kiro lane (AWS CodeWhisperer via EventStream binary frames) ──
+  // Registered before openai-compat so its dispatcher-scoped
+  // supportsModel() claim on `claude-sonnet-4.5` / `deepseek-3.x` etc.
+  // wins over any compat-side fallback. In practice the LaneBackedProvider
+  // path routes by provider name, not model heuristic, so ordering is a
+  // belt-and-suspenders guard for the future Phase-2 dispatch path.
+  initKiroLane({
+    accessToken: opts?.kiroApiKey,
+    profileArn: opts?.kiroProfileArn,
   })
 
   // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama,
