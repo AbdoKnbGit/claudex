@@ -15,6 +15,7 @@ import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1
 import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
+import { isSurfEnabled } from '../../utils/surf/state.js';
 function ModelPickerWrapper(t0) {
   const $ = _c(17);
   const {
@@ -280,6 +281,16 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     onDone('Run /model to open the model selection menu, or /model [modelName] to set the model.', {
       display: 'system'
     });
+    return;
+  }
+  // When surf is on, the router owns model selection — refuse /model so
+  // the user's manual pick can't silently fight the phase router.
+  if (isSurfEnabled()) {
+    const lines = [
+      `${chalk.bold('🌊 Surf is on')} — router is picking the model per phase.`,
+      chalk.dim('Run /surf off to switch models manually, or /surf config to re-pick surf targets.'),
+    ];
+    onDone(lines.join('\n'), { display: 'system' });
     return;
   }
   if (args) {

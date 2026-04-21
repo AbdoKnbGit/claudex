@@ -26,6 +26,9 @@ const PHASE_LABEL: Record<SurfPhase, string> = {
   planning: 'Planning',
   building: 'Building',
   reviewing: 'Reviewing',
+  thinking: 'Thinking',
+  subagent: 'Subagent',
+  longContext: 'Long Context',
   background: 'Background',
 }
 
@@ -76,14 +79,18 @@ export function showSurfStatus(
     const target = targets[phase]
     const isCurrent = phase === current
     const marker = isCurrent ? chalk.cyan('▶ ') : '  '
-    const label = PHASE_LABEL[phase].padEnd(11)
+    const label = PHASE_LABEL[phase].padEnd(13)
     if (!target) {
-      lines.push(`${marker}${label} ${chalk.yellow('(unset)')}`)
+      lines.push(
+        `${marker}${label} ${chalk.yellow('(skipped — keeps current model)')}`,
+      )
       continue
     }
     const providerName = PROVIDER_DISPLAY_NAMES[target.provider as APIProvider] ?? target.provider
+    const effortSuffix =
+      target.effort !== undefined ? chalk.dim(` · ${target.effort}`) : ''
     lines.push(
-      `${marker}${isCurrent ? chalk.bold(label) : label} ${chalk.dim(providerName)} · ${target.model}`,
+      `${marker}${isCurrent ? chalk.bold(label) : label} ${chalk.dim(providerName)} · ${target.model}${effortSuffix}`,
     )
   }
 
@@ -95,7 +102,7 @@ export function showSurfStatus(
       const s = stats[phase]
       if (s.turns === 0) continue
       lines.push(
-        `  ${chalk.cyan(PHASE_LABEL[phase].padEnd(11))} ${s.turns} turn${s.turns === 1 ? '' : 's'} · ${formatTokens(s.inputTokens)} in / ${formatTokens(s.outputTokens)} out · cache ${cacheHitPct(s)}`,
+        `  ${chalk.cyan(PHASE_LABEL[phase].padEnd(13))} ${s.turns} turn${s.turns === 1 ? '' : 's'} · ${formatTokens(s.inputTokens)} in / ${formatTokens(s.outputTokens)} out · cache ${cacheHitPct(s)}`,
       )
     }
   }

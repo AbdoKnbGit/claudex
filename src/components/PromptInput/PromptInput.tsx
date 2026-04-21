@@ -72,6 +72,7 @@ import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
 import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../utils/keyboardShortcuts.js';
 import { logError } from '../../utils/log.js';
 import { isOpus1mMergeEnabled, modelDisplayString } from '../../utils/model/model.js';
+import { isSurfEnabled } from '../../utils/surf/state.js';
 import { setAutoModeActive } from '../../utils/permissions/autoModeState.js';
 import { cyclePermissionMode, getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js';
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js';
@@ -1382,13 +1383,24 @@ function PromptInput({
     }
   }, [input, cursorOffset, stashedPrompt, trackAndSetInput, setStashedPrompt, pastedContents, setPastedContents]);
 
-  // Handler for chat:modelPicker - toggle model picker
+  // Handler for chat:modelPicker - toggle model picker.
+  // When surf is on, the router owns model choice — block the shortcut
+  // and flash a one-shot notification instead of opening the picker.
   const handleModelPicker = useCallback(() => {
+    if (isSurfEnabled()) {
+      addNotification({
+        key: 'surf-blocks-model-picker',
+        text: '🌊 Surf is on — run /surf off to pick a model manually',
+        priority: 'immediate',
+        timeoutMs: 4000,
+      });
+      return;
+    }
     setShowModelPicker(prev => !prev);
     if (helpOpen) {
       setHelpOpen(false);
     }
-  }, [helpOpen]);
+  }, [helpOpen, addNotification]);
 
   // Handler for chat:fastMode - toggle fast mode picker
   const handleFastModePicker = useCallback(() => {

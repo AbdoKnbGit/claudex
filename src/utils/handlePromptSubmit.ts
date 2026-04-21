@@ -33,9 +33,11 @@ import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
 import { createSystemMessage } from './messages.js'
 import { buildSurfCacheBanner, runSurfPhaseHook } from './surf/applyPhase.js'
 import {
+  estimateTranscriptTokens,
   extractLastUserText,
   extractRecentToolNames,
 } from './surf/extract.js'
+import { isEffortLevel, type EffortLevel } from './effort.js'
 import { runWithWorkload } from './workloadContext.js'
 
 function exit(): void {
@@ -587,9 +589,22 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
             recentToolNames: extractRecentToolNames(messages),
             lastUserMessage: extractLastUserText(newMessages),
             messageCount: messages.length + newMessages.length,
+            transcriptTokens: estimateTranscriptTokens(messages),
           })
           if (surfResult) {
             effectiveMainLoopModel = surfResult.modelToApply
+            // Apply Anthropic-style effort via AppState (OpenAI reasoning
+            // level is already pushed into its own global store by
+            // applySurfPhaseSwitch). Only trust recognised levels — the
+            // schema allows arbitrary strings/numbers for other providers,
+            // and we don't want to write garbage into appState.effortValue.
+            const effort = surfResult.effortToApply
+            if (typeof effort === 'string' && isEffortLevel(effort)) {
+              const level: EffortLevel = effort
+              setAppState(prev => ({ ...prev, effortValue: level }))
+            } else if (typeof effort === 'number') {
+              setAppState(prev => ({ ...prev, effortValue: effort }))
+            }
             // Only print the banner when the phase actually changed — every
             // turn would be noise. runSurfPhaseHook still updated module
             // state + bootstrap override so the model routes correctly.

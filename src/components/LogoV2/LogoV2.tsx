@@ -43,6 +43,7 @@ import { useAppState } from '../../state/AppState.js';
 import { getEffortSuffix } from '../../utils/effort.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { renderModelSetting } from '../../utils/model/model.js';
+import { getSurfBannerLabel } from '../../utils/surf/label.js';
 const LEFT_PANEL_MAX_WIDTH = 50;
 export function LogoV2() {
   const $ = _c(94);
@@ -175,7 +176,12 @@ export function LogoV2() {
   } else {
     t10 = $[14];
   }
-  const modelDisplayName = t10;
+  // When /surf is on the router manages models per phase — show the
+  // surf banner here instead of the static main-loop model name.
+  const surfBanner = getSurfBannerLabel();
+  const modelDisplayName = surfBanner
+    ? truncate(surfBanner, LEFT_PANEL_MAX_WIDTH - 20)
+    : t10;
   if (!hasReleaseNotes && !showOnboarding && !isEnvTruthy(process.env.CLAUDE_CODE_FORCE_FULL_LOGO)) {
     let t11;
     let t12;

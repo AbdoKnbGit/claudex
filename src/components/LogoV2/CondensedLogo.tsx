@@ -11,6 +11,7 @@ import { truncate } from '../../utils/format.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { formatModelAndBilling, getLogoDisplayData, truncatePath } from '../../utils/logoV2Utils.js';
 import { renderModelSetting } from '../../utils/model/model.js';
+import { getSurfBannerLabel } from '../../utils/surf/label.js';
 import { OffscreenFreeze } from '../OffscreenFreeze.js';
 import { AnimatedClawd } from './AnimatedClawd.js';
 import { Clawd } from './Clawd.js';
@@ -24,7 +25,11 @@ export function CondensedLogo() {
   const agent = useAppState(_temp);
   const effortValue = useAppState(_temp2);
   const model = useMainLoopModel();
-  const modelDisplayName = renderModelSetting(model);
+  // Surf owns per-phase model selection; swap the static name for its
+  // banner when enabled. Effort is likewise per-phase under surf, so
+  // skip the effort suffix below in that case.
+  const surfBanner = getSurfBannerLabel();
+  const modelDisplayName = surfBanner ?? renderModelSetting(model);
   const {
     version,
     cwd,
@@ -71,7 +76,7 @@ export function CondensedLogo() {
   useEffect(t2, t3);
   const textWidth = Math.max(columns - 15, 20);
   const truncatedVersion = truncate(version, Math.max(textWidth - 13, 6));
-  const effortSuffix = getEffortSuffix(model, effortValue);
+  const effortSuffix = surfBanner ? '' : getEffortSuffix(model, effortValue);
   const {
     shouldSplit,
     truncatedModel,

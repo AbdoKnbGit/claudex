@@ -43,6 +43,47 @@ export function extractLastUserText(messages: readonly Message[]): string {
 }
 
 /**
+ * Rough character-count → token estimate for the whole transcript.
+ * Used by detectPhase to decide whether to route into `longContext`.
+ * Approximation only (≈4 chars/token) — we just need an order-of-magnitude
+ * signal to flip phases, not exact counting. Running a real tokenizer
+ * every turn on the full transcript would dominate the detect path.
+ */
+export function estimateTranscriptTokens(
+  messages: readonly Message[],
+): number {
+  let chars = 0
+  for (const m of messages) {
+    const content = (m as { message?: { content?: unknown } }).message?.content
+    if (typeof content === 'string') {
+      chars += content.length
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as {
+        type?: unknown
+        text?: unknown
+        input?: unknown
+        content?: unknown
+      }
+      if (b.type === 'text' && typeof b.text === 'string') {
+        chars += b.text.length
+      } else if (b.type === 'tool_use' && b.input) {
+        chars += JSON.stringify(b.input).length
+      } else if (b.type === 'tool_result') {
+        chars +=
+          typeof b.content === 'string'
+            ? b.content.length
+            : JSON.stringify(b.content ?? '').length
+      }
+    }
+  }
+  return Math.round(chars / 4)
+}
+
+/**
  * Extract the names of the most recent tool_use blocks across the
  * transcript, newest first. `limit` caps how many we return — the
  * detector only looks at ~5 anyway, and walking the whole history

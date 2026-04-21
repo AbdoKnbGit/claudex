@@ -18,18 +18,49 @@
 
 import type { APIProvider } from '../model/providers.js'
 
-export type SurfPhase = 'planning' | 'building' | 'reviewing' | 'background'
+export type SurfPhase =
+  | 'planning'
+  | 'building'
+  | 'reviewing'
+  | 'thinking'
+  | 'subagent'
+  | 'longContext'
+  | 'background'
 
+/** All phases the user can configure via the /surf wizard, in display order. */
 export const SURF_PHASES: readonly SurfPhase[] = [
   'planning',
   'building',
   'reviewing',
+  'thinking',
+  'subagent',
+  'longContext',
   'background',
 ] as const
+
+/** Phases the per-turn detector can return. `subagent` is applied at
+ * AgentTool spawn time (runAgent.ts), never by detectPhase — separating
+ * the two keeps detection pure and makes the routing path explicit. */
+export type MainLoopSurfPhase = Exclude<SurfPhase, 'subagent'>
+
+export const SURF_MAIN_LOOP_PHASES: readonly MainLoopSurfPhase[] = [
+  'planning',
+  'building',
+  'reviewing',
+  'thinking',
+  'longContext',
+  'background',
+] as const
+
+/** Provider-native effort/reasoning value. String for level enums
+ * (Anthropic low/medium/high/max, OpenAI low/medium/high/xhigh), number for
+ * Gemini/ant numeric budgets. undefined = "use model default". */
+export type PhaseEffort = string | number
 
 export interface PhaseTarget {
   provider: APIProvider
   model: string
+  effort?: PhaseEffort
 }
 
 export interface PhaseStats {
@@ -77,6 +108,11 @@ interface SurfState {
   /** Phase that was active at the start of the current turn — used by the
    * after-turn accounting hook to attribute usage correctly. */
   pendingTurnPhase: SurfPhase | null
+  /** Last phase detectPhase returned (regardless of whether we switched).
+   * Powers the 2-turn debounce: we only commit a switch when the current
+   * detection matches the prior detection, so a one-off keyword ("review
+   * this") can't thrash the cache by flipping providers every turn. */
+  lastDetectedPhase: MainLoopSurfPhase | null
   stats: Record<SurfPhase, PhaseStats>
   /** Per-turn usage delta — resets at recordSurfTurnStart, accumulates on
    * recordSurfUsage. Consumed by the post-turn cache-hit-rate banner. */
@@ -87,10 +123,14 @@ const _state: SurfState = {
   enabled: false,
   currentPhase: null,
   pendingTurnPhase: null,
+  lastDetectedPhase: null,
   stats: {
     planning: emptyStats(),
     building: emptyStats(),
     reviewing: emptyStats(),
+    thinking: emptyStats(),
+    subagent: emptyStats(),
+    longContext: emptyStats(),
     background: emptyStats(),
   },
   lastTurnUsage: emptyTurnUsage(),
@@ -107,7 +147,18 @@ export function setSurfEnabled(value: boolean): void {
   if (!value) {
     _state.currentPhase = null
     _state.pendingTurnPhase = null
+    _state.lastDetectedPhase = null
   }
+}
+
+// ─── Debounce ────────────────────────────────────────────────────────
+
+export function getLastDetectedPhase(): MainLoopSurfPhase | null {
+  return _state.lastDetectedPhase
+}
+
+export function setLastDetectedPhase(phase: MainLoopSurfPhase | null): void {
+  _state.lastDetectedPhase = phase
 }
 
 // ─── Current phase ───────────────────────────────────────────────────
@@ -201,10 +252,9 @@ export function recordSurfTurn(
 }
 
 export function resetSurfStats(): void {
-  _state.stats.planning = emptyStats()
-  _state.stats.building = emptyStats()
-  _state.stats.reviewing = emptyStats()
-  _state.stats.background = emptyStats()
+  for (const phase of SURF_PHASES) {
+    _state.stats[phase] = emptyStats()
+  }
   _state.lastTurnUsage = emptyTurnUsage()
 }
 
@@ -229,5 +279,6 @@ export function _resetSurfStateForTests(): void {
   _state.enabled = false
   _state.currentPhase = null
   _state.pendingTurnPhase = null
+  _state.lastDetectedPhase = null
   resetSurfStats()
 }

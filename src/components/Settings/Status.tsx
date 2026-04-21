@@ -10,6 +10,7 @@ import { type AppState, useAppState } from '../../state/AppState.js';
 import { getCwd } from '../../utils/cwd.js';
 import { getCurrentSessionTitle } from '../../utils/sessionStorage.js';
 import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../utils/status.js';
+import { getSurfBannerLabel } from '../../utils/surf/label.js';
 import type { ThemeName } from '../../utils/theme.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 type Props = {
@@ -45,7 +46,10 @@ function buildSecondarySection({
   theme: ThemeName;
   context: LocalJSXCommandContext;
 }): Property[] {
-  const modelLabel = getModelDisplayLabel(mainLoopModel);
+  // When surf is on, /status shows the router banner in place of the
+  // manual model — since surf picks the effective model per phase, no
+  // single name is accurate.
+  const modelLabel = getSurfBannerLabel() ?? getModelDisplayLabel(mainLoopModel);
   return [{
     label: 'Model',
     value: modelLabel

@@ -37,13 +37,19 @@ type OnDone = (
   options?: { display?: CommandResultDisplay },
 ) => void
 
-function hasAllTargets(
+/**
+ * True when the user has configured AT LEAST ONE phase target. Surf
+ * supports partial configs — phases without a target just keep the user's
+ * manual model when the detector selects them — so a single configured
+ * phase is enough to turn surf on.
+ */
+function hasAnyTarget(
   targets:
-    | Record<string, { provider: string; model: string }>
+    | Partial<Record<string, { provider: string; model: string }>>
     | undefined,
 ): boolean {
   if (!targets) return false
-  return SURF_PHASES.every(phase => {
+  return SURF_PHASES.some(phase => {
     const t = targets[phase]
     return !!t && !!t.provider && !!t.model
   })
@@ -51,9 +57,9 @@ function hasAllTargets(
 
 function toggleOn(onDone: OnDone) {
   const targets = getGlobalConfig().surfPhaseTargets
-  if (!hasAllTargets(targets)) {
+  if (!hasAnyTarget(targets)) {
     onDone(
-      'Surf has no phase targets yet. Run /surf to pick a model for each phase.',
+      'Surf has no phase targets yet. Run /surf to pick a model for at least one phase.',
       { display: 'system' },
     )
     return
@@ -85,10 +91,13 @@ function showHelp(onDone: OnDone) {
     `  ${chalk.cyan('/surf reset')}     Clear targets and disable`,
     '',
     chalk.bold('Phases:'),
-    `  ${chalk.cyan('planning'.padEnd(12))} strongest reasoning — planning, architecture`,
-    `  ${chalk.cyan('building'.padEnd(12))} fast code writer — edits, file creation`,
-    `  ${chalk.cyan('reviewing'.padEnd(12))} critical eye — review/audit passes`,
-    `  ${chalk.cyan('background'.padEnd(12))} quick & cheap — short questions`,
+    `  ${chalk.cyan('planning'.padEnd(13))} strongest reasoning — planning, architecture`,
+    `  ${chalk.cyan('building'.padEnd(13))} fast code writer — edits, file creation`,
+    `  ${chalk.cyan('reviewing'.padEnd(13))} critical eye — review/audit passes`,
+    `  ${chalk.cyan('thinking'.padEnd(13))} deep reasoning — ultrathink/root-cause turns`,
+    `  ${chalk.cyan('subagent'.padEnd(13))} AgentTool spawns — exploration, parallel tasks`,
+    `  ${chalk.cyan('longContext'.padEnd(13))} transcript > 60k tokens`,
+    `  ${chalk.cyan('background'.padEnd(13))} quick & cheap — short questions`,
     '',
     chalk.dim(
       'Phase detection is automatic (plan mode, tool history, keywords, message shape).',
@@ -140,7 +149,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     default: {
       // No-arg path: first run → wizard; after configured → toggle.
       const targets = getGlobalConfig().surfPhaseTargets
-      if (!hasAllTargets(targets)) {
+      if (!hasAnyTarget(targets)) {
         const initialProvider = getDefaultBrowsableProvider(getAPIProvider())
         return <SurfWizard onDone={onDone} initialProvider={initialProvider} />
       }

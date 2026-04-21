@@ -584,11 +584,25 @@ export type GlobalConfig = {
   // /surf phase router — user-picked provider+model per work phase. Set by
   // the /surf wizard on first run and updated by re-running /surf config.
   // Persisted so picks survive restarts. Keyed by phase (planning/building/
-  // reviewing/background); value holds provider id + model id that the
-  // phase detector will switch into when that phase fires.
-  surfPhaseTargets?: Record<
-    'planning' | 'building' | 'reviewing' | 'background',
-    { provider: string; model: string }
+  // reviewing/thinking/subagent/longContext/background); value holds
+  // provider id + model id + optional provider-native effort/reasoning level
+  // that the phase detector will switch into when that phase fires.
+  //
+  // Partial so older 4-phase configs still parse cleanly — any missing
+  // phase is treated as "don't route this phase" (surf keeps the current
+  // model). This preserves the surf-off-is-zero-change guarantee even
+  // after the enum expansion.
+  surfPhaseTargets?: Partial<
+    Record<
+      | 'planning'
+      | 'building'
+      | 'reviewing'
+      | 'thinking'
+      | 'subagent'
+      | 'longContext'
+      | 'background',
+      { provider: string; model: string; effort?: string | number }
+    >
   >
 }
 

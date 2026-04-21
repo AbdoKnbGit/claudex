@@ -81,6 +81,55 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { getGlobalConfig } from '../../utils/config.js'
+import {
+  getAPIProvider,
+  setActiveProvider,
+  type APIProvider,
+} from '../../utils/model/providers.js'
+import {
+  modelSupportsReasoning,
+  setOpenAIReasoningLevel,
+  type OpenAIReasoningLevel,
+} from '../../utils/model/openaiReasoning.js'
+import { isSurfEnabled, recordSurfTurnStart } from '../../utils/surf/state.js'
+
+/**
+ * Resolve the model a subagent should run under when /surf is on and the
+ * user has configured a dedicated `subagent` phase target. Returns null
+ * when surf is off, no subagent target is set, or the caller passed an
+ * explicit model — explicit caller intent always wins.
+ *
+ * Side-effect: when surf IS routing this subagent, also swaps the active
+ * provider and pushes the provider-native reasoning level (OpenAI models)
+ * so the request lands on the right endpoint with the right effort. Also
+ * bumps the subagent turn counter for /surf status accounting.
+ */
+function resolveSurfSubagentModel(args: {
+  hasToolSpecifiedModel: boolean
+  agentPinsModel: boolean
+}): string | null {
+  if (!isSurfEnabled()) return null
+  if (args.hasToolSpecifiedModel || args.agentPinsModel) return null
+
+  const target = getGlobalConfig().surfPhaseTargets?.subagent
+  if (!target || !target.provider || !target.model) return null
+
+  if (getAPIProvider() !== (target.provider as APIProvider)) {
+    setActiveProvider(target.provider as APIProvider)
+  }
+  if (
+    typeof target.effort === 'string' &&
+    modelSupportsReasoning(target.model) &&
+    (['low', 'medium', 'high', 'xhigh'] as readonly OpenAIReasoningLevel[]).includes(
+      target.effort as OpenAIReasoningLevel,
+    )
+  ) {
+    setOpenAIReasoningLevel(target.effort as OpenAIReasoningLevel)
+  }
+  recordSurfTurnStart('subagent')
+  return target.model
+}
 
 /**
  * Initialize agent-specific MCP servers
@@ -337,12 +386,27 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  const resolvedAgentModel = getAgentModel(
-    agentDefinition.model,
-    toolUseContext.options.mainLoopModel,
-    model,
-    permissionMode,
-  )
+  // /surf subagent routing. When surf is on and the user has configured a
+  // dedicated subagent target (provider+model), route this spawn to that
+  // model instead of inheriting the parent's main-loop model. Explicit
+  // caller intent still wins: if either the AgentTool caller passed
+  // `model` or the agent definition pins its own model, those are honored
+  // — we only override the implicit "inherit from parent" path. This
+  // preserves /surf off ⇒ no change in behavior.
+  const surfSubagentModel = resolveSurfSubagentModel({
+    hasToolSpecifiedModel: model !== undefined,
+    agentPinsModel:
+      agentDefinition.model !== undefined && agentDefinition.model !== 'inherit',
+  })
+
+  const resolvedAgentModel = surfSubagentModel
+    ? surfSubagentModel
+    : getAgentModel(
+        agentDefinition.model,
+        toolUseContext.options.mainLoopModel,
+        model,
+        permissionMode,
+      )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
 

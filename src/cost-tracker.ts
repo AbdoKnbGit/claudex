@@ -49,10 +49,12 @@ import { getAPIProvider, isThirdPartyProvider } from './utils/model/providers.js
 import { getProviderModelSet } from './utils/model/configs.js'
 import { calculateUSDCost } from './utils/modelCost.js'
 import {
+  getCurrentSurfPhase,
   getPendingTurnPhase,
   isSurfEnabled,
   recordSurfUsage,
 } from './utils/surf/state.js'
+import { logSurfEntry } from './utils/surf/logger.js'
 export {
   getTotalCostUSD as getTotalCost,
   getTotalDuration,
@@ -325,6 +327,19 @@ export function addToTotalSessionCost(
         outputTokens: usage.output_tokens,
         cacheReadTokens: usage.cache_read_input_tokens ?? 0,
         cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+      })
+      // JSONL log for the verification feedback loop — append one record
+      // per API response. Fire-and-forget; errors are swallowed inside.
+      logSurfEntry({
+        phase: pendingPhase,
+        provider: getAPIProvider(),
+        model,
+        previousPhase: getCurrentSurfPhase(),
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+        costUSD: cost,
       })
     }
   }

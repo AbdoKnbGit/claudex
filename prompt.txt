@@ -1,0 +1,69 @@
+Read @reference/9router-master — this is the final missing puzzle for making claudex the most powerful CLI tool on the market, if it can integrate the multi-provider routing system inside it.
+
+What needs to be done:
+
+Add two important features:
+
+Model providers — support for different providers (Antigravity, Cursor, Gemini, GLM, GPT, Claude models)
+
+Fallback system — when one provider fails, automatically switch to another
+
+For now, focus only on providers and models. Integrate this into claudex. Settings must be adjustable manually inside the CLI for non-technical users.
+
+Constraint: No editing of existing lanes that are working fine — unless you're adding new lanes.
+
+First, understand how 9router works:
+
+How do those providers communicate with models inside Claude Code's ecosystem?
+
+Do they follow the same pattern as us, or a different pattern?
+
+If different → add it here as a new pattern
+
+If same pattern → normalize them to our existing lanes
+
+Example: Antigravity's 3 Flash models work very well. I don't know if it's because they're redirected to the Google lane or because they follow an Antigravity-specific pattern.
+
+Models I want to add:
+
+GPT-OSS 120
+
+Claude Sonnet (thinking model)
+
+Claude Opus (thinking model)
+
+Performance requirement: If GPT-OSS can perform as well as Gemini 3 Flash inside Antigravity's system, then do the same for GPT and Claude models inside claudex. If Gemini 3 Flash works well because of lane redirection, then:
+
+Redirect GPT-OSS to the OpenAI lane
+
+Redirect Claude models to Claude Code's native lane
+
+Core constraint: Every API call from a specific provider's model must perform as well as its native call from that provider. For example:
+
+Minmax called from NVIDIA NIM → 10x slower ❌
+
+Minmax called from Kiro AI → fast and accurate ✅
+
+Same applies to GLM and other models.
+
+Migration task: Do a full migration of 9router into claudex.
+
+Warning: Don't implement the MITM (Man-In-The-Middle) system — it's bad.
+
+Provider separation: Separate Gemini 3 Flash and Gemini 3 Pro models in the CLI and make them on the antigravity provider whit other models . Add Antigravity as its own provider (login required to access its models). Antigravity models should be separate from Gemini models.
+
+Same for Cursor and other providers. Add all the auth-based providers with their coding models only. Ignore API-key-based providers — OpenRouter is already implemented and is the only one I care about right now.
+
+Add intelligent model routing that automatically selects the best performing lane — either the model's native API caller or a redirected lane — whichever performs better.
+
+For Antigravity: Only modify the CLI. When I type /login antigravity, it must follow the exact same authentication pattern from the existing 9router version.
+
+Routing logic: For each model, compare performance between:
+
+Calling its native provider API directly
+
+Calling it through a different provider's lane (redirect)
+
+Choose the one with better performance automatically.
+
+Example: If Antigravity's Gemini 3 Flash performs better when redirected to Google's native API (not through Antigravity's proxy), the router should detect this and route it to Google automatically. because gemini 3 flash is really performance 
