@@ -178,7 +178,7 @@ export function getToolSearchMode(): ToolSearchMode {
   const provider = getAPIProvider()
   if (provider === 'openrouter' || provider === 'nim' || provider === 'ollama'
     || provider === 'gemini' || provider === 'openai' || provider === 'groq'
-    || provider === 'deepseek') {
+    || provider === 'deepseek' || provider === 'kiro') {
     return 'standard'
   }
 

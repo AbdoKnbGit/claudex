@@ -58,6 +58,7 @@ export class LaneBackedProvider implements BaseProvider {
 
     const lane = this.lane
     const providerHint = this.providerHint
+    const resolvedModel = lane.resolveModel(params.model)
 
     if (typeof lane.streamAsProvider !== 'function') {
       throw new Error(
@@ -72,7 +73,7 @@ export class LaneBackedProvider implements BaseProvider {
     // Async iterable that calls the lane and forwards events verbatim.
     const events = (async function* (): AsyncIterable<AnthropicStreamEvent> {
       const gen = streamAsProvider({
-        model: params.model,
+        model: resolvedModel,
         messages: params.messages,
         system: params.system ?? '',
         tools: params.tools ?? [],
@@ -98,7 +99,7 @@ export class LaneBackedProvider implements BaseProvider {
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
     // Non-streaming path: drain the stream and build the final message.
     const streamResult = await this.stream({ ...params, stream: false })
-    return assembleFinalMessage(streamResult, params.model)
+    return assembleFinalMessage(streamResult, this.lane.resolveModel(params.model))
   }
 
   async listModels(): Promise<ModelInfo[]> {

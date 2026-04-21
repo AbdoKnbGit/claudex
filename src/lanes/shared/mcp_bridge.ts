@@ -23,6 +23,7 @@ import type { ProviderTool } from '../../services/api/providers/base_provider.js
 export type LaneSchemaProfile =
   | 'gemini'
   | 'codex'
+  | 'kiro'
   | 'anthropic'
   | 'openai-strict'
   | 'openai-loose'
@@ -72,6 +73,17 @@ const DROP_BY_PROFILE: Record<LaneSchemaProfile, Set<string>> = {
     // Metadata / validation fields Gemini rejects
     'default', 'const', 'examples', 'deprecated', 'readOnly', 'writeOnly', 'title',
   ]),
+  // Kiro / CodeWhisperer accepts JSON-schema-ish tool params but is picky
+  // about meta keywords and strict-mode helpers that leak in from other lanes.
+  // `additionalProperties` triggers "Improperly formed request" 400s on the
+  // CodeWhisperer API — per the kiro-gateway reference implementation
+  // (converters_core.sanitize_json_schema). Empty `required: []` arrays are
+  // also rejected; those are handled conditionally in sanitizeSchemaForLane.
+  kiro: new Set([
+    '$schema', '$id', '$ref', '$comment',
+    'strict', 'default', 'examples',
+    'additionalProperties',
+  ]),
   // Codex Responses API: accepts most JSON-Schema but rejects $schema/$id.
   codex: new Set(['$schema', '$id', '$ref', '$comment']),
   // Anthropic: passes most keywords through; strip a handful that confuse
@@ -114,12 +126,20 @@ export function sanitizeSchemaForLane(
     return sanitizeSchemaForGeminiDeep(schema)
   }
   const drop = DROP_BY_PROFILE[profile]
+  // Kiro 400s on empty required arrays at any nesting level.
+  const dropEmptyRequired = profile === 'kiro'
   function walk(v: unknown): unknown {
     if (Array.isArray(v)) return v.map(walk)
     if (v && typeof v === 'object') {
       const out: Record<string, unknown> = {}
       for (const [k, value] of Object.entries(v as Record<string, unknown>)) {
         if (drop.has(k)) continue
+        if (
+          dropEmptyRequired &&
+          k === 'required' &&
+          Array.isArray(value) &&
+          value.length === 0
+        ) continue
         out[k] = walk(value)
       }
       return out
@@ -262,6 +282,23 @@ Each tool description ends with a "STRICT PARAMETERS:" line listing required fie
 
 For file edits, apply_patch is the primary edit primitive — use it for all in-place modifications. Use write_file only for brand-new files.
 </tool_use_rules>
+`
+
+/**
+ * Kiro / CodeWhisperer tool-usage rules. Keep this short: Kiro doesn't have
+ * server-side strict tool validation like Gemini VALIDATED mode, so the
+ * prompt reminder does more of the enforcement work.
+ */
+export const KIRO_TOOL_USAGE_RULES = `<tool_usage_rules>
+Tool schemas are authoritative. For every tool call:
+- include every field listed in "required"
+- use parameter names exactly as declared in "properties"
+- match parameter types exactly
+- do not send empty {} when fields are required
+- if a tool description points to full documentation in the system prompt, read that section before calling the tool
+
+The "STRICT PARAMETERS:" line in each tool description is the quick reference.
+</tool_usage_rules>
 `
 
 /**

@@ -30,6 +30,21 @@ import type {
   ProviderTool,
   ProviderContentBlock,
 } from '../../services/api/providers/base_provider.js'
+import {
+  appendStrictParamsHint,
+  KIRO_TOOL_USAGE_RULES,
+  sanitizeSchemaForLane,
+} from '../shared/mcp_bridge.js'
+import { normalizeKiroModelId } from './catalog.js'
+import {
+  isKiroShellCandidate,
+  resolvePreferredKiroShellToolName,
+  toKiroToolName,
+} from './tool_names.js'
+import {
+  checkKiroPayloadSize,
+  trimKiroPayloadToLimit,
+} from './payload_guards.js'
 
 interface KiroToolSpec {
   toolSpecification: {
@@ -98,11 +113,27 @@ export interface BuildKiroPayloadParams {
   profileArn?: string
 }
 
+const KIRO_TOOL_DESCRIPTION_MAX_LENGTH = 10_000
+const KIRO_DEFAULT_MAX_PAYLOAD_BYTES = 600_000
+const KIRO_DEFAULT_TARGET_PAYLOAD_BYTES = 220_000
+
 export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
   const { model, system, messages, tools, maxTokens, temperature, topP, profileArn } = params
+  const resolvedModel = normalizeKiroModelId(model)
+  const preferredShellToolName = resolvePreferredKiroShellToolName(
+    tools.map(tool => tool.name),
+  )
 
-  const specs = _buildToolSpecs(tools)
-  const { history, currentMessage } = _convertMessages(messages, system, specs, model)
+  const { specs, toolDocumentation } = _buildToolSpecs(tools, preferredShellToolName)
+  const systemWithRules = specs.length > 0
+    ? _assembleKiroToolSystemPrompt(
+        system,
+        tools,
+        preferredShellToolName,
+        toolDocumentation,
+      )
+    : system
+  const { history, currentMessage } = _convertMessages(messages, systemWithRules, specs, resolvedModel)
 
   // CodeWhisperer prepends the current wall-clock — 9router does the
   // same so models that rely on "current time" skills (scheduling,
@@ -118,7 +149,7 @@ export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
       currentMessage: {
         userInputMessage: {
           content: stampedContent,
-          modelId: model,
+          modelId: resolvedModel,
           origin: 'AI_EDITOR',
           ...(currentMessage.userInputMessage.userInputMessageContext && {
             userInputMessageContext: currentMessage.userInputMessage.userInputMessageContext,
@@ -128,6 +159,8 @@ export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
       history,
     },
   }
+
+  _optimizeKiroPayload(payload, systemWithRules)
 
   if (profileArn) payload.profileArn = profileArn
   if (maxTokens != null || temperature !== undefined || topP !== undefined) {
@@ -139,22 +172,285 @@ export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
   return payload
 }
 
+function _optimizeKiroPayload(
+  payload: KiroPayload,
+  systemText: string,
+): void {
+  if (payload.conversationState.history.length === 0) return
+
+  const preserveLeadingEntries = systemText.trim().length > 0
+    ? _getSystemBearingHistoryPrefixLength(payload.conversationState.history)
+    : 0
+  const targetBytes = _readKiroPayloadByteBudget(
+    'CLAUDEX_KIRO_TARGET_PAYLOAD_BYTES',
+    KIRO_DEFAULT_TARGET_PAYLOAD_BYTES,
+  )
+  const maxBytes = _readKiroPayloadByteBudget(
+    'CLAUDEX_KIRO_MAX_PAYLOAD_BYTES',
+    KIRO_DEFAULT_MAX_PAYLOAD_BYTES,
+  )
+
+  if (targetBytes > 0 && checkKiroPayloadSize(payload) > targetBytes) {
+    trimKiroPayloadToLimit(payload, targetBytes, { preserveLeadingEntries })
+  }
+
+  const effectiveHardLimit = maxBytes > 0 ? maxBytes : KIRO_DEFAULT_MAX_PAYLOAD_BYTES
+  if (checkKiroPayloadSize(payload) > effectiveHardLimit) {
+    trimKiroPayloadToLimit(payload, effectiveHardLimit, { preserveLeadingEntries })
+  }
+}
+
+function _readKiroPayloadByteBudget(
+  envName: string,
+  defaultValue: number,
+): number {
+  const raw = process.env[envName]
+  if (!raw) return defaultValue
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue
+}
+
+function _getSystemBearingHistoryPrefixLength(
+  history: KiroHistoryEntry[],
+): number {
+  const firstUserIndex = history.findIndex(entry => 'userInputMessage' in entry)
+  if (firstUserIndex === -1) return 0
+  const nextIndex = firstUserIndex + 1
+  if (nextIndex < history.length && 'assistantResponseMessage' in history[nextIndex]!) {
+    return nextIndex + 1
+  }
+  return firstUserIndex + 1
+}
+
 // ─── Tool specs ──────────────────────────────────────────────────
 
-function _buildToolSpecs(tools: ProviderTool[]): KiroToolSpec[] {
-  return tools.map(t => {
-    const schema = (t.input_schema ?? {}) as Record<string, unknown>
+function _buildToolSpecs(
+  tools: ProviderTool[],
+  preferredShellToolName: string | null,
+): {
+  specs: KiroToolSpec[]
+  toolDocumentation: string
+} {
+  const seen = new Set<string>()
+  const specs: KiroToolSpec[] = []
+  const documentationSections: string[] = []
+  for (const t of tools) {
+    const kiroName = toKiroToolName(t.name)
+    if (
+      kiroName === 'shell'
+      && preferredShellToolName
+      && isKiroShellCandidate(t.name)
+      && t.name !== preferredShellToolName
+    ) {
+      continue
+    }
+    // Skip duplicates — e.g. Bash + PowerShell both map to 'shell'
+    if (seen.has(kiroName)) continue
+    seen.add(kiroName)
+    const schema = sanitizeSchemaForLane(
+      t.input_schema ?? { type: 'object', properties: {} },
+      'kiro',
+    )
+    // Kiro 400s "Improperly formed request" on empty `required: []` and on
+    // any `additionalProperties` keyword (per kiro-gateway reference). Both
+    // are stripped recursively by sanitizeSchemaForLane for the kiro profile,
+    // so do NOT add `required: []` back here.
     const normalized = Object.keys(schema).length === 0
-      ? { type: 'object', properties: {}, required: [] }
-      : { ...schema, required: (schema.required as unknown[]) ?? [] }
-    return {
+      ? { type: 'object', properties: {} }
+      : schema
+    const baseDescription = _normalizeKiroToolDescription(
+      t.name,
+      kiroName,
+      t.description,
+    )
+    const fullDescription = appendStrictParamsHint(
+      baseDescription,
+      normalized as Record<string, unknown>,
+    )
+    const { inlineDescription, documentationSection } = _compressKiroToolDescription(
+      kiroName,
+      fullDescription,
+    )
+    if (documentationSection) documentationSections.push(documentationSection)
+    specs.push({
       toolSpecification: {
-        name: t.name,
-        description: (t.description && t.description.trim()) || `Tool: ${t.name}`,
+        name: kiroName,
+        description: inlineDescription,
         inputSchema: { json: normalized as Record<string, unknown> },
       },
+    })
+  }
+  return {
+    specs,
+    toolDocumentation: documentationSections.length > 0
+      ? [
+          '<tool_documentation>',
+          'Some Kiro tool descriptions are too long to send inline. Read the referenced sections below when a tool points here.',
+          ...documentationSections,
+          '</tool_documentation>',
+        ].join('\n')
+      : '',
+  }
+}
+
+function _assembleKiroToolSystemPrompt(
+  system: string,
+  tools: ProviderTool[],
+  preferredShellToolName: string | null,
+  toolDocumentation: string,
+): string {
+  const sections = [KIRO_TOOL_USAGE_RULES]
+  const guide = _buildKiroToolSelectionGuide(tools, preferredShellToolName)
+  if (guide) sections.push(guide)
+  if (toolDocumentation) sections.push(toolDocumentation)
+  if (system) sections.push(system)
+  return sections.join('\n')
+}
+
+function _buildKiroToolSelectionGuide(
+  tools: ProviderTool[],
+  preferredShellToolName: string | null,
+): string {
+  const toolNames = new Set(tools.map(tool => tool.name))
+  const lines: string[] = []
+
+  const addCategory = (label: string, entries: string[]): void => {
+    if (entries.length === 0) return
+    lines.push(`- ${label}: ${entries.join(', ')}`)
+  }
+
+  const pick = (name: string, description: string): string | null =>
+    toolNames.has(name) ? `${name} (${description})` : null
+
+  const collect = (...entries: Array<string | null>): string[] =>
+    entries.filter((entry): entry is string => typeof entry === 'string')
+
+  addCategory('Files', collect(
+    pick('Read', 'read files'),
+    pick('Write', 'create or overwrite files'),
+    pick('Edit', 'modify existing files in place'),
+    pick('Glob', 'find files by pattern'),
+    pick('Grep', 'search file contents'),
+    pick('NotebookEdit', 'edit Jupyter notebook cells'),
+  ))
+
+  addCategory('Code', collect(
+    pick('LSP', 'semantic code operations like definitions, references, and symbols'),
+  ))
+
+  const shellEntries: string[] = []
+  if (preferredShellToolName && toolNames.has(preferredShellToolName)) {
+    const shellDescription = preferredShellToolName === 'PowerShell'
+      ? 'run Windows shell and git commands'
+      : 'run shell and git commands'
+    shellEntries.push(`${preferredShellToolName} (${shellDescription})`)
+  } else {
+    shellEntries.push(...collect(
+      pick('Bash', 'run shell and git commands'),
+      pick('PowerShell', 'run Windows shell and git commands'),
+    ))
+  }
+  shellEntries.push(...collect(
+    pick('TaskOutput', 'read background task output'),
+    pick('TaskStop', 'stop a background task'),
+  ))
+  addCategory('Shell', shellEntries)
+
+  addCategory('Planning', collect(
+    pick('TodoWrite', 'manage the session checklist'),
+    pick('TaskCreate', 'create a task'),
+    pick('TaskGet', 'read a task'),
+    pick('TaskList', 'list tasks'),
+    pick('TaskUpdate', 'update a task'),
+    pick('EnterPlanMode', 'switch into planning mode'),
+    pick('ExitPlanMode', 'present a plan and exit planning mode'),
+    pick('EnterWorktree', 'create and enter an isolated git worktree'),
+    pick('ExitWorktree', 'leave the current worktree'),
+  ))
+
+  addCategory('Web', collect(
+    pick('WebFetch', 'fetch web content'),
+    pick('WebSearch', 'search the web'),
+  ))
+
+  addCategory('Interaction', collect(
+    pick('AskUserQuestion', 'ask the user a clarifying question'),
+    pick('Skill', 'invoke a slash-command skill'),
+    pick('SendUserMessage', 'send a message back to the user'),
+    pick('Config', 'read or change Claudex settings'),
+  ))
+
+  addCategory('Agents', collect(
+    pick('Agent', 'launch a subagent'),
+    pick('SendMessage', 'message a running agent teammate'),
+    pick('TeamCreate', 'create a multi-agent team'),
+    pick('TeamDelete', 'disband a multi-agent team'),
+  ))
+
+  addCategory('MCP', collect(
+    pick('ListMcpResourcesTool', 'list MCP resources'),
+    pick('ReadMcpResourceTool', 'read a specific MCP resource'),
+  ))
+
+  const mcpServerTools = tools
+    .map(tool => tool.name)
+    .filter(name => name.startsWith('mcp__'))
+  if (mcpServerTools.length > 0) {
+    lines.push(`- MCP server tools: ${mcpServerTools.length} tool(s) named mcp__* are available; use the exact tool name shown in the tool list when you need one.`)
+  }
+
+  if (lines.length === 0) return ''
+
+  return [
+    '<tool_selection_guide>',
+    'Prefer specialized tools over shell when a direct tool exists for files, notebooks, planning, worktrees, questions, skills, tasks, or MCP resources.',
+    ...lines,
+    '</tool_selection_guide>',
+  ].join('\n')
+}
+
+function _normalizeKiroToolDescription(
+  claudexName: string,
+  kiroName: string,
+  description: string | undefined,
+): string {
+  const trimmed = description?.trim()
+  let resolved = trimmed || `Tool: ${kiroName}`
+
+  if (kiroName !== 'shell') return resolved
+
+  if (claudexName === 'PowerShell') {
+    return `${resolved}\nUse Windows PowerShell syntax for commands.`
+  }
+
+  if (claudexName === 'Bash') {
+    return `${resolved}\nUse POSIX/bash syntax for commands. Do not use PowerShell cmdlets.`
+  }
+
+  return resolved
+}
+
+function _compressKiroToolDescription(
+  toolName: string,
+  description: string,
+): {
+  inlineDescription: string
+  documentationSection: string
+} {
+  if (
+    KIRO_TOOL_DESCRIPTION_MAX_LENGTH <= 0
+    || description.length <= KIRO_TOOL_DESCRIPTION_MAX_LENGTH
+  ) {
+    return {
+      inlineDescription: description,
+      documentationSection: '',
     }
-  })
+  }
+
+  return {
+    inlineDescription: `[Full documentation in system prompt under '## Tool: ${toolName}']`,
+    documentationSection: `## Tool: ${toolName}\n\n${description}`,
+  }
 }
 
 // ─── Message conversion ──────────────────────────────────────────
@@ -336,7 +632,7 @@ function _extractAssistantBlocks(content: string | ProviderContentBlock[]): {
     } else if (block.type === 'tool_use' && block.id && block.name) {
       toolUses.push({
         toolUseId: block.id,
-        name: block.name,
+        name: toKiroToolName(block.name),
         input: (block.input ?? {}) as Record<string, unknown>,
       })
     }

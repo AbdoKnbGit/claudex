@@ -38,6 +38,7 @@ import { initOpenAICompatLane } from './openai-compat/index.js'
 import { initQwenLane } from './qwen/index.js'
 import { initClaudeLane } from './claude/index.js'
 import { initKiroLane } from './kiro/index.js'
+import { initCursorLane } from './cursor/index.js'
 
 /**
  * Initialize all lanes with available auth credentials.
@@ -89,6 +90,10 @@ export function initLanes(opts?: {
   /** Kiro profileArn (optional — social-login users have one, Builder-ID
    *  users don't; the lane falls back to a public default when unset). */
   kiroProfileArn?: string
+  /** Cursor access token (manual paste from Cursor IDE state.vscdb). */
+  cursorApiKey?: string
+  /** Cursor machineId (optional — derived from the token when absent). */
+  cursorMachineId?: string
 }): void {
   // ── Claude lane (registration-only: Anthropic traffic uses
   //    services/api/claude.ts directly — this lane exists for /lane
@@ -126,6 +131,15 @@ export function initLanes(opts?: {
   initKiroLane({
     accessToken: opts?.kiroApiKey,
     profileArn: opts?.kiroProfileArn,
+  })
+
+  // ── Cursor lane (ConnectRPC protobuf to api2.cursor.sh) ──
+  // Dotted catalog ids (`claude-4.5-sonnet`, `gpt-5.2-codex`) don't
+  // collide with Anthropic/OpenAI canonical ids, so the dispatcher's
+  // per-provider routing (not model-heuristic) is what matters here.
+  initCursorLane({
+    accessToken: opts?.cursorApiKey,
+    machineId: opts?.cursorMachineId,
   })
 
   // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama,

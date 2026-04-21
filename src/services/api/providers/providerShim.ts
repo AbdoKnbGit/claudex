@@ -35,6 +35,8 @@ import {
   getKiloCodeOAuthToken,
   getCopilotOAuthToken,
   getKiroOAuthToken,
+  getCursorOAuthToken,
+  getCursorMachineId,
 } from '../auth/oauth_services.js'
 import type {
   BaseProvider,
@@ -82,6 +84,11 @@ function _ensureLanesInitialized(): void {
     // Builder-ID users (who don't get one back from the token endpoint).
     const kiroToken = getKiroOAuthToken() ?? undefined
     const kiroProfileArn = _readStoredKiroProfileArn() ?? undefined
+    // Cursor: accessToken is pasted from the user's Cursor IDE (Settings
+    // → Cursor Auth, or from state.vscdb). machineId is optional — the
+    // lane derives it from the token when absent.
+    const cursorToken = getCursorOAuthToken() ?? undefined
+    const cursorMachineId = getCursorMachineId() ?? undefined
     initLanes({
       geminiApiKey: getProviderApiKey('gemini') ?? undefined,
       geminiCliOAuthToken: cliOAuthToken,
@@ -101,6 +108,8 @@ function _ensureLanesInitialized(): void {
       copilotApiKey: copilotToken,
       kiroApiKey: kiroToken,
       kiroProfileArn: kiroProfileArn,
+      cursorApiKey: cursorToken,
+      cursorMachineId: cursorMachineId,
     })
   } catch {
     // Lane init failure must not break the legacy provider path.
@@ -140,10 +149,9 @@ function _laneNameForProvider(provider: APIProvider): string {
     // Kiro has its own lane (CodeWhisperer EventStream) — not compat.
     case 'kiro':
       return 'kiro'
-    // Cursor stub still pending an executor (protobuf wire format).
-    // /login + /provider work but chat errors out until v0.4.3.
+    // Cursor has its own lane (ConnectRPC protobuf) — not compat.
     case 'cursor':
-      return '<stub>'
+      return 'cursor'
     default:
       return provider as string
   }
@@ -270,7 +278,7 @@ function createProvider(provider: APIProvider): BaseProvider {
       )
     case 'cursor':
       throw new Error(
-        'Cursor chat is not yet implemented — protobuf wire format pending. OAuth + UI work in v0.4.1.',
+        'Cursor chat requires the cursor lane to be healthy. Run `/login cursor` to paste your Cursor token.',
       )
     default:
       throw new Error(`Unknown third-party provider: ${provider}`)
@@ -550,6 +558,18 @@ export async function reloadKiroLaneAuth(): Promise<void> {
   const profileArn = _readStoredKiroProfileArn() ?? undefined
   const { kiroLane } = await import('../../../lanes/kiro/index.js')
   kiroLane.configure({ accessToken, profileArn })
+}
+
+/**
+ * Reconfigure the Cursor lane's in-memory auth from whatever is currently
+ * on disk. Called by /login cursor after it writes a fresh token so the
+ * session picks it up without a process restart.
+ */
+export async function reloadCursorLaneAuth(): Promise<void> {
+  const accessToken = getCursorOAuthToken() ?? undefined
+  const machineId = getCursorMachineId() ?? undefined
+  const { cursorLane } = await import('../../../lanes/cursor/index.js')
+  cursorLane.configure({ accessToken, machineId })
 }
 
 /**

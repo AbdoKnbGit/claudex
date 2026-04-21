@@ -1751,6 +1751,12 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   groq:        ['api_key'],
   nim:         ['api_key'],
   deepseek:    ['api_key'],
+  cline:       ['oauth'],
+  copilot:     ['oauth'],
+  cursor:      ['oauth'],
+  iflow:       ['oauth'],
+  kilocode:    ['oauth'],
+  kiro:        ['oauth'],
 }
 
 /**
@@ -1796,6 +1802,12 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'antigravity': return null  // OAuth-only provider
     case 'deepseek':    return process.env.DEEPSEEK_API_KEY ?? _loadStoredKey('deepseek')
     case 'ollama':      return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama') ?? 'ollama'
+    case 'cline':       return null  // OAuth-only
+    case 'copilot':     return null  // OAuth-only
+    case 'cursor':      return null  // OAuth-only
+    case 'iflow':       return null  // OAuth-only
+    case 'kilocode':    return null  // OAuth-only
+    case 'kiro':        return null  // OAuth-only
     default:            return getAnthropicApiKey()
   }
 }
@@ -1862,6 +1874,12 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'antigravity': return 'https://cloudcode-pa.googleapis.com/v1internal'
     case 'deepseek':    return process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
     case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
+    case 'cline':       return 'https://api.cline.bot/v1'
+    case 'copilot':     return 'https://api.githubcopilot.com'
+    case 'cursor':      return 'https://api2.cursor.sh'
+    case 'iflow':       return 'https://apis.iflow.cn/v1'
+    case 'kilocode':    return 'https://api.kilo.ai'
+    case 'kiro':        return 'https://codewhisperer.us-east-1.amazonaws.com'
     default:            return process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
   }
 }
@@ -1923,6 +1941,12 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'antigravity': return '(OAuth only — no API key)'
     case 'deepseek':    return 'DEEPSEEK_API_KEY'
     case 'ollama':      return 'OLLAMA_API_KEY'
+    case 'cline':       return '(OAuth only — no API key)'
+    case 'copilot':     return '(OAuth only — no API key)'
+    case 'cursor':      return '(OAuth only — no API key)'
+    case 'iflow':       return '(OAuth only — no API key)'
+    case 'kilocode':    return '(OAuth only — no API key)'
+    case 'kiro':        return '(OAuth only — no API key)'
     default:            return 'ANTHROPIC_API_KEY'
   }
 }

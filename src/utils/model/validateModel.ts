@@ -21,6 +21,7 @@ export async function validateModel(
   model: string,
 ): Promise<{ valid: boolean; error?: string }> {
   const normalizedModel = model.trim()
+  const cacheKey = `${getAPIProvider()}:${normalizedModel.toLowerCase()}`
 
   // Empty model is invalid
   if (!normalizedModel) {
@@ -47,7 +48,7 @@ export async function validateModel(
   }
 
   // Check cache first
-  if (validModelCache.has(normalizedModel)) {
+  if (validModelCache.has(cacheKey)) {
     return { valid: true }
   }
 
@@ -74,7 +75,7 @@ export async function validateModel(
     })
 
     // If we got here, the model is valid
-    validModelCache.set(normalizedModel, true)
+    validModelCache.set(cacheKey, true)
     return { valid: true }
   } catch (error) {
     return handleValidationError(error, normalizedModel)

@@ -37,10 +37,16 @@ import type {
 } from '../types.js'
 import { parseFrames, type KiroEvent } from './eventstream.js'
 import { buildKiroPayload } from './request.js'
-import { KIRO_MODELS, isKiroModel } from './catalog.js'
+import { KIRO_MODELS, isKiroModel, normalizeKiroModelId } from './catalog.js'
+import {
+  resolvePreferredKiroShellToolName,
+  toClaudexToolName,
+} from './tool_names.js'
 import { randomUUID } from 'crypto'
+import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 
 const KIRO_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse'
+const KIRO_MODELS_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com'
 // Default when the stored token blob lacks a profileArn (Builder-ID
 // users don't get one back from the device-code exchange). Matches the
 // reference DEFAULT_PROFILE_ARN in 9router-master/open-sse/services/usage.js.
@@ -49,6 +55,75 @@ const DEFAULT_PROFILE_ARN = 'arn:aws:codewhisperer:us-east-1:638616132270:profil
 // contextUsagePercentage (no metricsEvent was emitted). Claude/Kiro pairs
 // all use a 200k window.
 const KIRO_CONTEXT_WINDOW = 200_000
+const KIRO_MODELS_CACHE_TTL_MS = 5 * 60_000
+const MAX_TURNS = 100
+const DSML_TOKEN = '\uFF5CDSML\uFF5C'
+const DSML_FUNCTION_CALLS_OPEN = `<${DSML_TOKEN}function_calls>`
+const DSML_FUNCTION_CALLS_CLOSE = `</${DSML_TOKEN}function_calls>`
+
+interface ParsedDsmlToolCall {
+  name: string
+  input: Record<string, unknown>
+}
+
+interface KiroAvailableModel {
+  modelId?: string
+  modelName?: string
+  tokenLimits?: {
+    maxInputTokens?: number
+  }
+}
+
+interface StoredKiroOAuthBlob {
+  accessToken?: string
+  refreshToken?: string
+  meta?: {
+    profileArn?: string | null
+  }
+}
+
+function _isLikelyKiroModelId(id: string): boolean {
+  const normalized = id.toLowerCase()
+  return (
+    normalized.startsWith('claude-')
+    || normalized.startsWith('deepseek-')
+    || normalized.startsWith('qwen')
+    || normalized.startsWith('glm-')
+    || normalized.startsWith('minimax-')
+  )
+}
+
+function _dedupeKiroModels(models: readonly ModelInfo[]): ModelInfo[] {
+  const seen = new Set<string>()
+  const out: ModelInfo[] = []
+  for (const model of models) {
+    if (!model.id) continue
+    const normalizedId = normalizeKiroModelId(model.id)
+    const dedupeKey = normalizedId.toLowerCase()
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    out.push({
+      ...model,
+      id: normalizedId,
+      name: model.name || normalizedId,
+    })
+  }
+  return out
+}
+
+function _normalizeKiroModelCatalog(models: readonly KiroAvailableModel[]): ModelInfo[] {
+  const normalized = models
+    .filter((model): model is KiroAvailableModel & { modelId: string } => typeof model.modelId === 'string' && model.modelId.length > 0)
+    .filter(model => _isLikelyKiroModelId(model.modelId) || isKiroModel(model.modelId))
+    .map(model => ({
+      id: normalizeKiroModelId(model.modelId),
+      name: model.modelName || normalizeKiroModelId(model.modelId),
+      contextWindow: model.tokenLimits?.maxInputTokens,
+      supportsToolCalling: true,
+    }))
+
+  return _dedupeKiroModels(normalized)
+}
 
 export class KiroLane implements Lane {
   readonly name = 'kiro'
@@ -56,10 +131,14 @@ export class KiroLane implements Lane {
 
   private accessToken: string | null = null
   private profileArn: string | null = null
+  private discoveredModels = new Map<string, ModelInfo>()
+  private modelsCache: { at: number; models: ModelInfo[] } | null = null
 
   configure(opts: { accessToken?: string; profileArn?: string | null }): void {
     if (opts.accessToken !== undefined) this.accessToken = opts.accessToken || null
     if (opts.profileArn !== undefined) this.profileArn = opts.profileArn || null
+    this.modelsCache = null
+    this.discoveredModels.clear()
   }
 
   supportsModel(model: string): boolean {
@@ -68,7 +147,8 @@ export class KiroLane implements Lane {
     // like `claude-sonnet-4-20250514`. Route strictly on the static
     // list so the dispatcher doesn't accidentally steal a canonical
     // Claude id away from the Anthropic path.
-    return isKiroModel(model)
+    const normalized = normalizeKiroModelId(model)
+    return isKiroModel(normalized) || this.discoveredModels.has(normalized)
   }
 
   isHealthy(): boolean {
@@ -76,23 +156,249 @@ export class KiroLane implements Lane {
   }
 
   resolveModel(model: string): string {
-    return model
+    return normalizeKiroModelId(model)
   }
 
   async listModels(_providerFilter?: string): Promise<ModelInfo[]> {
-    return KIRO_MODELS
+    const now = Date.now()
+    if (this.modelsCache && now - this.modelsCache.at < KIRO_MODELS_CACHE_TTL_MS) {
+      return this.modelsCache.models
+    }
+
+    const dynamicModels = await this._listAvailableModels().catch(() => [])
+    const models = dynamicModels.length > 0 ? dynamicModels : KIRO_MODELS
+    const deduped = _dedupeKiroModels(models)
+    this.discoveredModels.clear()
+    for (const model of deduped) {
+      this.discoveredModels.set(model.id, model)
+    }
+    this.modelsCache = { at: now, models: deduped }
+    return deduped
   }
 
   dispose(): void {}
 
+  private _readStoredAuthBlob(): StoredKiroOAuthBlob | null {
+    try {
+      const raw = loadProviderKey('kiro_oauth')
+      if (!raw) return null
+      return JSON.parse(raw) as StoredKiroOAuthBlob
+    } catch {
+      return null
+    }
+  }
+
+  private _reloadAuthFromDisk(): boolean {
+    const blob = this._readStoredAuthBlob()
+    if (!blob?.accessToken) return false
+
+    const nextAccessToken = blob.accessToken
+    const nextProfileArn = blob.meta?.profileArn ?? null
+    const changed = nextAccessToken !== this.accessToken || nextProfileArn !== this.profileArn
+    if (changed) {
+      this.configure({ accessToken: nextAccessToken, profileArn: nextProfileArn })
+    }
+    return changed
+  }
+
+  private async _recoverInvalidBearer(): Promise<boolean> {
+    // Step 1: Check if a fresh token was already written to disk
+    // (e.g. by a concurrent /login kiro or token refresh elsewhere).
+    if (this._reloadAuthFromDisk()) return true
+
+    // Step 2: If we have a refresh token, try refreshing via HTTPS.
+    // This is fully native — no CLI binary needed.
+    const blob = this._readStoredAuthBlob()
+    const refreshToken = blob?.refreshToken
+    if (refreshToken) {
+      try {
+        const { refreshKiroOAuth } = await import('../../services/api/auth/oauth_services.js')
+        await refreshKiroOAuth(refreshToken)
+      } catch {
+        // Refresh failed — token may be revoked. User needs to re-login.
+      }
+    }
+
+    // Step 3: Reload from disk one more time — the refresh above
+    // saves the new token to disk before returning.
+    return this._reloadAuthFromDisk() || !!this.accessToken
+  }
+
+  private async _listAvailableModels(): Promise<ModelInfo[]> {
+    if (!this.accessToken) return []
+
+    const response = await fetch(KIRO_MODELS_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-amz-json-1.0',
+        'x-amz-target': 'AmazonCodeWhispererService.ListAvailableModels',
+        'Authorization': `Bearer ${this.accessToken}`,
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        origin: 'AI_EDITOR',
+        profileArn: this.profileArn ?? DEFAULT_PROFILE_ARN,
+      }),
+    })
+    if (!response.ok) return []
+
+    const data = await response.json() as { models?: KiroAvailableModel[] }
+    return _normalizeKiroModelCatalog(data.models ?? [])
+  }
+
   async *run(_context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult> {
-    throw new Error('KiroLane.run (lane-owns-loop) is not wired yet — use streamAsProvider via LaneBackedProvider.')
+    const context = _context
+    const { model, messages, systemParts, availableTools, mcpTools, signal, maxTokens } = context
+
+    const systemText = assembleSystemFromParts(systemParts)
+    const allTools = [
+      ...availableTools.map(tool => tool.anthropicDef),
+      ...mcpTools,
+    ]
+
+    const totalUsage: NormalizedUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      thinking_tokens: 0,
+    }
+
+    let currentMessages = messages
+    let turnCount = 0
+
+    while (turnCount < MAX_TURNS) {
+      if (signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
+      turnCount++
+
+      const toolUsesByIndex = new Map<number, {
+        id: string
+        name: string
+        inputJson: string
+      }>()
+      let done = false
+      let stopReason: 'end_turn' | 'tool_use' = 'end_turn'
+
+      const gen = this.streamAsProvider({
+        model,
+        messages: currentMessages,
+        system: systemText,
+        tools: allTools,
+        max_tokens: maxTokens,
+        signal,
+      })
+
+      while (!done) {
+        const next = await gen.next()
+        if (next.done) {
+          const usage = next.value
+          totalUsage.input_tokens += usage.input_tokens
+          totalUsage.output_tokens += usage.output_tokens
+          totalUsage.cache_read_tokens += usage.cache_read_tokens
+          totalUsage.cache_write_tokens += usage.cache_write_tokens
+          totalUsage.thinking_tokens += usage.thinking_tokens
+          done = true
+          break
+        }
+
+        const event = next.value
+        yield event
+
+        if (
+          event.type === 'content_block_start'
+          && event.content_block?.type === 'tool_use'
+          && typeof event.index === 'number'
+          && event.content_block.id
+          && event.content_block.name
+        ) {
+          toolUsesByIndex.set(event.index, {
+            id: event.content_block.id,
+            name: event.content_block.name,
+            inputJson: '',
+          })
+        }
+
+        if (
+          event.type === 'content_block_delta'
+          && event.delta?.type === 'input_json_delta'
+          && typeof event.index === 'number'
+        ) {
+          const toolUse = toolUsesByIndex.get(event.index)
+          if (toolUse) {
+            toolUse.inputJson += event.delta.partial_json ?? ''
+          }
+        }
+
+        if (event.type === 'message_delta' && event.delta?.stop_reason === 'tool_use') {
+          stopReason = 'tool_use'
+        }
+      }
+
+      const collectedToolUses = Array.from(toolUsesByIndex.values()).map(toolUse => {
+        let input: Record<string, unknown> = {}
+        if (toolUse.inputJson) {
+          try {
+            input = JSON.parse(toolUse.inputJson) as Record<string, unknown>
+          } catch {
+            input = {}
+          }
+        }
+        return { id: toolUse.id, name: toolUse.name, input }
+      })
+
+      if (stopReason !== 'tool_use' || collectedToolUses.length === 0) {
+        return { stopReason: 'end_turn', usage: totalUsage }
+      }
+
+      const toolResults = await Promise.all(
+        collectedToolUses.map(async toolUse => {
+          try {
+            const result = await context.executeTool(toolUse.name, toolUse.input)
+            return {
+              type: 'tool_result' as const,
+              tool_use_id: toolUse.id,
+              content: typeof result.content === 'string'
+                ? result.content
+                : JSON.stringify(result.content),
+              is_error: result.isError,
+            }
+          } catch (error: any) {
+            return {
+              type: 'tool_result' as const,
+              tool_use_id: toolUse.id,
+              content: `Error: ${error?.message ?? String(error)}`,
+              is_error: true,
+            }
+          }
+        }),
+      )
+
+      currentMessages = [
+        ...currentMessages,
+        {
+          role: 'assistant',
+          content: collectedToolUses.map(toolUse => ({
+            type: 'tool_use' as const,
+            id: toolUse.id,
+            name: toolUse.name,
+            input: toolUse.input,
+          })),
+        },
+        {
+          role: 'user',
+          content: toolResults,
+        },
+      ]
+    }
+
+    return { stopReason: 'max_turns', usage: totalUsage }
   }
 
   async *streamAsProvider(
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const { model, messages, system, tools, max_tokens, temperature, signal } = params
+    const resolvedModel = this.resolveModel(model)
 
     if (!this.accessToken) {
       throw new Error(
@@ -105,7 +411,7 @@ export class KiroLane implements Lane {
       : (system ?? []).map(b => b.text).join('\n\n')
 
     const body = buildKiroPayload({
-      model,
+      model: resolvedModel,
       system: systemText,
       messages,
       tools,
@@ -130,7 +436,13 @@ export class KiroLane implements Lane {
     // the input already resolved (no argument-streaming), but the same
     // toolUseId may repeat if the model extends its input mid-stream, so
     // we reuse the block index and accumulate partial_json into it.
-    const toolBlocks = new Map<string, { anthropicIndex: number; emittedStart: boolean }>()
+    const toolBlocks = new Map<string, ToolBlockState>()
+    let pendingAssistantText = ''
+    let sawToolUse = false
+    let syntheticToolCounter = 0
+    const preferredShellToolName = resolvePreferredKiroShellToolName(
+      tools.map(tool => tool.name),
+    )
 
     // Track stop-state. Kiro sometimes emits messageStopEvent BEFORE
     // metricsEvent, sometimes after; we only close out once per turn.
@@ -148,7 +460,7 @@ export class KiroLane implements Lane {
           type: 'message',
           role: 'assistant',
           content: [],
-          model,
+          model: resolvedModel,
           stop_reason: null,
           stop_sequence: null,
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -156,31 +468,59 @@ export class KiroLane implements Lane {
       }
     }
 
-    const closeOpenBlock = function* (): Generator<AnthropicStreamEvent> {
-      if (openBlock !== null) {
-        yield { type: 'content_block_stop', index: currentIndex }
-        currentIndex++
-        openBlock = null
-      }
+    const handlerState: EventHandlerState = {
+      model: resolvedModel,
+      messageId,
+      toolBlocks,
+      getCurrentIndex: () => currentIndex,
+      setCurrentIndex: v => { currentIndex = v },
+      getOpenBlock: () => openBlock,
+      setOpenBlock: v => { openBlock = v },
+      getPendingAssistantText: () => pendingAssistantText,
+      setPendingAssistantText: v => { pendingAssistantText = v },
+      markSawToolUse: () => { sawToolUse = true },
+      nextSyntheticToolUseId: () => `toolu_kiro_${++syntheticToolCounter}`,
+      preferredShellToolName,
     }
 
-    let response: Response
+    let response: Response | null = null
+    let responseStatus = 0
+    let responseErrorText = ''
     try {
-      response = await fetch(KIRO_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.amazon.eventstream',
-          'X-Amz-Target': 'AmazonCodeWhispererStreamingService.GenerateAssistantResponse',
-          'Authorization': `Bearer ${this.accessToken}`,
-          'User-Agent': 'aws-sdk-js/3.0.0 kiro-ide/1.0.0',
-          'X-Amz-User-Agent': 'aws-sdk-js/3.0.0 kiro-ide/1.0.0',
-          'Amz-Sdk-Invocation-Id': randomUUID(),
-          'Amz-Sdk-Request': 'attempt=1; max=3',
-        },
-        body: JSON.stringify(body),
-        signal,
-      })
+      for (let attempt = 0; attempt < 2; attempt++) {
+        response = await fetch(KIRO_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.amazon.eventstream',
+            'X-Amz-Target': 'AmazonCodeWhispererStreamingService.GenerateAssistantResponse',
+            'Authorization': `Bearer ${this.accessToken}`,
+            'User-Agent': 'aws-sdk-js/3.0.0 kiro-ide/1.0.0',
+            'X-Amz-User-Agent': 'aws-sdk-js/3.0.0 kiro-ide/1.0.0',
+            'Amz-Sdk-Invocation-Id': randomUUID(),
+            'Amz-Sdk-Request': 'attempt=1; max=3',
+          },
+          body: JSON.stringify(body),
+          signal,
+        })
+
+        if (response.ok) break
+
+        responseStatus = response.status
+        responseErrorText = await response.text().catch(() => '')
+        if (
+          attempt === 0
+          && _isInvalidBearerResponse(responseStatus, responseErrorText)
+          && await this._recoverInvalidBearer()
+        ) {
+          response = null
+          responseStatus = 0
+          responseErrorText = ''
+          continue
+        }
+
+        break
+      }
     } catch (err: unknown) {
       const mst = emitMessageStart()
       if (mst) yield mst
@@ -191,8 +531,8 @@ export class KiroLane implements Lane {
       return _blankUsage()
     }
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '')
+    if (!response?.ok) {
+      const errText = responseErrorText
       const mst = emitMessageStart()
       if (mst) yield mst
       const lowered = errText.toLowerCase()
@@ -202,8 +542,8 @@ export class KiroLane implements Lane {
         || lowered.includes('too long')
         || lowered.includes('inputtokens')
       const headline = isPromptTooLong
-        ? `Prompt is too long (kiro ${response.status})`
-        : `kiro API error ${response.status}`
+        ? `Prompt is too long (kiro ${responseStatus})`
+        : `kiro API error ${responseStatus}`
       yield* _emitErrorText(`${headline}: ${errText.slice(0, 500)}`)
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
       yield { type: 'message_stop' }
@@ -242,15 +582,7 @@ export class KiroLane implements Lane {
             totalContentChars += c.length
           }
 
-          const emissions = _handleKiroEvent(ev, {
-            model,
-            messageId,
-            toolBlocks,
-            getCurrentIndex: () => currentIndex,
-            setCurrentIndex: v => { currentIndex = v },
-            getOpenBlock: () => openBlock,
-            setOpenBlock: v => { openBlock = v },
-          })
+          const emissions = _handleKiroEvent(ev, handlerState)
           for (const ev2 of emissions) {
             if (!messageStartEmitted && _shouldTriggerMessageStart(ev2)) {
               const mst = emitMessageStart()
@@ -285,9 +617,20 @@ export class KiroLane implements Lane {
       reader.releaseLock()
     }
 
-    // Close any still-open block. The messageStopEvent path above does
-    // this for "clean" stream ends; this handles mid-stream aborts.
-    for (const emit of closeOpenBlock()) yield emit
+    // Flush any buffered assistant text and close any still-open block.
+    // The messageStopEvent path usually does this for clean exits; this
+    // also covers mid-stream aborts and DSML marker tails.
+    const finalEmissions: AnthropicStreamEvent[] = []
+    _flushPendingAssistantText(handlerState, finalEmissions, true)
+    _closeOpenContentBlock(handlerState, finalEmissions)
+    _closeOpenToolUseBlocks(handlerState, finalEmissions)
+    for (const ev2 of finalEmissions) {
+      if (!messageStartEmitted && _shouldTriggerMessageStart(ev2)) {
+        const mst = emitMessageStart()
+        if (mst) yield mst
+      }
+      yield ev2
+    }
 
     if (!messageStartEmitted) {
       const mst = emitMessageStart()
@@ -302,7 +645,7 @@ export class KiroLane implements Lane {
       inputTokens = Math.floor(contextUsagePercentage * KIRO_CONTEXT_WINDOW / 100)
     }
 
-    const hadToolUse = toolBlocks.size > 0
+    const hadToolUse = sawToolUse
     const stopReason: 'tool_use' | 'end_turn' = hadToolUse ? 'tool_use' : 'end_turn'
     yield {
       type: 'message_delta',
@@ -326,78 +669,313 @@ export class KiroLane implements Lane {
 interface EventHandlerState {
   model: string
   messageId: string
-  toolBlocks: Map<string, { anthropicIndex: number; emittedStart: boolean }>
+  toolBlocks: Map<string, ToolBlockState>
   getCurrentIndex: () => number
   setCurrentIndex: (v: number) => void
   getOpenBlock: () => 'text' | 'thinking' | null
   setOpenBlock: (v: 'text' | 'thinking' | null) => void
+  getPendingAssistantText: () => string
+  setPendingAssistantText: (v: string) => void
+  markSawToolUse: () => void
+  nextSyntheticToolUseId: () => string
+  preferredShellToolName: string | null
 }
 
-function _handleKiroEvent(
+interface ToolBlockState {
+  anthropicIndex: number
+  emittedStart: boolean
+  closed: boolean
+}
+
+function _closeOpenContentBlock(
+  state: EventHandlerState,
+  out: AnthropicStreamEvent[],
+): void {
+  const openBlock = state.getOpenBlock()
+  if (openBlock === null) return
+  out.push({ type: 'content_block_stop', index: state.getCurrentIndex() })
+  state.setCurrentIndex(state.getCurrentIndex() + 1)
+  state.setOpenBlock(null)
+}
+
+export function _closeOpenToolUseBlocks(
+  state: Pick<EventHandlerState, 'toolBlocks'>,
+  out: AnthropicStreamEvent[],
+): void {
+  for (const [, entry] of state.toolBlocks) {
+    if (entry.emittedStart && !entry.closed) {
+      out.push({ type: 'content_block_stop', index: entry.anthropicIndex })
+      entry.closed = true
+    }
+  }
+  state.toolBlocks.clear()
+}
+
+function _emitText(
+  state: EventHandlerState,
+  out: AnthropicStreamEvent[],
+  text: string,
+): void {
+  if (!text) return
+  if (state.getOpenBlock() === 'thinking') {
+    _closeOpenContentBlock(state, out)
+  }
+  if (state.getOpenBlock() !== 'text') {
+    out.push({
+      type: 'content_block_start',
+      index: state.getCurrentIndex(),
+      content_block: { type: 'text', text: '' },
+    })
+    state.setOpenBlock('text')
+  }
+  out.push({
+    type: 'content_block_delta',
+    index: state.getCurrentIndex(),
+    delta: { type: 'text_delta', text },
+  })
+}
+
+function _emitThinking(
+  state: EventHandlerState,
+  out: AnthropicStreamEvent[],
+  text: string,
+): void {
+  if (!text) return
+  if (state.getOpenBlock() === 'text') {
+    _closeOpenContentBlock(state, out)
+  }
+  if (state.getOpenBlock() !== 'thinking') {
+    out.push({
+      type: 'content_block_start',
+      index: state.getCurrentIndex(),
+      content_block: { type: 'thinking', thinking: '' },
+    })
+    state.setOpenBlock('thinking')
+  }
+  out.push({
+    type: 'content_block_delta',
+    index: state.getCurrentIndex(),
+    delta: { type: 'thinking_delta', thinking: text },
+  })
+}
+
+function _emitToolUse(
+  state: EventHandlerState,
+  out: AnthropicStreamEvent[],
+  toolUse: { toolUseId: string; name: string; input: unknown },
+  opts: { closeImmediately?: boolean } = {},
+): void {
+  let entry = state.toolBlocks.get(toolUse.toolUseId)
+  if (!entry) {
+    _closeOpenContentBlock(state, out)
+    entry = {
+      anthropicIndex: state.getCurrentIndex(),
+      emittedStart: false,
+      closed: false,
+    }
+    state.toolBlocks.set(toolUse.toolUseId, entry)
+    state.setCurrentIndex(state.getCurrentIndex() + 1)
+  }
+
+  if (!entry.emittedStart) {
+    out.push({
+      type: 'content_block_start',
+      index: entry.anthropicIndex,
+      content_block: {
+        type: 'tool_use',
+        id: toolUse.toolUseId,
+        name: toClaudexToolName(toolUse.name, state.preferredShellToolName),
+        input: {},
+      },
+    })
+    entry.emittedStart = true
+    state.markSawToolUse()
+  }
+
+  if (toolUse.input !== undefined) {
+    const json = typeof toolUse.input === 'string'
+      ? toolUse.input
+      : JSON.stringify(toolUse.input)
+    out.push({
+      type: 'content_block_delta',
+      index: entry.anthropicIndex,
+      delta: { type: 'input_json_delta', partial_json: json },
+    })
+  }
+
+  if (opts.closeImmediately && !entry.closed) {
+    out.push({ type: 'content_block_stop', index: entry.anthropicIndex })
+    entry.closed = true
+  }
+}
+
+export function _parseDsmlFunctionCalls(block: string): ParsedDsmlToolCall[] | null {
+  if (!block.startsWith(DSML_FUNCTION_CALLS_OPEN) || !block.endsWith(DSML_FUNCTION_CALLS_CLOSE)) {
+    return null
+  }
+
+  const inner = block.slice(
+    DSML_FUNCTION_CALLS_OPEN.length,
+    block.length - DSML_FUNCTION_CALLS_CLOSE.length,
+  )
+  const calls: ParsedDsmlToolCall[] = []
+  const invokeRegex = new RegExp(
+    `<${DSML_TOKEN}invoke name="([^"]+)">([\\s\\S]*?)</${DSML_TOKEN}invoke>`,
+    'g',
+  )
+  const parameterRegex = new RegExp(
+    `<${DSML_TOKEN}parameter name="([^"]+)" string="(true|false)">([\\s\\S]*?)</${DSML_TOKEN}parameter>`,
+    'g',
+  )
+
+  let lastInvokeEnd = 0
+  for (const match of inner.matchAll(invokeRegex)) {
+    const full = match[0]
+    const name = match[1]
+    const argsBlock = match[2]
+    if (!(full && name != null && argsBlock != null && match.index != null)) return null
+    if (inner.slice(lastInvokeEnd, match.index).trim()) return null
+
+    const input: Record<string, unknown> = {}
+    let lastParamEnd = 0
+    for (const param of argsBlock.matchAll(parameterRegex)) {
+      const [, paramName, isString, rawValue] = param
+      if (!(paramName && isString && rawValue != null && param.index != null)) return null
+      if (argsBlock.slice(lastParamEnd, param.index).trim()) return null
+      if (Object.prototype.hasOwnProperty.call(input, paramName)) return null
+
+      if (isString === 'true') {
+        input[paramName] = rawValue
+      } else {
+        const trimmed = rawValue.trim()
+        if (!trimmed) {
+          input[paramName] = null
+        } else {
+          try {
+            input[paramName] = JSON.parse(trimmed) as unknown
+          } catch {
+            return null
+          }
+        }
+      }
+
+      lastParamEnd = param.index + param[0].length
+    }
+
+    if (argsBlock.slice(lastParamEnd).trim()) return null
+
+    calls.push({ name, input })
+    lastInvokeEnd = match.index + full.length
+  }
+
+  if (inner.slice(lastInvokeEnd).trim()) return null
+
+  return calls
+}
+
+function _flushPendingAssistantText(
+  state: EventHandlerState,
+  out: AnthropicStreamEvent[],
+  flushAll: boolean,
+): void {
+  let pending = state.getPendingAssistantText()
+  if (!pending) return
+
+  while (pending.length > 0) {
+    const openIndex = pending.indexOf(DSML_FUNCTION_CALLS_OPEN)
+    if (openIndex === -1) {
+      if (!flushAll) {
+        const keepTail = Math.min(pending.length, DSML_FUNCTION_CALLS_OPEN.length - 1)
+        const emitLength = pending.length - keepTail
+        if (emitLength > 0) {
+          _emitText(state, out, pending.slice(0, emitLength))
+          pending = pending.slice(emitLength)
+        }
+        break
+      }
+
+      const stripped = _stripDanglingDsmlText(pending)
+      if (stripped) _emitText(state, out, stripped)
+      pending = ''
+      break
+    }
+
+    if (openIndex > 0) {
+      _emitText(state, out, pending.slice(0, openIndex))
+      pending = pending.slice(openIndex)
+      continue
+    }
+
+    const closeIndex = pending.indexOf(
+      DSML_FUNCTION_CALLS_CLOSE,
+      DSML_FUNCTION_CALLS_OPEN.length,
+    )
+    if (closeIndex === -1) {
+      if (flushAll) {
+        const stripped = _stripDanglingDsmlText(pending)
+        if (stripped) _emitText(state, out, stripped)
+        pending = ''
+      }
+      break
+    }
+
+    const blockEnd = closeIndex + DSML_FUNCTION_CALLS_CLOSE.length
+    const block = pending.slice(0, blockEnd)
+    const toolCalls = _parseDsmlFunctionCalls(block)
+    if (toolCalls === null) {
+      _emitText(state, out, block)
+    } else {
+      for (const toolCall of toolCalls) {
+        _emitToolUse(
+          state,
+          out,
+          {
+            toolUseId: state.nextSyntheticToolUseId(),
+            name: toolCall.name,
+            input: toolCall.input,
+          },
+          { closeImmediately: true },
+        )
+      }
+    }
+    pending = pending.slice(blockEnd)
+  }
+
+  state.setPendingAssistantText(pending)
+}
+
+function _stripDanglingDsmlText(text: string): string {
+  const marker = `<${DSML_TOKEN}`
+  const markerIndex = text.lastIndexOf(marker)
+  if (markerIndex === -1) return text
+  return text.slice(0, markerIndex)
+}
+
+export function _handleKiroEvent(
   ev: KiroEvent,
   state: EventHandlerState,
 ): AnthropicStreamEvent[] {
   const out: AnthropicStreamEvent[] = []
-
-  const closeOpen = (): void => {
-    const ob = state.getOpenBlock()
-    if (ob !== null) {
-      out.push({ type: 'content_block_stop', index: state.getCurrentIndex() })
-      state.setCurrentIndex(state.getCurrentIndex() + 1)
-      state.setOpenBlock(null)
-    }
-  }
-
-  const emitText = (text: string): void => {
-    if (state.getOpenBlock() === 'thinking') closeOpen()
-    if (state.getOpenBlock() !== 'text') {
-      out.push({
-        type: 'content_block_start',
-        index: state.getCurrentIndex(),
-        content_block: { type: 'text', text: '' },
-      })
-      state.setOpenBlock('text')
-    }
-    out.push({
-      type: 'content_block_delta',
-      index: state.getCurrentIndex(),
-      delta: { type: 'text_delta', text },
-    })
-  }
-
-  const emitThinking = (text: string): void => {
-    if (state.getOpenBlock() === 'text') closeOpen()
-    if (state.getOpenBlock() !== 'thinking') {
-      out.push({
-        type: 'content_block_start',
-        index: state.getCurrentIndex(),
-        content_block: { type: 'thinking', thinking: '' },
-      })
-      state.setOpenBlock('thinking')
-    }
-    out.push({
-      type: 'content_block_delta',
-      index: state.getCurrentIndex(),
-      delta: { type: 'thinking_delta', thinking: text },
-    })
-  }
 
   const payload = ev.payload ?? {}
 
   switch (ev.eventType) {
     case 'assistantResponseEvent': {
       const content = typeof payload.content === 'string' ? payload.content : ''
-      if (content) emitText(content)
+      if (content) {
+        state.setPendingAssistantText(state.getPendingAssistantText() + content)
+        _flushPendingAssistantText(state, out, false)
+      }
       break
     }
     case 'codeEvent': {
       const content = typeof payload.content === 'string' ? payload.content : ''
-      if (content) emitText(content)
+      if (content) _emitText(state, out, content)
       break
     }
     case 'reasoningContentEvent': {
       const content = typeof payload.content === 'string' ? payload.content : ''
-      if (content) emitThinking(content)
+      if (content) _emitThinking(state, out, content)
       break
     }
     case 'toolUseEvent': {
@@ -410,52 +988,19 @@ function _handleKiroEvent(
         const toolUseId = (typeof tu.toolUseId === 'string' && tu.toolUseId)
           || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
         const toolName = typeof tu.name === 'string' ? tu.name : ''
-        const input = tu.input
-
-        let entry = state.toolBlocks.get(toolUseId)
-        if (!entry) {
-          // First slice of this tool — close any open text/thinking
-          // block, claim the next block index.
-          closeOpen()
-          entry = { anthropicIndex: state.getCurrentIndex(), emittedStart: false }
-          state.toolBlocks.set(toolUseId, entry)
-          state.setCurrentIndex(state.getCurrentIndex() + 1)
-        }
-
-        if (!entry.emittedStart) {
-          out.push({
-            type: 'content_block_start',
-            index: entry.anthropicIndex,
-            content_block: {
-              type: 'tool_use',
-              id: toolUseId,
-              name: toolName,
-              input: {},
-            },
-          })
-          entry.emittedStart = true
-        }
-
-        if (input !== undefined) {
-          const json = typeof input === 'string' ? input : JSON.stringify(input)
-          out.push({
-            type: 'content_block_delta',
-            index: entry.anthropicIndex,
-            delta: { type: 'input_json_delta', partial_json: json },
-          })
-        }
+        _emitToolUse(state, out, {
+          toolUseId,
+          name: toolName,
+          input: tu.input,
+        })
       }
       break
     }
     case 'messageStopEvent': {
-      closeOpen()
+      _flushPendingAssistantText(state, out, true)
+      _closeOpenContentBlock(state, out)
       // Finalize any in-flight tool_use blocks.
-      for (const [, entry] of state.toolBlocks) {
-        if (entry.emittedStart) {
-          out.push({ type: 'content_block_stop', index: entry.anthropicIndex })
-        }
-      }
-      state.toolBlocks.clear()
+      _closeOpenToolUseBlocks(state, out)
       break
     }
     // meteringEvent / metricsEvent / contextUsageEvent / supplementaryWebLinksEvent:
@@ -470,6 +1015,26 @@ function _shouldTriggerMessageStart(ev: AnthropicStreamEvent): boolean {
   return ev.type === 'content_block_start' || ev.type === 'content_block_delta'
 }
 
+function assembleSystemFromParts(parts: {
+  memory?: string
+  environment?: string
+  gitStatus?: string
+  toolsAddendum?: string
+  mcpIntro?: string
+  skillsContext?: string
+  customInstructions?: string
+}): string {
+  const sections: string[] = []
+  if (parts.customInstructions) sections.push(parts.customInstructions)
+  if (parts.toolsAddendum) sections.push(parts.toolsAddendum)
+  if (parts.mcpIntro) sections.push(parts.mcpIntro)
+  if (parts.skillsContext) sections.push(`Skills:\n${parts.skillsContext}`)
+  if (parts.memory) sections.push(`Context:\n${parts.memory}`)
+  if (parts.environment) sections.push(parts.environment)
+  if (parts.gitStatus) sections.push(`Git status:\n${parts.gitStatus}`)
+  return sections.join('\n\n')
+}
+
 function _blankUsage(): NormalizedUsage {
   return {
     input_tokens: 0,
@@ -478,6 +1043,18 @@ function _blankUsage(): NormalizedUsage {
     cache_write_tokens: 0,
     thinking_tokens: 0,
   }
+}
+
+function _isInvalidBearerResponse(status: number, errText: string): boolean {
+  if (status !== 401 && status !== 403) return false
+  const lowered = errText.toLowerCase()
+  return (
+    lowered.includes('bearer token')
+    || lowered.includes('invalid token')
+    || lowered.includes('token included in the request is invalid')
+    || lowered.includes('expired token')
+    || lowered.includes('unauthorized')
+  )
 }
 
 function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {

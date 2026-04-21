@@ -33,6 +33,13 @@ interface StoredOAuthBlob {
   meta?: Record<string, unknown>
 }
 
+interface KiroTokenPayload {
+  accessToken?: string
+  refreshToken?: string
+  expiresIn?: number
+  profileArn?: string | null
+}
+
 function _saveTokens(
   storageKey: string,
   tokens: { accessToken: string; refreshToken?: string; expiresIn?: number; meta?: Record<string, unknown> },
@@ -60,6 +67,56 @@ function _pkce(): { verifier: string; challenge: string } {
   const verifier = randomBytes(32).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
   return { verifier, challenge }
+}
+
+function _getStringField(
+  data: Record<string, unknown>,
+  ...keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === 'string' && value.length > 0) return value
+  }
+  return undefined
+}
+
+function _getNumberField(
+  data: Record<string, unknown>,
+  ...keys: string[]
+): number | undefined {
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return undefined
+}
+
+function _getExpiresInFromTimestamp(raw: unknown): number | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined
+  const expiresAt = new Date(raw).getTime()
+  if (!Number.isFinite(expiresAt)) return undefined
+  return Math.max(60, Math.floor((expiresAt - Date.now()) / 1000))
+}
+
+export function _normalizeKiroTokenPayload(data: Record<string, unknown>): KiroTokenPayload {
+  const accessToken = _getStringField(data, 'accessToken', 'access_token')
+  const refreshToken = _getStringField(data, 'refreshToken', 'refresh_token')
+  const profileArn = _getStringField(data, 'profileArn', 'profile_arn')
+  const expiresIn =
+    _getNumberField(data, 'expiresIn', 'expires_in')
+    ?? _getExpiresInFromTimestamp(data.expiresAt ?? data.expires_at)
+
+  return {
+    accessToken,
+    refreshToken,
+    expiresIn,
+    profileArn: profileArn ?? null,
+  }
+}
+
+async function _reloadKiroLaneAuth(): Promise<void> {
+  const { reloadKiroLaneAuth } = await import('../providers/providerShim.js')
+  await reloadKiroLaneAuth()
 }
 
 /** Bind a local http server on the first available port, capture callback params. */
@@ -649,7 +706,11 @@ const KIRO_CLIENT_NAME = 'kiro-oauth-client'
 const KIRO_SCOPES = ['codewhisperer:completions', 'codewhisperer:analysis', 'codewhisperer:conversations']
 const KIRO_GRANT_TYPES = ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
 const KIRO_ISSUER_URL = 'https://identitycenter.amazonaws.com/ssoins-722374e8c3c8e6c6'
+const KIRO_SOCIAL_AUTH_SERVICE = 'https://prod.us-east-1.auth.desktop.kiro.dev'
+const KIRO_SOCIAL_REDIRECT_URI = 'kiro://kiro.kiroAgent/authenticate-success'
 const KIRO_STORAGE = 'kiro_oauth'
+
+export type KiroSocialProvider = 'google' | 'github'
 
 export interface KiroDeviceHandles {
   userCode: string
@@ -660,6 +721,13 @@ export interface KiroDeviceHandles {
   expiresIn: number
   clientId: string
   clientSecret: string
+}
+
+export interface KiroSocialHandles {
+  provider: KiroSocialProvider
+  authUrl: string
+  state: string
+  codeVerifier: string
 }
 
 export async function initiateKiroOAuth(): Promise<KiroDeviceHandles> {
@@ -736,13 +804,11 @@ export async function completeKiroOAuth(handles: KiroDeviceHandles): Promise<{
         grantType: 'urn:ietf:params:oauth:grant-type:device_code',
       }),
     })
-    const data = await res.json() as {
-      accessToken?: string
-      refreshToken?: string
-      expiresIn?: number
+    const rawData = await res.json() as Record<string, unknown> & {
       error?: string
       error_description?: string
     }
+    const data = _normalizeKiroTokenPayload(rawData)
     if (data.accessToken) {
       _saveTokens(KIRO_STORAGE, {
         accessToken: data.accessToken,
@@ -755,16 +821,17 @@ export async function completeKiroOAuth(handles: KiroDeviceHandles): Promise<{
           region: 'us-east-1',
         },
       })
+      await _reloadKiroLaneAuth()
       return {
         accessToken: data.accessToken,
         refreshToken: data.refreshToken ?? '',
       }
     }
-    if (data.error === 'authorization_pending') continue
-    if (data.error === 'slow_down') { interval += 5000; continue }
-    if (data.error === 'expired_token') throw new Error('Kiro device code expired')
-    if (data.error === 'access_denied') throw new Error('Kiro authorization denied')
-    if (data.error) throw new Error(`Kiro OAuth error: ${data.error_description ?? data.error}`)
+    if (rawData.error === 'authorization_pending') continue
+    if (rawData.error === 'slow_down') { interval += 5000; continue }
+    if (rawData.error === 'expired_token') throw new Error('Kiro device code expired')
+    if (rawData.error === 'access_denied') throw new Error('Kiro authorization denied')
+    if (rawData.error) throw new Error(`Kiro OAuth error: ${rawData.error_description ?? rawData.error}`)
   }
   throw new Error('Kiro authorization timed out')
 }
@@ -782,12 +849,135 @@ export function getKiroOAuthToken(): string | null {
   return _loadTokens(KIRO_STORAGE)?.accessToken ?? null
 }
 
+
+export async function initiateKiroSocialOAuth(
+  provider: KiroSocialProvider,
+): Promise<KiroSocialHandles> {
+  const { verifier, challenge } = _pkce()
+  const state = randomBytes(32).toString('base64url')
+  const authUrl = new URL(`${KIRO_SOCIAL_AUTH_SERVICE}/login`)
+
+  authUrl.searchParams.set('idp', provider === 'google' ? 'Google' : 'Github')
+  authUrl.searchParams.set('redirect_uri', KIRO_SOCIAL_REDIRECT_URI)
+  authUrl.searchParams.set('code_challenge', challenge)
+  authUrl.searchParams.set('code_challenge_method', 'S256')
+  authUrl.searchParams.set('state', state)
+  authUrl.searchParams.set('prompt', 'select_account')
+
+  return {
+    provider,
+    authUrl: authUrl.toString(),
+    state,
+    codeVerifier: verifier,
+  }
+}
+
+export async function completeKiroSocialOAuth(opts: {
+  provider: KiroSocialProvider
+  callbackUrl: string
+  codeVerifier: string
+  expectedState: string
+}): Promise<{
+  accessToken: string
+  refreshToken: string
+}> {
+  const callbackUrl = opts.callbackUrl.trim()
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(callbackUrl)
+  } catch {
+    const query = callbackUrl.replace(/^[?#]/, '')
+    if (!query.includes('=')) {
+      throw new Error('Kiro social login: invalid callback URL')
+    }
+    try {
+      parsedUrl = new URL(`${KIRO_SOCIAL_REDIRECT_URI}?${query}`)
+    } catch {
+      throw new Error('Kiro social login: invalid callback URL')
+    }
+  }
+
+  const error = parsedUrl.searchParams.get('error')
+  if (error) {
+    throw new Error(
+      parsedUrl.searchParams.get('error_description')
+        ?? `Kiro social login failed: ${error}`,
+    )
+  }
+
+  const returnedState = parsedUrl.searchParams.get('state')
+  if (!returnedState || returnedState !== opts.expectedState) {
+    throw new Error('Kiro social login: state mismatch')
+  }
+
+  const code = parsedUrl.searchParams.get('code')
+  if (!code) {
+    throw new Error('Kiro social login: missing authorization code')
+  }
+
+  const res = await fetch(`${KIRO_SOCIAL_AUTH_SERVICE}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      code,
+      code_verifier: opts.codeVerifier,
+      redirect_uri: KIRO_SOCIAL_REDIRECT_URI,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`Kiro social token exchange failed: ${await res.text()}`)
+  }
+
+  const data = _normalizeKiroTokenPayload(await res.json() as Record<string, unknown>)
+  if (!data.accessToken) throw new Error('Kiro social login: no access token returned')
+
+  _saveTokens(KIRO_STORAGE, {
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    expiresIn: data.expiresIn ?? 3600,
+    meta: {
+      authMethod: opts.provider,
+      profileArn: data.profileArn ?? null,
+      region: 'us-east-1',
+    },
+  })
+  await _reloadKiroLaneAuth()
+
+  return {
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken ?? '',
+  }
+}
+
 export async function refreshKiroOAuth(refreshToken: string): Promise<string> {
   const blob = _loadTokens(KIRO_STORAGE)
   const clientId = blob?.meta?.clientId as string | undefined
   const clientSecret = blob?.meta?.clientSecret as string | undefined
-  if (!clientId || !clientSecret) {
-    throw new Error('Kiro refresh: missing clientId/clientSecret — re-login via /login')
+  const baseMeta = blob?.meta ?? {}
+  if (!(clientId && clientSecret)) {
+    const socialRes = await fetch(`${KIRO_SOCIAL_AUTH_SERVICE}/refreshToken`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    })
+    if (!socialRes.ok) {
+      throw new Error(`Kiro social refresh failed: ${await socialRes.text()}`)
+    }
+    const socialData = _normalizeKiroTokenPayload(await socialRes.json() as Record<string, unknown>)
+    if (!socialData.accessToken) {
+      throw new Error('Kiro social refresh: no access token')
+    }
+    _saveTokens(KIRO_STORAGE, {
+      accessToken: socialData.accessToken,
+      refreshToken: socialData.refreshToken ?? refreshToken,
+      expiresIn: socialData.expiresIn ?? 3600,
+      meta: {
+        ...baseMeta,
+        ...(socialData.profileArn ? { profileArn: socialData.profileArn } : {}),
+      },
+    })
+    await _reloadKiroLaneAuth()
+    return socialData.accessToken
   }
   const res = await fetch(`${KIRO_OIDC_BASE}/token`, {
     method: 'POST',
@@ -800,18 +990,15 @@ export async function refreshKiroOAuth(refreshToken: string): Promise<string> {
     }),
   })
   if (!res.ok) throw new Error(`Kiro refresh failed: ${await res.text()}`)
-  const data = await res.json() as {
-    accessToken?: string
-    refreshToken?: string
-    expiresIn?: number
-  }
+  const data = _normalizeKiroTokenPayload(await res.json() as Record<string, unknown>)
   if (!data.accessToken) throw new Error('Kiro refresh: no access token')
   _saveTokens(KIRO_STORAGE, {
     accessToken: data.accessToken,
     refreshToken: data.refreshToken ?? refreshToken,
     expiresIn: data.expiresIn,
-    meta: blob?.meta,
+    meta: baseMeta,
   })
+  await _reloadKiroLaneAuth()
   return data.accessToken
 }
 

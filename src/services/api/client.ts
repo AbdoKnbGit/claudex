@@ -83,17 +83,33 @@ function _autoCorrectProvider(
   model: string,
 ): import('../../utils/model/providers.js').APIProvider {
   const m = model.toLowerCase()
+  if (
+    current === 'kiro'
+    || current === 'antigravity'
+    || current === 'openrouter'
+    || current === 'nim'
+    || current === 'ollama'
+    || current === 'cline'
+    || current === 'iflow'
+    || current === 'kilocode'
+    || current === 'copilot'
+    || current === 'cursor'
+  ) {
+    return current
+  }
   // Gemini models → must use the Gemini provider
-  if (m.startsWith('gemini-') || m.startsWith('gemma-')) {
-    return current === 'gemini' ? current : 'gemini'
+  if (
+    current === 'openai'
+    && (m.startsWith('gemini-') || m.startsWith('gemma-'))
+  ) {
+    return 'gemini'
   }
   // OpenAI models → must use the OpenAI provider
-  if (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('codex-')) {
-    return current === 'openai' ? current : 'openai'
-  }
-  // DeepSeek models → DeepSeek provider
-  if (m.includes('deepseek')) {
-    return current === 'deepseek' ? current : 'deepseek'
+  if (
+    current === 'gemini'
+    && (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('codex-'))
+  ) {
+    return 'openai'
   }
   // Everything else: trust the user's /provider selection
   return current

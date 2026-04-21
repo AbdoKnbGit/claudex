@@ -19,6 +19,7 @@ import { startProviderOAuth, startGeminiOAuthFlow } from '../services/api/auth/p
 import {
   initiateCopilotOAuth, completeCopilotOAuth, type CopilotDeviceHandles,
   initiateKiroOAuth, completeKiroOAuth, type KiroDeviceHandles,
+  initiateKiroSocialOAuth, completeKiroSocialOAuth,
   saveCursorToken,
 } from '../services/api/auth/oauth_services.js'
 import { openBrowser } from '../utils/browser.js'
@@ -122,7 +123,14 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
   },
 }
 
-type AuthMethod = 'api_key' | 'oauth' | 'oauth_cli' | 'oauth_antigravity'
+type AuthMethod =
+  | 'api_key'
+  | 'oauth'
+  | 'oauth_cli'
+  | 'oauth_antigravity'
+  | 'oauth_kiro_builder'
+  | 'oauth_kiro_google'
+  | 'oauth_kiro_github'
 
 /** Quick API-level check that an API key actually works before saving it. */
 async function _testApiKey(
@@ -191,6 +199,7 @@ type FlowState =
   | { step: 'api_key_input'; error?: string }
   | { step: 'oauth_pending' }
   | { step: 'device_code'; userCode: string; verificationUri: string }
+  | { step: 'kiro_social_callback'; providerLabel: string; authUrl: string }
   | { step: 'cursor_paste' }
   | { step: 'validating' }
   | { step: 'success' }
@@ -206,6 +215,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   // has its own provider row and runs the antigravity-tier flow itself.
   const isGemini = provider === 'gemini'
   const isAntigravity = provider === 'antigravity'
+  const isKiro = provider === 'kiro'
   const methodOptions: { method: AuthMethod; label: string }[] = isGemini
     ? [
         { method: 'oauth_cli', label: 'Google OAuth (free tier — flash/lite)' },
@@ -215,6 +225,12 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       ? [
           { method: 'oauth_antigravity', label: 'Antigravity login (Gemini 3 Flash / 3.1 Pro high/low)' },
         ]
+      : isKiro
+        ? [
+            { method: 'oauth_kiro_builder', label: 'AWS Builder ID' },
+            { method: 'oauth_kiro_google', label: 'Google OAuth' },
+            { method: 'oauth_kiro_github', label: 'GitHub OAuth' },
+          ]
       : oauthOnly
         ? [{ method: 'oauth', label: 'OAuth (Browser Login)' }]
         : supportsOAuth
@@ -229,6 +245,14 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   )
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
+  const [callbackUrlInput, setCallbackUrlInput] = useState('')
+  const [callbackUrlCursorOffset, setCallbackUrlCursorOffset] = useState(0)
+  const [kiroSocialState, setKiroSocialState] = useState<{
+    providerLabel: string
+    provider: 'google' | 'github'
+    expectedState: string
+    codeVerifier: string
+  } | null>(null)
   const [selectedMethod, setSelectedMethod] = useState<number>(0)
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
 
@@ -251,7 +275,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
             userCode: handles.userCode,
             verificationUri: handles.verificationUri,
           })
-          await openBrowser(handles.verificationUri).catch(() => {})
+          void openBrowser(handles.verificationUri).catch(() => {})
           const tokens = await completeCopilotOAuth(handles)
           deleteProviderKey(provider)
           setState({ step: 'success' })
@@ -265,6 +289,33 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
     }
 
     if (provider === 'kiro') {
+      if (method === 'oauth_kiro_google' || method === 'oauth_kiro_github') {
+        const socialProvider = method === 'oauth_kiro_google' ? 'google' : 'github'
+        const providerLabel = socialProvider === 'google' ? 'Google' : 'GitHub'
+        setState({ step: 'oauth_pending' })
+        initiateKiroSocialOAuth(socialProvider)
+          .then(async (handles) => {
+            setKiroSocialState({
+              provider: socialProvider,
+              providerLabel,
+              expectedState: handles.state,
+              codeVerifier: handles.codeVerifier,
+            })
+            setCallbackUrlInput('')
+            setCallbackUrlCursorOffset(0)
+            setState({
+              step: 'kiro_social_callback',
+              providerLabel,
+              authUrl: handles.authUrl,
+            })
+            void openBrowser(handles.authUrl).catch(() => {})
+          })
+          .catch((err) => {
+            setState({ step: 'error', message: err?.message ?? 'Kiro social OAuth failed' })
+          })
+        return
+      }
+
       setState({ step: 'oauth_pending' })
       initiateKiroOAuth()
         .then(async (handles: KiroDeviceHandles) => {
@@ -273,7 +324,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
             userCode: handles.userCode,
             verificationUri: handles.verificationUriComplete || handles.verificationUri,
           })
-          await openBrowser(handles.verificationUriComplete || handles.verificationUri).catch(() => {})
+          void openBrowser(handles.verificationUriComplete || handles.verificationUri).catch(() => {})
           const tokens = await completeKiroOAuth(handles)
           deleteProviderKey(provider)
           setState({ step: 'success' })
@@ -317,6 +368,30 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
         message: (err as Error)?.message ?? 'Cursor token save failed',
       })
     }
+  }
+
+  function handleKiroSocialCallbackSubmit(value: string) {
+    const callbackUrl = value.trim()
+    if (!callbackUrl || !kiroSocialState) return
+
+    setState({ step: 'validating' })
+    completeKiroSocialOAuth({
+      provider: kiroSocialState.provider,
+      callbackUrl,
+      codeVerifier: kiroSocialState.codeVerifier,
+      expectedState: kiroSocialState.expectedState,
+    })
+      .then(() => {
+        deleteProviderKey('kiro')
+        setState({ step: 'success' })
+        setTimeout(() => onDone(true), 1000)
+      })
+      .catch((err) => {
+        setState({
+          step: 'error',
+          message: (err as Error)?.message ?? 'Kiro social OAuth failed',
+        })
+      })
   }
 
   useInput((input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }) => {
@@ -486,6 +561,40 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           </Box>
           <Text dimColor>URL: <Text color="suggestion">{state.verificationUri}</Text></Text>
           <Text dimColor>Waiting for authorization...</Text>
+        </Box>
+      )}
+
+      {state.step === 'kiro_social_callback' && (
+        <Box flexDirection="column">
+          <Text bold>Step 1 — Sign in with {state.providerLabel} in your browser</Text>
+          <Text dimColor>If it didn't open, copy this URL:</Text>
+          <Box marginLeft={2} marginBottom={1}>
+            <Text color="suggestion">{state.authUrl}</Text>
+          </Box>
+          <Text bold>Step 2 — Paste the callback URL below</Text>
+          <Text dimColor>
+            After sign-in the browser will show a protocol warning (Chrome: "External Protocol"; Firefox: "don't know how to open") or appear to hang. That's expected — Kiro redirects to <Text color="suggestion">kiro://</Text>, which no browser handles locally.
+          </Text>
+          <Text dimColor>
+            Copy the full URL from the address bar (it contains <Text color="suggestion">?code=...&state=...</Text>) and paste it here. The bare query string works too.
+          </Text>
+          <Box marginTop={1}>
+            <Text>Callback URL: </Text>
+            <TextInput
+              value={callbackUrlInput}
+              onChange={setCallbackUrlInput}
+              onSubmit={handleKiroSocialCallbackSubmit}
+              placeholder="kiro://kiro.kiroAgent/authenticate-success?code=..."
+              focus={true}
+              showCursor={true}
+              columns={inputColumns}
+              cursorOffset={callbackUrlCursorOffset}
+              onChangeCursorOffset={setCallbackUrlCursorOffset}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Enter to submit, Esc to cancel</Text>
+          </Box>
         </Box>
       )}
 
