@@ -29,6 +29,11 @@ import {
 } from '../../../utils/auth.js'
 import { loadProviderKey } from '../auth/api_key_manager.js'
 import { getOpenAISessionToken } from '../auth/openai_oauth.js'
+import {
+  getClineOAuthToken,
+  getIFlowApiKey, getIFlowOAuthToken,
+  getKiloCodeOAuthToken,
+} from '../auth/oauth_services.js'
 import type {
   BaseProvider,
   AnthropicStreamEvent,
@@ -59,6 +64,12 @@ function _ensureLanesInitialized(): void {
     // coexist — the lane routes per-model via executorForModel.
     const cliOAuthToken = _readStoredGeminiToken('gemini_oauth_cli') ?? undefined
     const antigravityOAuthToken = _readStoredGeminiToken('gemini_oauth_antigravity') ?? undefined
+    // Phase 4 OAuth providers — the stored OAuth token IS the lane's
+    // bearer credential (iFlow is the odd one: chat uses a derived apiKey
+    // pulled from the userinfo endpoint during OAuth, stashed at meta.apiKey).
+    const clineToken = getClineOAuthToken() ?? undefined
+    const iflowChatKey = getIFlowApiKey() ?? getIFlowOAuthToken() ?? undefined
+    const kilocodeToken = getKiloCodeOAuthToken() ?? undefined
     initLanes({
       geminiApiKey: getProviderApiKey('gemini') ?? undefined,
       geminiCliOAuthToken: cliOAuthToken,
@@ -72,6 +83,9 @@ function _ensureLanesInitialized(): void {
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? getProviderBaseUrl('ollama'),
       openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
+      clineApiKey: clineToken,
+      iflowApiKey: iflowChatKey,
+      kilocodeApiKey: kilocodeToken,
     })
   } catch {
     // Lane init failure must not break the legacy provider path.
@@ -99,7 +113,19 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'nim':
     case 'ollama':
     case 'openrouter':
+    // Phase 4 OAuth-based OpenAI-compat providers — share the lane,
+    // each gets its own model catalog + base URL branch in the lane.
+    case 'cline':
+    case 'iflow':
+    case 'kilocode':
       return 'openai-compat'
+    // Phase 4 stubs — no matching lane; legacy createProvider switch
+    // throws "not yet implemented" so the provider row/login/picker
+    // still work but chat errors out with a clear message.
+    case 'copilot':
+    case 'cursor':
+    case 'kiro':
+      return '<stub>'
     default:
       return provider as string
   }
@@ -206,6 +232,32 @@ function createProvider(provider: APIProvider): BaseProvider {
       return new DeepSeekProvider({ apiKey, baseUrl })
     case 'ollama':
       return new OllamaProvider({ apiKey, baseUrl })
+    // Phase 4 OAuth-compat providers: they're expected to reach the
+    // openai-compat lane above. If we got here, the lane is unhealthy
+    // (missing creds or the register step failed) — surface a useful
+    // message instead of "Unknown provider".
+    case 'cline':
+    case 'iflow':
+    case 'kilocode':
+      throw new Error(
+        `${provider} chat requires the openai-compat lane to be healthy. ` +
+        `Run \`/login\` to authenticate, or check that the OAuth tokens were stored.`,
+      )
+    // Phase 4 stubs: OAuth + UI landed in v0.4.0 but chat executors
+    // ship in v0.4.1. The provider row, /login flow, and model picker
+    // work; actually sending a message surfaces this error.
+    case 'copilot':
+      throw new Error(
+        'GitHub Copilot chat is not yet implemented — OAuth + UI landed in v0.4.0, executor coming in v0.4.1.',
+      )
+    case 'cursor':
+      throw new Error(
+        'Cursor chat is not yet implemented — OAuth + UI landed in v0.4.0, executor coming in v0.4.1.',
+      )
+    case 'kiro':
+      throw new Error(
+        'Kiro chat is not yet implemented — OAuth + UI landed in v0.4.0, executor coming in v0.4.1.',
+      )
     default:
       throw new Error(`Unknown third-party provider: ${provider}`)
   }

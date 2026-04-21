@@ -16,6 +16,12 @@ import {
   validateKeyFormat,
 } from '../services/api/auth/api_key_manager.js'
 import { startProviderOAuth, startGeminiOAuthFlow } from '../services/api/auth/provider_auth.js'
+import {
+  initiateCopilotOAuth, completeCopilotOAuth, type CopilotDeviceHandles,
+  initiateKiroOAuth, completeKiroOAuth, type KiroDeviceHandles,
+  saveCursorToken,
+} from '../services/api/auth/oauth_services.js'
+import { openBrowser } from '../utils/browser.js'
 import TextInput from './TextInput.js'
 
 // ─── Provider metadata ───────────────────────────────────────────
@@ -71,6 +77,48 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     keyPrefix: 'sk-',
     getKeyUrl: 'https://platform.deepseek.com/api_keys',
     supportsOAuth: false,
+  },
+  kilocode: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://kilo.ai',
+    supportsOAuth: true,
+    oauthOnly: true,
+  },
+  cline: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://cline.bot',
+    supportsOAuth: true,
+    oauthOnly: true,
+  },
+  iflow: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://iflow.cn',
+    supportsOAuth: true,
+    oauthOnly: true,
+  },
+  copilot: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://github.com/features/copilot',
+    supportsOAuth: true,
+    oauthOnly: true,
+  },
+  kiro: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://kiro.dev',
+    supportsOAuth: true,
+    oauthOnly: true,
+  },
+  cursor: {
+    envVar: '',
+    keyPrefix: '',
+    getKeyUrl: 'https://cursor.com',
+    supportsOAuth: true,
+    oauthOnly: true,
   },
 }
 
@@ -142,6 +190,8 @@ type FlowState =
   | { step: 'choose_method' }
   | { step: 'api_key_input'; error?: string }
   | { step: 'oauth_pending' }
+  | { step: 'device_code'; userCode: string; verificationUri: string }
+  | { step: 'cursor_paste' }
   | { step: 'validating' }
   | { step: 'success' }
   | { step: 'error'; message: string }
@@ -183,6 +233,59 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
 
   function runOAuthFlow(method: AuthMethod) {
+    // Cursor requires manual token paste — there's no public OAuth app.
+    if (provider === 'cursor') {
+      setState({ step: 'cursor_paste' })
+      return
+    }
+
+    // GitHub Copilot + Kiro use device-code flows that need the user_code
+    // visible in the terminal (the verification_uri does NOT pre-fill
+    // the code for Copilot, and Kiro's completeUri isn't always honored).
+    if (provider === 'copilot') {
+      setState({ step: 'oauth_pending' })
+      initiateCopilotOAuth()
+        .then(async (handles: CopilotDeviceHandles) => {
+          setState({
+            step: 'device_code',
+            userCode: handles.userCode,
+            verificationUri: handles.verificationUri,
+          })
+          await openBrowser(handles.verificationUri).catch(() => {})
+          const tokens = await completeCopilotOAuth(handles)
+          deleteProviderKey(provider)
+          setState({ step: 'success' })
+          setTimeout(() => onDone(true), 1000)
+          return tokens
+        })
+        .catch((err) => {
+          setState({ step: 'error', message: err?.message ?? 'Copilot OAuth failed' })
+        })
+      return
+    }
+
+    if (provider === 'kiro') {
+      setState({ step: 'oauth_pending' })
+      initiateKiroOAuth()
+        .then(async (handles: KiroDeviceHandles) => {
+          setState({
+            step: 'device_code',
+            userCode: handles.userCode,
+            verificationUri: handles.verificationUriComplete || handles.verificationUri,
+          })
+          await openBrowser(handles.verificationUriComplete || handles.verificationUri).catch(() => {})
+          const tokens = await completeKiroOAuth(handles)
+          deleteProviderKey(provider)
+          setState({ step: 'success' })
+          setTimeout(() => onDone(true), 1000)
+          return tokens
+        })
+        .catch((err) => {
+          setState({ step: 'error', message: err?.message ?? 'Kiro OAuth failed' })
+        })
+      return
+    }
+
     setState({ step: 'oauth_pending' })
     const oauthPromise =
       method === 'oauth_cli' ? startGeminiOAuthFlow('cli')
@@ -198,6 +301,22 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       .catch((err) => {
         setState({ step: 'error', message: err?.message ?? 'OAuth flow failed' })
       })
+  }
+
+  function handleCursorTokenSubmit(value: string) {
+    const token = value.trim()
+    if (!token) return
+    try {
+      saveCursorToken(token)
+      deleteProviderKey('cursor')  // remove any stale api_key record
+      setState({ step: 'success' })
+      setTimeout(() => onDone(true), 800)
+    } catch (err) {
+      setState({
+        step: 'error',
+        message: (err as Error)?.message ?? 'Cursor token save failed',
+      })
+    }
   }
 
   useInput((input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }) => {
@@ -356,6 +475,46 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
         <Box flexDirection="column">
           <Text color="warning">Opening browser for {name} authentication...</Text>
           <Text dimColor>Complete the login in your browser. Waiting for callback...</Text>
+        </Box>
+      )}
+
+      {state.step === 'device_code' && (
+        <Box flexDirection="column">
+          <Text color="warning">Enter this code in your browser to authorize {name}:</Text>
+          <Box marginTop={1} marginBottom={1}>
+            <Text bold color="claude">  {state.userCode}</Text>
+          </Box>
+          <Text dimColor>URL: <Text color="suggestion">{state.verificationUri}</Text></Text>
+          <Text dimColor>Waiting for authorization...</Text>
+        </Box>
+      )}
+
+      {state.step === 'cursor_paste' && (
+        <Box flexDirection="column">
+          <Text dimColor>
+            Cursor does not expose a public OAuth app. Paste your Cursor access token below.
+          </Text>
+          <Text dimColor>
+            Get it from: <Text color="suggestion">Cursor → Settings → Cursor Auth → Copy token</Text>
+          </Text>
+          <Box marginTop={1}>
+            <Text>Token: </Text>
+            <TextInput
+              value={apiKeyInput}
+              onChange={setApiKeyInput}
+              onSubmit={handleCursorTokenSubmit}
+              mask="*"
+              placeholder="Paste Cursor token..."
+              focus={true}
+              showCursor={true}
+              columns={inputColumns}
+              cursorOffset={apiKeyCursorOffset}
+              onChangeCursorOffset={setApiKeyCursorOffset}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Enter to submit, Esc to cancel</Text>
+          </Box>
         </Box>
       )}
 

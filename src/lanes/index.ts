@@ -74,6 +74,12 @@ export function initLanes(opts?: {
   openrouterApiKey?: string
   // Qwen (DashScope)
   qwenApiKey?: string
+  // Phase 4 — OAuth-backed compat providers. `apiKey` here is the OAuth
+  // access token (iFlow is special: chat uses a derived apiKey pulled
+  // from the userinfo endpoint, see oauth_services.ts::getIFlowApiKey).
+  clineApiKey?: string
+  iflowApiKey?: string
+  kilocodeApiKey?: string
 }): void {
   // ── Claude lane (registration-only: Anthropic traffic uses
   //    services/api/claude.ts directly — this lane exists for /lane
@@ -102,7 +108,8 @@ export function initLanes(opts?: {
     apiKey: opts?.qwenApiKey,
   })
 
-  // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama, OpenRouter) ──
+  // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama,
+  //    OpenRouter, Cline, iFlow, KiloCode) ──
   initOpenAICompatLane({
     deepseek: opts?.deepseekApiKey ? { apiKey: opts.deepseekApiKey } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
@@ -110,5 +117,8 @@ export function initLanes(opts?: {
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,
     ollama: opts?.ollamaBaseUrl ? { baseUrl: opts.ollamaBaseUrl } : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
+    cline: opts?.clineApiKey ? { apiKey: opts.clineApiKey } : undefined,
+    iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
+    kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
   })
 }

@@ -4,8 +4,8 @@
  * Central module for managing auth across all third-party providers.
  * Supports two auth paths per provider (where available):
  *
- *   1. API Key — env var or stored key (all providers)
- *   2. OAuth   — browser-based account login (Gemini, OpenAI)
+ *   1. API Key — env var or stored key
+ *   2. OAuth   — browser-based account login
  *
  * Auth resolution priority: API key → OAuth token → prompt user
  *
@@ -20,6 +20,12 @@
  *   │ Groq       │ ✓       │ ✗     │ API key only                    │
  *   │ NIM        │ ✓       │ ✗     │ API key only                    │
  *   │ DeepSeek   │ ✓       │ ✗     │ API key only                    │
+ *   │ KiloCode   │ ✗       │ ✓     │ Custom device auth              │
+ *   │ Cline      │ ✗       │ ✓     │ Authorization-code flow         │
+ *   │ iFlow      │ ✗       │ ✓     │ OAuth2 code + Basic Auth        │
+ *   │ Copilot    │ ✗       │ ✓     │ GitHub device-code + token mint │
+ *   │ Kiro       │ ✗       │ ✓     │ AWS SSO OIDC device-code        │
+ *   │ Cursor     │ ✗       │ ✓     │ Manual token import             │
  *   └────────────┴─────────┴───────┴─────────────────────────────────┘
  */
 
@@ -42,6 +48,14 @@ import {
   refreshGoogleToken,
 } from './google_oauth.js'
 import { getOpenAIOAuthToken, startOpenAIOAuthFlow, refreshOpenAIToken } from './openai_oauth.js'
+import {
+  startKiloCodeOAuth, getKiloCodeOAuthToken,
+  startClineOAuth, getClineOAuthToken, refreshClineOAuth,
+  startIFlowOAuth, getIFlowOAuthToken, refreshIFlowOAuth,
+  startCopilotOAuth, getCopilotOAuthToken, refreshCopilotOAuth,
+  startKiroOAuth, getKiroOAuthToken, refreshKiroOAuth,
+  getCursorOAuthToken,
+} from './oauth_services.js'
 import { loadProviderKey, deleteProviderKey } from './api_key_manager.js'
 
 // ─── Token Resolution ─────────────────────────────────────────────
@@ -97,6 +111,18 @@ async function _getValidOAuthToken(provider: APIProvider): Promise<string | null
       return getGeminiOAuthToken('antigravity').catch(() => null)
     case 'openai':
       return getOpenAIOAuthToken()
+    case 'kilocode':
+      return getKiloCodeOAuthToken()
+    case 'cline':
+      return getClineOAuthToken()
+    case 'iflow':
+      return getIFlowOAuthToken()
+    case 'copilot':
+      return getCopilotOAuthToken()
+    case 'kiro':
+      return getKiroOAuthToken()
+    case 'cursor':
+      return getCursorOAuthToken()
     default:
       return null
   }
@@ -131,6 +157,26 @@ export async function startProviderOAuth(provider: APIProvider): Promise<{
       return startGeminiOAuth('antigravity')
     case 'openai':
       return startOpenAIOAuthFlow()
+    case 'kilocode':
+      return startKiloCodeOAuth()
+    case 'cline':
+      return startClineOAuth()
+    case 'iflow':
+      return startIFlowOAuth()
+    case 'copilot':
+      return startCopilotOAuth()
+    case 'kiro':
+      return startKiroOAuth()
+    case 'cursor':
+      // Cursor has no public OAuth app — token must be pasted from the IDE.
+      // The UI layer (ProviderLoginFlow) renders a paste prompt that calls
+      // `saveCursorToken` directly; this branch is only hit if someone wires
+      // Cursor into the generic browser-login path.
+      throw new Error(
+        'Cursor uses manual token entry, not browser OAuth. ' +
+        'Open Cursor IDE → Settings → Cursor Auth → copy the access token, ' +
+        'then paste it into the Cursor login dialog.',
+      )
     default:
       throw new Error(`OAuth not implemented for ${provider}`)
   }
@@ -171,6 +217,22 @@ export async function refreshProviderOAuth(provider: APIProvider): Promise<strin
       return refreshGoogleToken(tokens.refreshToken)
     case 'openai':
       return refreshOpenAIToken(tokens.refreshToken)
+    case 'cline':
+      return refreshClineOAuth(tokens.refreshToken)
+    case 'iflow':
+      return refreshIFlowOAuth(tokens.refreshToken)
+    case 'copilot':
+      // Copilot's "refresh token" slot stores the GitHub long-lived token,
+      // which is re-exchanged for a fresh Copilot internal token.
+      return refreshCopilotOAuth(tokens.refreshToken)
+    case 'kiro':
+      return refreshKiroOAuth(tokens.refreshToken)
+    case 'kilocode':
+      // KiloCode issues long-lived tokens with no refresh endpoint.
+      throw new Error('KiloCode has no refresh endpoint — re-login via `/login`.')
+    case 'cursor':
+      // Cursor tokens are manually pasted; user must re-paste on expiry.
+      throw new Error('Cursor tokens are not auto-refreshable — re-paste via `/login`.')
     default:
       throw new Error(`OAuth refresh not implemented for ${provider}`)
   }
@@ -235,6 +297,12 @@ function _envVarName(provider: APIProvider): string {
     groq: 'GROQ_API_KEY',
     nim: 'NIM_API_KEY',
     deepseek: 'DEEPSEEK_API_KEY',
+    kilocode: '(OAuth only)',
+    cline: '(OAuth only)',
+    iflow: '(OAuth only)',
+    copilot: '(OAuth only)',
+    kiro: '(OAuth only)',
+    cursor: '(OAuth only — paste token)',
   }
   return map[provider] ?? 'API_KEY'
 }

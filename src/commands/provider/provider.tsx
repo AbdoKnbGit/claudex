@@ -69,6 +69,13 @@ const MANAGEABLE_PROVIDERS = [
   'nim',
   'deepseek',
   'ollama',
+  // Phase 4 (v0.4.0) — 3 full-chat + 3 login-only stubs.
+  'kilocode',
+  'cline',
+  'iflow',
+  'copilot',
+  'kiro',
+  'cursor',
 ] as const satisfies readonly APIProvider[]
 
 type ManageableProvider = (typeof MANAGEABLE_PROVIDERS)[number]

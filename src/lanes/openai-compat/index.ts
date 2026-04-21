@@ -26,6 +26,9 @@ export function initOpenAICompatLane(providers?: {
   nim?: { apiKey: string; baseUrl?: string }
   ollama?: { baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
+  cline?: { apiKey: string; baseUrl?: string }
+  iflow?: { apiKey: string; baseUrl?: string }
+  kilocode?: { apiKey: string; baseUrl?: string }
 }): void {
   const p = providers ?? {}
 
@@ -75,6 +78,28 @@ export function initOpenAICompatLane(providers?: {
     openaiCompatLane.registerProvider(
       'openrouter', orKey,
       p.openrouter?.baseUrl ?? 'https://openrouter.ai/api/v1',
+    )
+  }
+
+  // Phase 4 OAuth-backed compat providers. Caller (providerShim) passes
+  // the OAuth access token as `apiKey`; the transformer turns that into
+  // the right header shape (Bearer + provider-specific extras).
+  if (p.cline?.apiKey) {
+    openaiCompatLane.registerProvider(
+      'cline', p.cline.apiKey,
+      p.cline.baseUrl ?? 'https://api.cline.bot/v1',
+    )
+  }
+  if (p.iflow?.apiKey) {
+    openaiCompatLane.registerProvider(
+      'iflow', p.iflow.apiKey,
+      p.iflow.baseUrl ?? 'https://apis.iflow.cn/v1',
+    )
+  }
+  if (p.kilocode?.apiKey) {
+    openaiCompatLane.registerProvider(
+      'kilocode', p.kilocode.apiKey,
+      p.kilocode.baseUrl ?? 'https://kilocode.ai/api/openrouter/v1',
     )
   }
 

@@ -22,6 +22,9 @@ export type ProviderId =
   | 'nim'
   | 'ollama'
   | 'openrouter'
+  | 'cline'
+  | 'iflow'
+  | 'kilocode'
   | 'generic'
 
 export interface TransformContext {
@@ -115,6 +118,15 @@ export interface Transformer {
    *   'last-only' — relocate to last content block (OpenRouter cap)
    */
   cacheControlMode(model: string): 'none' | 'passthrough' | 'last-only'
+
+  /**
+   * Optional hardcoded model catalog. When set, the lane returns this
+   * verbatim from `listModels()` instead of querying the provider's
+   * `/v1/models` endpoint. Use for providers whose upstream `/models`
+   * is unreliable (auth-gated, paginated, returns sub-aliases) or where
+   * a curated, stable list is preferable to whatever the gateway emits.
+   */
+  staticCatalog?(): Array<{ id: string; name: string }>
 
   /**
    * Optional post-filter on the provider's /v1/models response. Used

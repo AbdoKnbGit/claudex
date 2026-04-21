@@ -46,6 +46,9 @@ type ProviderType =
   | 'nim'
   | 'ollama'
   | 'openrouter'
+  | 'cline'
+  | 'iflow'
+  | 'kilocode'
   | 'generic'
 
 function detectProvider(model: string, baseUrl: string): ProviderType {
@@ -57,6 +60,9 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('integrate.api.nvidia')) return 'nim'
   if (b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')) return 'ollama'
   if (b.includes('openrouter')) return 'openrouter'
+  if (b.includes('cline.bot')) return 'cline'
+  if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
+  if (b.includes('kilocode.ai') || b.includes('kilo.ai')) return 'kilocode'
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
   if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'
@@ -240,8 +246,14 @@ export class OpenAICompatLane implements Lane {
         messages: chatMessages,
         stream: true,
         stream_options: { include_usage: true },
-        tools: openaiTools.length > 0 && !isLocal ? openaiTools : undefined,
-        tool_choice: openaiTools.length > 0 && !isLocal ? 'auto' : undefined,
+        // Ollama has supported OpenAI-compat function calling since
+        // v0.3.0 (Jul 2024). The previous `!isLocal` gate stripped tools
+        // for Ollama, so the model would say "let me explore" and stop
+        // because it had no read_file / execute_command to call. Limit
+        // the unblock to provider === 'ollama' so any other localhost-
+        // hosted generic endpoint keeps its old behavior unchanged.
+        tools: openaiTools.length > 0 && (provider === 'ollama' || !isLocal) ? openaiTools : undefined,
+        tool_choice: openaiTools.length > 0 && (provider === 'ollama' || !isLocal) ? 'auto' : undefined,
         max_tokens: clampMaxTokens(provider, max_tokens),
         temperature: temperature ?? (isLocal ? 0.7 : undefined),
         stop: stop_sequences?.length ? stop_sequences : undefined,
@@ -249,6 +261,17 @@ export class OpenAICompatLane implements Lane {
       provider,
       thinking,
     )
+
+    // Ollama branch: skip the OpenAI-compat /v1 path entirely and use
+    // the native /api/chat endpoint so we can set num_ctx + keep_alive.
+    // The /v1 shim ignores those, so the model runs at its default 4096
+    // context (everything beyond gets truncated and prefilled fresh each
+    // turn — that was the latency cancer). Other providers stay on /v1
+    // unchanged.
+    if (provider === 'ollama') {
+      const ollamaUsage = yield* streamOllamaNative(cfg, body, model, signal)
+      return ollamaUsage
+    }
 
     // Headers per-provider.
     const headers = buildRequestHeaders(provider, cfg.apiKey)
@@ -576,6 +599,13 @@ export class OpenAICompatLane implements Lane {
     const entries = Array.from(this.configs.entries())
       .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
+      const transformer = getTransformer(providerName as ProviderId)
+      // Curated static catalog wins when present — skips the upstream
+      // /v1/models hit entirely. Used by Cline/iFlow/KiloCode where the
+      // gateway either gates /models behind extra scopes or returns a
+      // noisy catalog (sub-aliases, retired models).
+      const fixed = transformer.staticCatalog?.()
+      if (fixed && fixed.length > 0) return fixed
       const url = `${normalizeBaseUrl(cfg.baseUrl)}/models`
       const headers: Record<string, string> = { 'Accept': 'application/json' }
       if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
@@ -590,12 +620,14 @@ export class OpenAICompatLane implements Lane {
         }))
       // Per-provider catalog filter: e.g. Groq hides whisper/preview
       // models so `/models` only shows chat-capable production IDs.
-      const transformer = getTransformer(providerName as ProviderId)
       return transformer.filterModelCatalog?.(raw) ?? raw
     }))
     const out: ModelInfo[] = []
     for (const r of results) {
-      if (r.status === 'fulfilled') out.push(...r.value)
+      if (r.status !== 'fulfilled') continue
+      // filterModelCatalog declares `name?: string` so the union with
+      // staticCatalog widens; backfill from id when the upstream omitted it.
+      for (const m of r.value) out.push({ id: m.id, name: m.name ?? m.id })
     }
     _modelsCacheByProvider.set(cacheKey, { models: out, at: now })
     return out
@@ -791,6 +823,277 @@ function injectMagistralThinkingPrompt(messages: OpenAIChatMessage[]): OpenAICha
     return messages.map((m, i) => i === existingSystem ? { ...m, content: merged } : m)
   }
   return [{ role: 'system', content: thinkingPrompt }, ...messages]
+}
+
+// ─── Ollama Native /api/chat Path ────────────────────────────────
+//
+// The /v1/chat/completions shim ignores `keep_alive` and `options.num_ctx`,
+// so the model runs at its 4096-token default and unloads after 5 minutes
+// idle. Both kill latency for agent use: every turn overflows ctx and
+// re-prefills from scratch, and every coffee break costs a 20s reload.
+// Going direct to /api/chat lets us set both. Tools, tool_call_id, and
+// the tools schema use the same shape as OpenAI's API, so this is a
+// thin transport swap rather than a full re-implementation.
+
+function safeParseObject(s: string): Record<string, unknown> {
+  if (!s) return {}
+  try { return JSON.parse(s) as Record<string, unknown> } catch { return {} }
+}
+
+function toOllamaMessage(m: OpenAIChatMessage): Record<string, unknown> {
+  // Ollama wants flat string content; collapse OpenAI parts arrays.
+  let content = ''
+  if (typeof m.content === 'string') {
+    content = m.content
+  } else if (Array.isArray(m.content)) {
+    content = m.content
+      .filter((p: any) => p && p.type === 'text' && typeof p.text === 'string')
+      .map((p: any) => p.text)
+      .join('\n')
+  }
+
+  const out: Record<string, unknown> = { role: m.role, content }
+
+  if (m.tool_calls && m.tool_calls.length > 0) {
+    out.tool_calls = m.tool_calls.map(tc => ({
+      ...(tc.id && { id: tc.id }),
+      type: 'function',
+      function: {
+        name: tc.function.name,
+        // Ollama's /api/chat accepts arguments as object; we always have
+        // a JSON string from the OpenAI conversion path so parse here.
+        arguments: safeParseObject(tc.function.arguments),
+      },
+    }))
+  }
+  if (m.tool_call_id) out.tool_call_id = m.tool_call_id
+
+  return out
+}
+
+async function* streamOllamaNative(
+  cfg: { apiKey: string; baseUrl: string },
+  body: OpenAIChatRequest,
+  model: string,
+  signal: AbortSignal | undefined,
+): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+  const root = normalizeBaseUrl(cfg.baseUrl).replace(/\/v1$/i, '')
+  const url = `${root}/api/chat`
+
+  const numCtx = parseInt(process.env.OLLAMA_NUM_CTX ?? '16384', 10)
+  const keepAlive = process.env.OLLAMA_KEEP_ALIVE ?? '30m'
+
+  const ollamaBody: Record<string, unknown> = {
+    model: body.model,
+    messages: body.messages.map(toOllamaMessage),
+    stream: true,
+    keep_alive: keepAlive,
+    options: {
+      num_ctx: numCtx,
+      ...(body.max_tokens != null && { num_predict: body.max_tokens }),
+      ...(body.temperature !== undefined && { temperature: body.temperature }),
+      ...(body.stop?.length && { stop: body.stop }),
+    },
+  }
+  if (body.tools && body.tools.length > 0) ollamaBody.tools = body.tools
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
+
+  const messageId = `ollama-${Date.now()}`
+  let messageStartEmitted = false
+  let inputTokens = 0
+  let outputTokens = 0
+  let currentBlockIndex = 0
+  let inTextBlock = false
+  let inThinkingBlock = false
+  const toolCallBuffers: Array<{ id: string; name: string; args: string; anthropicIndex: number }> = []
+  let emittedAnyToolUse = false
+
+  const emitMessageStart = (): AnthropicStreamEvent | undefined => {
+    if (messageStartEmitted) return undefined
+    messageStartEmitted = true
+    return {
+      type: 'message_start',
+      message: {
+        id: messageId,
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    }
+  }
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(ollamaBody),
+      signal,
+    })
+  } catch (err: any) {
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    yield* emitErrorText(`ollama API connection error: ${err?.message ?? String(err)}`)
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
+    yield { type: 'message_stop' }
+    return blankUsage(0, 0, 0, 0)
+  }
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '')
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    const lowered = errText.toLowerCase()
+    const isPromptTooLong = ['context length', 'too long', 'context window'].some(m => lowered.includes(m))
+    const headline = isPromptTooLong
+      ? `Prompt is too long (ollama ${response.status})`
+      : `ollama API error ${response.status}`
+    yield* emitErrorText(`${headline}: ${errText.slice(0, 500)}`)
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
+    yield { type: 'message_stop' }
+    return blankUsage(0, 0, 0, 0)
+  }
+
+  if (!response.body) throw new Error('Ollama: empty response body')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      // /api/chat is NDJSON: each line is a complete JSON object.
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim()
+        if (!line) continue
+        let chunk: any
+        try { chunk = JSON.parse(line) } catch { continue }
+
+        const message = chunk.message ?? {}
+        const isDone = chunk.done === true
+
+        if (typeof chunk.prompt_eval_count === 'number') inputTokens = chunk.prompt_eval_count
+        if (typeof chunk.eval_count === 'number') outputTokens = chunk.eval_count
+
+        const hasContent = typeof message.content === 'string' && message.content.length > 0
+        const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+
+        if (!messageStartEmitted && (hasContent || hasToolCalls)) {
+          const mst = emitMessageStart()
+          if (mst) yield mst
+        }
+
+        if (hasContent) {
+          if (inThinkingBlock) {
+            yield { type: 'content_block_stop', index: currentBlockIndex }
+            currentBlockIndex++
+            inThinkingBlock = false
+          }
+          if (!inTextBlock) {
+            yield {
+              type: 'content_block_start',
+              index: currentBlockIndex,
+              content_block: { type: 'text', text: '' },
+            }
+            inTextBlock = true
+          }
+          yield {
+            type: 'content_block_delta',
+            index: currentBlockIndex,
+            delta: { type: 'text_delta', text: message.content },
+          }
+        }
+
+        if (hasToolCalls) {
+          if (inTextBlock || inThinkingBlock) {
+            yield { type: 'content_block_stop', index: currentBlockIndex }
+            currentBlockIndex++
+            inTextBlock = false
+            inThinkingBlock = false
+          }
+          for (const tc of message.tool_calls) {
+            const fn = tc.function ?? {}
+            const name = fn.name ?? ''
+            const argsStr = typeof fn.arguments === 'string'
+              ? fn.arguments
+              : JSON.stringify(fn.arguments ?? {})
+            const id = tc.id ?? `call_${toolCallBuffers.length}`
+            toolCallBuffers.push({
+              id,
+              name,
+              args: argsStr,
+              anthropicIndex: currentBlockIndex,
+            })
+            currentBlockIndex++
+            emittedAnyToolUse = true
+          }
+        }
+
+        if (isDone) {
+          if (inTextBlock || inThinkingBlock) {
+            yield { type: 'content_block_stop', index: currentBlockIndex }
+            inTextBlock = false
+            inThinkingBlock = false
+          }
+          for (const buf of toolCallBuffers) {
+            const implId = normalizeToolName(buf.name)
+            let input: Record<string, unknown>
+            try { input = buf.args ? JSON.parse(buf.args) : {} }
+            catch { input = { _raw: buf.args } }
+            const anthropicToolUseId = buf.id.startsWith('toolu_') ? buf.id : `toolu_ollama_${buf.id}`
+            yield {
+              type: 'content_block_start',
+              index: buf.anthropicIndex,
+              content_block: { type: 'tool_use', id: anthropicToolUseId, name: implId, input: {} },
+            }
+            yield {
+              type: 'content_block_delta',
+              index: buf.anthropicIndex,
+              delta: { type: 'input_json_delta', partial_json: JSON.stringify(input ?? {}) },
+            }
+            yield { type: 'content_block_stop', index: buf.anthropicIndex }
+          }
+          toolCallBuffers.length = 0
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  if (!messageStartEmitted) {
+    const mst = emitMessageStart()
+    if (mst) yield mst
+  }
+
+  const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+  yield {
+    type: 'message_delta',
+    delta: { stop_reason: stopReason },
+    usage: { output_tokens: outputTokens, input_tokens: inputTokens },
+  }
+  yield { type: 'message_stop' }
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    thinking_tokens: 0,
+  }
 }
 
 // ─── Per-Provider Response Quirks ────────────────────────────────

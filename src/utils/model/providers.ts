@@ -6,11 +6,13 @@ export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
   | 'openai' | 'gemini' | 'antigravity'
   | 'openrouter' | 'groq' | 'nim' | 'deepseek' | 'ollama'
+  | 'cline' | 'copilot' | 'cursor' | 'iflow' | 'kilocode' | 'kiro'
 
 const VALID_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'bedrock', 'vertex', 'foundry',
   'openai', 'gemini', 'antigravity',
   'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
+  'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
 // Session-local snapshot of the active provider.
@@ -98,6 +100,12 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   nim: 'NVIDIA NIM',
   deepseek: 'DeepSeek',
   ollama: 'Ollama',
+  cline: 'Cline',
+  copilot: 'GitHub Copilot',
+  cursor: 'Cursor',
+  iflow: 'iFlow',
+  kilocode: 'KiloCode',
+  kiro: 'Kiro',
 }
 
 /** Providers available for user selection in /provider and /login */
@@ -109,16 +117,19 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 // (+ flipping GROQ_ENABLED in src/lanes/openai-compat/index.ts) restores it.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'nim', 'deepseek', 'ollama',
+  'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
-  return ['openai', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama'].includes(p)
+  return ['openai', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
+          'cline', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama'].includes(p)
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
+          'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 
 /** Original Anthropic-native providers (firstParty + cloud partners) */
