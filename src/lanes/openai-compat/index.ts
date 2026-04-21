@@ -29,6 +29,7 @@ export function initOpenAICompatLane(providers?: {
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
+  copilot?: { apiKey: string; baseUrl?: string }
 }): void {
   const p = providers ?? {}
 
@@ -100,6 +101,17 @@ export function initOpenAICompatLane(providers?: {
     openaiCompatLane.registerProvider(
       'kilocode', p.kilocode.apiKey,
       p.kilocode.baseUrl ?? 'https://kilocode.ai/api/openrouter/v1',
+    )
+  }
+  // Copilot's bearer is the *internal* token (Copilot exchanges the GH
+  // OAuth user token for it, ~30 min TTL). providerShim re-exchanges via
+  // refreshCopilotOAuth before init when the cached one is stale.
+  if (p.copilot?.apiKey) {
+    openaiCompatLane.registerProvider(
+      'copilot', p.copilot.apiKey,
+      // Note: no `/v1` suffix — Copilot serves /chat/completions and
+      // /models off the bare api.githubcopilot.com host.
+      p.copilot.baseUrl ?? 'https://api.githubcopilot.com',
     )
   }
 

@@ -49,6 +49,7 @@ type ProviderType =
   | 'cline'
   | 'iflow'
   | 'kilocode'
+  | 'copilot'
   | 'generic'
 
 function detectProvider(model: string, baseUrl: string): ProviderType {
@@ -63,6 +64,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('cline.bot')) return 'cline'
   if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
   if (b.includes('kilocode.ai') || b.includes('kilo.ai')) return 'kilocode'
+  if (b.includes('githubcopilot.com')) return 'copilot'
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
   if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'

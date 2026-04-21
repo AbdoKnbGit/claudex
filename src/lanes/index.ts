@@ -80,6 +80,9 @@ export function initLanes(opts?: {
   clineApiKey?: string
   iflowApiKey?: string
   kilocodeApiKey?: string
+  /** GitHub Copilot internal token (NOT the GH OAuth access token — see
+   *  oauth_services.ts::completeCopilotOAuth). */
+  copilotApiKey?: string
 }): void {
   // ── Claude lane (registration-only: Anthropic traffic uses
   //    services/api/claude.ts directly — this lane exists for /lane
@@ -120,5 +123,6 @@ export function initLanes(opts?: {
     cline: opts?.clineApiKey ? { apiKey: opts.clineApiKey } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
+    copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,
   })
 }

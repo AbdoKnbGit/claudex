@@ -25,6 +25,7 @@ export type ProviderId =
   | 'cline'
   | 'iflow'
   | 'kilocode'
+  | 'copilot'
   | 'generic'
 
 export interface TransformContext {

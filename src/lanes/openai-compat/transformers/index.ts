@@ -12,6 +12,7 @@ import { openrouterTransformer } from './openrouter.js'
 import { clineTransformer } from './cline.js'
 import { iflowTransformer } from './iflow.js'
 import { kilocodeTransformer } from './kilocode.js'
+import { copilotTransformer } from './copilot.js'
 import { genericTransformer } from './generic.js'
 import type { Transformer, ProviderId } from './base.js'
 
@@ -25,6 +26,7 @@ export const TRANSFORMERS: Record<ProviderId, Transformer> = {
   cline: clineTransformer,
   iflow: iflowTransformer,
   kilocode: kilocodeTransformer,
+  copilot: copilotTransformer,
   generic: genericTransformer,
 }
 
@@ -35,7 +37,7 @@ export function getTransformer(provider: ProviderId): Transformer {
 export {
   deepseekTransformer, groqTransformer, mistralTransformer, nimTransformer,
   ollamaTransformer, openrouterTransformer, genericTransformer,
-  clineTransformer, iflowTransformer, kilocodeTransformer,
+  clineTransformer, iflowTransformer, kilocodeTransformer, copilotTransformer,
 }
 export type { Transformer, ProviderId, TransformContext } from './base.js'
 export type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
