@@ -1772,8 +1772,7 @@ export function getProviderAuthMethod(provider: APIProvider): ProviderAuthMethod
   // OAuth = user's paid subscription; API key = often free tier
   const supported = PROVIDER_AUTH_SUPPORT[provider]
   if (supported?.includes('oauth')) {
-    const oauthToken = _loadStoredOAuthToken(provider)
-    if (oauthToken) return 'oauth'
+    if (_hasStoredOAuthCredential(provider)) return 'oauth'
   }
 
   // Fall back to API key
@@ -1847,6 +1846,29 @@ function _loadStoredOAuthToken(provider: string): string | null {
   }
 }
 
+function _hasStoredOAuthCredential(provider: string): boolean {
+  try {
+    const { readFileSync, existsSync } = require('fs')
+    const { join } = require('path')
+    const { homedir } = require('os')
+    const keysFile = join(homedir(), '.config', 'claude-code', 'provider-keys.json')
+    if (!existsSync(keysFile)) return false
+    const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
+
+    if (provider === 'gemini') {
+      return _hasStoredOAuthBlob(data?.keys?.['gemini_oauth_cli'])
+        || _hasStoredOAuthBlob(data?.keys?.['gemini_oauth'])
+    }
+    if (provider === 'antigravity') {
+      return _hasStoredOAuthBlob(data?.keys?.['gemini_oauth_antigravity'])
+    }
+
+    return _hasStoredOAuthBlob(data?.keys?.[`${provider}_oauth`])
+  } catch {
+    return false
+  }
+}
+
 /** Parse a stored token JSON string — returns accessToken if not expired, else null. */
 function _tryParseToken(stored: string | undefined): string | null {
   if (!stored) return null
@@ -1858,6 +1880,22 @@ function _tryParseToken(stored: string | undefined): string | null {
     return tokens.accessToken ?? null
   } catch {
     return null
+  }
+}
+
+function _hasStoredOAuthBlob(stored: string | undefined): boolean {
+  if (!stored) return false
+  try {
+    const tokens = JSON.parse(stored) as {
+      accessToken?: unknown
+      refreshToken?: unknown
+    }
+    return (
+      (typeof tokens.accessToken === 'string' && tokens.accessToken.length > 0)
+      || (typeof tokens.refreshToken === 'string' && tokens.refreshToken.length > 0)
+    )
+  } catch {
+    return false
   }
 }
 

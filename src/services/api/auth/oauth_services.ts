@@ -33,12 +33,24 @@ interface StoredOAuthBlob {
   meta?: Record<string, unknown>
 }
 
+export interface CopilotPlanInfo {
+  sku?: string
+  individual?: boolean
+  limitedUserQuotas?: {
+    chat?: number
+    completions?: number
+  }
+  limitedUserResetDate?: number
+}
+
 interface KiroTokenPayload {
   accessToken?: string
   refreshToken?: string
   expiresIn?: number
   profileArn?: string | null
 }
+
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000
 
 function _saveTokens(
   storageKey: string,
@@ -117,6 +129,11 @@ export function _normalizeKiroTokenPayload(data: Record<string, unknown>): KiroT
 async function _reloadKiroLaneAuth(): Promise<void> {
   const { reloadKiroLaneAuth } = await import('../providers/providerShim.js')
   await reloadKiroLaneAuth()
+}
+
+async function _reloadCopilotLaneAuth(): Promise<void> {
+  const { reloadCopilotLaneAuth } = await import('../providers/providerShim.js')
+  await reloadCopilotLaneAuth()
 }
 
 /** Bind a local http server on the first available port, capture callback params. */
@@ -537,6 +554,57 @@ const COPILOT_TOKEN_URL = 'https://github.com/login/oauth/access_token'
 const COPILOT_INTERNAL_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token'
 const COPILOT_USERAGENT = 'GitHubCopilotChat/0.26.7'
 const COPILOT_STORAGE = 'copilot_oauth'
+let _copilotRefreshInFlight: Promise<string> | null = null
+
+function _copilotMeta(refreshIn?: number): Record<string, unknown> | undefined {
+  if (typeof refreshIn !== 'number' || !Number.isFinite(refreshIn)) return undefined
+  return {
+    refreshIn,
+    refreshAt: Date.now() + refreshIn * 1000,
+  }
+}
+
+function _copilotPlanMeta(data: {
+  sku?: string
+  individual?: boolean
+  limited_user_quotas?: {
+    chat?: number
+    completions?: number
+  }
+  limited_user_reset_date?: number
+}): CopilotPlanInfo {
+  return {
+    ...(typeof data.sku === 'string' ? { sku: data.sku } : {}),
+    ...(typeof data.individual === 'boolean' ? { individual: data.individual } : {}),
+    ...(data.limited_user_quotas ? { limitedUserQuotas: data.limited_user_quotas } : {}),
+    ...(typeof data.limited_user_reset_date === 'number'
+      ? { limitedUserResetDate: data.limited_user_reset_date }
+      : {}),
+  }
+}
+
+function _mergeCopilotMeta(
+  refreshIn: number | undefined,
+  plan: CopilotPlanInfo,
+): Record<string, unknown> | undefined {
+  const timing = _copilotMeta(refreshIn) ?? {}
+  return { ...timing, ...plan }
+}
+
+function _hasCopilotPlanInfo(blob: StoredOAuthBlob): boolean {
+  return typeof blob.meta?.sku === 'string'
+}
+
+function _shouldRefreshCopilotToken(blob: StoredOAuthBlob): boolean {
+  const refreshAt = blob.meta?.refreshAt
+  if (typeof refreshAt === 'number' && Number.isFinite(refreshAt)) {
+    return Date.now() > refreshAt - TOKEN_REFRESH_BUFFER_MS
+  }
+  return !!(
+    blob.expiresAt
+    && Date.now() > blob.expiresAt - TOKEN_REFRESH_BUFFER_MS
+  )
+}
 
 /**
  * Device-code handles. Caller renders the user_code + verification_uri
@@ -639,6 +707,10 @@ export async function completeCopilotOAuth(handles: CopilotDeviceHandles): Promi
     token?: string
     expires_at?: number
     refresh_in?: number
+    sku?: string
+    individual?: boolean
+    limited_user_quotas?: { chat?: number; completions?: number }
+    limited_user_reset_date?: number
   }
   if (!copilotData.token) throw new Error('Copilot: no internal token in response')
 
@@ -649,8 +721,12 @@ export async function completeCopilotOAuth(handles: CopilotDeviceHandles): Promi
     accessToken: copilotData.token,
     refreshToken: ghAccessToken,  // refresh re-exchanges via the GH token
     expiresIn,
-    meta: { refreshIn: copilotData.refresh_in },
+    meta: _mergeCopilotMeta(
+      copilotData.refresh_in,
+      _copilotPlanMeta(copilotData),
+    ),
   })
+  await _reloadCopilotLaneAuth()
   return { accessToken: copilotData.token, refreshToken: ghAccessToken }
 }
 
@@ -667,6 +743,75 @@ export function getCopilotOAuthToken(): string | null {
   return _loadTokens(COPILOT_STORAGE)?.accessToken ?? null
 }
 
+export function getStoredCopilotPlanInfo(): CopilotPlanInfo | null {
+  const blob = _loadTokens(COPILOT_STORAGE)
+  if (!blob?.meta) return null
+
+  const plan: CopilotPlanInfo = {}
+  if (typeof blob.meta.sku === 'string') plan.sku = blob.meta.sku
+  if (typeof blob.meta.individual === 'boolean') plan.individual = blob.meta.individual
+
+  const quotas = blob.meta.limitedUserQuotas
+  if (quotas && typeof quotas === 'object') {
+    const q = quotas as Record<string, unknown>
+    plan.limitedUserQuotas = {
+      ...(typeof q.chat === 'number' ? { chat: q.chat } : {}),
+      ...(typeof q.completions === 'number' ? { completions: q.completions } : {}),
+    }
+  }
+
+  if (typeof blob.meta.limitedUserResetDate === 'number') {
+    plan.limitedUserResetDate = blob.meta.limitedUserResetDate
+  }
+
+  return Object.keys(plan).length > 0 ? plan : null
+}
+
+export async function getValidCopilotOAuthToken(): Promise<string | null> {
+  const blob = _loadTokens(COPILOT_STORAGE)
+  if (!blob) return null
+
+  if (!blob.accessToken) {
+    if (!blob.refreshToken) return null
+    try {
+      return await refreshCopilotOAuth(blob.refreshToken)
+    } catch {
+      return null
+    }
+  }
+
+  if (!_hasCopilotPlanInfo(blob) && blob.refreshToken) {
+    try {
+      return await refreshCopilotOAuth(blob.refreshToken)
+    } catch {
+      // Keep using the current internal token if metadata refresh fails.
+      return blob.accessToken
+    }
+  }
+
+  if (!_shouldRefreshCopilotToken(blob)) {
+    return blob.accessToken
+  }
+
+  if (!blob.refreshToken) return blob.accessToken
+
+  if (!_copilotRefreshInFlight) {
+    _copilotRefreshInFlight = refreshCopilotOAuth(blob.refreshToken)
+      .finally(() => {
+        _copilotRefreshInFlight = null
+      })
+  }
+
+  try {
+    return await _copilotRefreshInFlight
+  } catch {
+    // Keep using the currently-stored internal token if the early refresh
+    // fails. This avoids flipping to "not logged in" on transient network
+    // errors while the existing token may still be accepted by Copilot.
+    return blob.accessToken ?? null
+  }
+}
+
 export async function refreshCopilotOAuth(ghAccessToken: string): Promise<string> {
   const res = await fetch(COPILOT_INTERNAL_TOKEN_URL, {
     headers: {
@@ -677,7 +822,15 @@ export async function refreshCopilotOAuth(ghAccessToken: string): Promise<string
     },
   })
   if (!res.ok) throw new Error(`Copilot refresh failed: ${await res.text()}`)
-  const data = await res.json() as { token?: string; expires_at?: number; refresh_in?: number }
+  const data = await res.json() as {
+    token?: string
+    expires_at?: number
+    refresh_in?: number
+    sku?: string
+    individual?: boolean
+    limited_user_quotas?: { chat?: number; completions?: number }
+    limited_user_reset_date?: number
+  }
   if (!data.token) throw new Error('Copilot refresh: no token')
   const expiresIn = data.expires_at
     ? Math.max(60, data.expires_at - Math.floor(Date.now() / 1000))
@@ -686,8 +839,12 @@ export async function refreshCopilotOAuth(ghAccessToken: string): Promise<string
     accessToken: data.token,
     refreshToken: ghAccessToken,
     expiresIn,
-    meta: { refreshIn: data.refresh_in },
+    meta: _mergeCopilotMeta(
+      data.refresh_in,
+      _copilotPlanMeta(data),
+    ),
   })
+  await _reloadCopilotLaneAuth()
   return data.token
 }
 
@@ -847,6 +1004,22 @@ export async function startKiroOAuth(): Promise<{
 
 export function getKiroOAuthToken(): string | null {
   return _loadTokens(KIRO_STORAGE)?.accessToken ?? null
+}
+
+export async function getValidKiroOAuthToken(): Promise<string | null> {
+  const blob = _loadTokens(KIRO_STORAGE)
+  if (!blob?.accessToken) return null
+
+  if (blob.expiresAt && Date.now() > blob.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
+    if (!blob.refreshToken) return null
+    try {
+      return await refreshKiroOAuth(blob.refreshToken)
+    } catch {
+      return null
+    }
+  }
+
+  return blob.accessToken
 }
 
 

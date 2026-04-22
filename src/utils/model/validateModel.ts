@@ -4,6 +4,12 @@ import { isModelAllowed } from './modelAllowlist.js'
 import { getAPIProvider } from './providers.js'
 import { sideQuery } from '../sideQuery.js'
 import {
+  formatCopilotModelUnsupportedMessage,
+  formatCopilotQuotaExceededMessage,
+  isCopilotModelUnsupportedError,
+  isCopilotQuotaExceededError,
+} from './copilotAccount.js'
+import {
   NotFoundError,
   APIError,
   APIConnectionError,
@@ -86,6 +92,8 @@ function handleValidationError(
   error: unknown,
   modelName: string,
 ): { valid: boolean; error: string } {
+  const provider = getAPIProvider()
+
   // NotFoundError (404) means the model doesn't exist
   if (error instanceof NotFoundError) {
     const fallback = get3PFallbackSuggestion(modelName)
@@ -112,6 +120,20 @@ function handleValidationError(
       }
     }
 
+    if (provider === 'copilot' && isCopilotModelUnsupportedError(error.error ?? error.message)) {
+      return {
+        valid: false,
+        error: formatCopilotModelUnsupportedMessage(modelName),
+      }
+    }
+
+    if (provider === 'copilot' && isCopilotQuotaExceededError(error.error ?? error.message)) {
+      return {
+        valid: false,
+        error: formatCopilotQuotaExceededMessage(),
+      }
+    }
+
     // Check error body for model-specific errors
     const errorBody = error.error as unknown
     if (
@@ -132,6 +154,18 @@ function handleValidationError(
 
   // For unknown errors, be safe and reject
   const errorMessage = error instanceof Error ? error.message : String(error)
+  if (provider === 'copilot' && isCopilotModelUnsupportedError(errorMessage)) {
+    return {
+      valid: false,
+      error: formatCopilotModelUnsupportedMessage(modelName),
+    }
+  }
+  if (provider === 'copilot' && isCopilotQuotaExceededError(errorMessage)) {
+    return {
+      valid: false,
+      error: formatCopilotQuotaExceededMessage(),
+    }
+  }
   return {
     valid: false,
     error: `Unable to validate model: ${errorMessage}`,

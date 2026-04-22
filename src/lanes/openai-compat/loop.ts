@@ -36,6 +36,12 @@ import {
 } from '../shared/mcp_bridge.js'
 import { getTransformer, type ProviderId } from './transformers/index.js'
 import { resolveEditFormat } from './capabilities.js'
+import {
+  formatCopilotModelUnsupportedMessage,
+  formatCopilotQuotaExceededMessage,
+  isCopilotModelUnsupportedError,
+  isCopilotQuotaExceededError,
+} from '../../utils/model/copilotAccount.js'
 
 // ─── Provider Detection ──────────────────────────────────────────
 
@@ -126,6 +132,21 @@ export class OpenAICompatLane implements Lane {
 
   registerProvider(name: string, apiKey: string, baseUrl: string): void {
     this.configs.set(name, { apiKey, baseUrl })
+    this.invalidateModelCache(name)
+  }
+
+  unregisterProvider(name: string): void {
+    this.configs.delete(name)
+    this.invalidateModelCache(name)
+  }
+
+  invalidateModelCache(providerFilter?: string): void {
+    if (providerFilter) {
+      _modelsCacheByProvider.delete(providerFilter)
+      _modelsCacheByProvider.delete('__all__')
+      return
+    }
+    _modelsCacheByProvider.clear()
   }
 
   private getConfigForModel(
@@ -137,7 +158,8 @@ export class OpenAICompatLane implements Lane {
     // ID can live on multiple hosts (`openai/gpt-oss-120b` is on both
     // Groq and OpenRouter). When the hint names a registered config, use
     // it directly — don't fall through to the model-name heuristics.
-    if (providerHint && this.configs.has(providerHint)) {
+    if (providerHint) {
+      if (!this.configs.has(providerHint)) return null
       const c = this.configs.get(providerHint)!
       return { ...c, provider: providerHint as ProviderType }
     }
@@ -345,6 +367,29 @@ export class OpenAICompatLane implements Lane {
         const mst = emitMessageStart()
         if (mst) yield mst
       }
+      const isCopilotModelUnsupported =
+        provider === 'copilot'
+        && response.status === 400
+        && isCopilotModelUnsupportedError(errText)
+      const isCopilotQuotaExceeded =
+        provider === 'copilot'
+        && response.status === 402
+        && isCopilotQuotaExceededError(errText)
+
+      if (isCopilotModelUnsupported) {
+        yield* emitErrorText(formatCopilotModelUnsupportedMessage(model))
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
+        yield { type: 'message_stop' }
+        return blankUsage(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+      }
+
+      if (isCopilotQuotaExceeded) {
+        yield* emitErrorText(formatCopilotQuotaExceededMessage())
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
+        yield { type: 'message_stop' }
+        return blankUsage(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+      }
+
       // Detect prompt-too-long / context-window-exceeded per the
       // transformer's known markers. Emit with the "Prompt is too long"
       // prefix claude.ts reactive-compact text-matches against —
@@ -602,27 +647,43 @@ export class OpenAICompatLane implements Lane {
       .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
       const transformer = getTransformer(providerName as ProviderId)
-      // Curated static catalog wins when present — skips the upstream
-      // /v1/models hit entirely. Used by Cline/iFlow/KiloCode where the
-      // gateway either gates /models behind extra scopes or returns a
-      // noisy catalog (sub-aliases, retired models).
-      const fixed = transformer.staticCatalog?.()
-      if (fixed && fixed.length > 0) return fixed
-      const url = `${normalizeBaseUrl(cfg.baseUrl)}/models`
-      const headers: Record<string, string> = { 'Accept': 'application/json' }
-      if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
-      const resp = await fetch(url, { headers, method: 'GET' })
-      if (!resp.ok) return []
-      const data = await resp.json() as { data?: Array<{ id?: string; owned_by?: string }> }
-      const raw = (data.data ?? [])
-        .filter(m => typeof m.id === 'string')
-        .map(m => ({
-          id: m.id as string,
-          name: m.id as string,
-        }))
-      // Per-provider catalog filter: e.g. Groq hides whisper/preview
-      // models so `/models` only shows chat-capable production IDs.
-      return transformer.filterModelCatalog?.(raw) ?? raw
+      // Most compat providers either want a fully-curated catalog or a
+      // direct pass-through from `/models`. Copilot is the main exception:
+      // its live catalog changes often enough that we want fresh data, but
+      // still need a fallback when `/models` is unavailable.
+      const fixed = transformer.staticCatalog?.() ?? []
+      const preferLiveCatalog = transformer.preferLiveModelCatalog?.() ?? false
+      if (!preferLiveCatalog && fixed.length > 0) return fixed
+      try {
+        const url = `${normalizeBaseUrl(cfg.baseUrl)}/models`
+        const headers: Record<string, string> = { 'Accept': 'application/json' }
+        if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
+        const extra = transformer.buildHeaders?.(cfg.apiKey) ?? {}
+        for (const [k, v] of Object.entries(extra)) {
+          // Reuse provider-specific auth/catalog headers (e.g. Copilot's
+          // editor-version / integration-id) but keep the GET request's
+          // Accept as JSON rather than the streaming default.
+          if (k.toLowerCase() === 'accept') continue
+          headers[k] = v
+        }
+        const resp = await fetch(url, { headers, method: 'GET' })
+        if (resp.ok) {
+          const data = await resp.json() as { data?: Array<{ id?: string; owned_by?: string }> }
+          const raw = (data.data ?? [])
+            .filter(m => typeof m.id === 'string')
+            .map(m => ({
+              id: m.id as string,
+              name: m.id as string,
+            }))
+          // Per-provider catalog filter: e.g. Groq hides whisper/preview
+          // models so `/models` only shows chat-capable production IDs.
+          const filtered = transformer.filterModelCatalog?.(raw) ?? raw
+          if (filtered.length > 0) return filtered
+        }
+      } catch {
+        // Fall back to the curated list below.
+      }
+      return fixed
     }))
     const out: ModelInfo[] = []
     for (const r of results) {

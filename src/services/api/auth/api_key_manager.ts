@@ -220,4 +220,24 @@ export function deleteAllProviderCredentials(provider: string): void {
   if (provider === 'antigravity') {
     deleteProviderKey('gemini_oauth_antigravity')
   }
+
+  // Keep lane-backed providers in sync with credential deletion so the
+  // current session doesn't require a restart to forget stale auth.
+  if (provider === 'copilot') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadCopilotLaneAuth }) => reloadCopilotLaneAuth())
+      .catch(() => {})
+  } else if (provider === 'kiro') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadKiroLaneAuth }) => reloadKiroLaneAuth())
+      .catch(() => {})
+  } else if (provider === 'cursor') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadCursorLaneAuth }) => reloadCursorLaneAuth())
+      .catch(() => {})
+  } else if (provider === 'gemini' || provider === 'antigravity') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadGeminiLaneAuth }) => reloadGeminiLaneAuth())
+      .catch(() => {})
+  }
 }

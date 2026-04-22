@@ -561,6 +561,26 @@ export async function reloadKiroLaneAuth(): Promise<void> {
 }
 
 /**
+ * Reconfigure the Copilot provider inside the shared openai-compat lane
+ * from whatever token is currently stored on disk. Called after `/login
+ * copilot` and after automatic token refresh so the running session
+ * stops using any stale bearer captured during lane init.
+ */
+export async function reloadCopilotLaneAuth(): Promise<void> {
+  const { openaiCompatLane } = await import('../../../lanes/openai-compat/index.js')
+  const accessToken = getCopilotOAuthToken() ?? undefined
+  if (!accessToken) {
+    openaiCompatLane.unregisterProvider('copilot')
+    return
+  }
+  openaiCompatLane.registerProvider(
+    'copilot',
+    accessToken,
+    'https://api.githubcopilot.com',
+  )
+}
+
+/**
  * Reconfigure the Cursor lane's in-memory auth from whatever is currently
  * on disk. Called by /login cursor after it writes a fresh token so the
  * session picks it up without a process restart.

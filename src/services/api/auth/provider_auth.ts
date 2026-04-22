@@ -52,8 +52,8 @@ import {
   startKiloCodeOAuth, getKiloCodeOAuthToken,
   startClineOAuth, getClineOAuthToken, refreshClineOAuth,
   startIFlowOAuth, getIFlowOAuthToken, refreshIFlowOAuth,
-  startCopilotOAuth, getCopilotOAuthToken, refreshCopilotOAuth,
-  startKiroOAuth, getKiroOAuthToken, refreshKiroOAuth,
+  startCopilotOAuth, getValidCopilotOAuthToken, refreshCopilotOAuth,
+  startKiroOAuth, getValidKiroOAuthToken, refreshKiroOAuth,
   getCursorOAuthToken,
 } from './oauth_services.js'
 import { loadProviderKey, deleteProviderKey } from './api_key_manager.js'
@@ -118,9 +118,9 @@ async function _getValidOAuthToken(provider: APIProvider): Promise<string | null
     case 'iflow':
       return getIFlowOAuthToken()
     case 'copilot':
-      return getCopilotOAuthToken()
+      return getValidCopilotOAuthToken()
     case 'kiro':
-      return getKiroOAuthToken()
+      return getValidKiroOAuthToken()
     case 'cursor':
       return getCursorOAuthToken()
     default:
@@ -258,7 +258,7 @@ export function getProviderAuthStatus(provider: APIProvider): ProviderAuthStatus
   const supported = PROVIDER_AUTH_SUPPORT[provider] ?? ['api_key']
   const method = getProviderAuthMethod(provider)
   const hasApiKey = !!getProviderApiKey(provider)
-  const hasOAuth = !!getProviderOAuthToken(provider)
+  const hasOAuth = supported.includes('oauth') && method === 'oauth'
 
   return {
     provider,

@@ -22,6 +22,7 @@ type Props = {
   initialProvider: BrowsableModelProvider
   onSelect: (provider: BrowsableModelProvider, modelId: string) => void
   onCancel: () => void
+  lockedProvider?: BrowsableModelProvider
 }
 
 type Step = 'provider' | 'models'
@@ -122,10 +123,14 @@ export function ProviderModelPicker({
   initialProvider,
   onSelect,
   onCancel,
+  lockedProvider,
 }: Props) {
-  const [step, setStep] = useState<Step>('provider')
+  const [step, setStep] = useState<Step>(lockedProvider ? 'models' : 'provider')
   const [selectedProviderIndex, setSelectedProviderIndex] = useState(() =>
-    Math.max(0, BROWSABLE_MODEL_PROVIDERS.indexOf(initialProvider)),
+    Math.max(
+      0,
+      BROWSABLE_MODEL_PROVIDERS.indexOf(lockedProvider ?? initialProvider),
+    ),
   )
   const [selectedRowIndex, setSelectedRowIndex] = useState(0)
   const [query, setQuery] = useState('')
@@ -135,7 +140,9 @@ export function ProviderModelPicker({
   const [reasoningLevel, setReasoningLevel] = useState(getOpenAIReasoningLevel)
 
   const selectedProvider =
-    BROWSABLE_MODEL_PROVIDERS[selectedProviderIndex] ?? initialProvider
+    lockedProvider
+    ?? BROWSABLE_MODEL_PROVIDERS[selectedProviderIndex]
+    ?? initialProvider
 
   useEffect(() => {
     if (step !== 'models') {
@@ -210,6 +217,11 @@ export function ProviderModelPicker({
   useInput((input, key) => {
     if (key.escape) {
       if (step === 'models') {
+        if (lockedProvider) {
+          onCancel()
+          return
+        }
+
         setStep('provider')
         setQuery('')
         setLoadError(null)

@@ -131,6 +131,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     },
   },
 
+  copilot: {
+    displayName: 'GitHub Copilot',
+    baseUrl: 'https://api.githubcopilot.com',
+    authType: 'bearer',
+    apiKeyEnv: 'COPILOT_OAUTH_TOKEN',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus: 'gpt-5-mini',
+        sonnet: 'gpt-5-mini',
+        haiku: 'gpt-5-mini',
+      },
+      pro: {
+        opus: process.env.COPILOT_MODEL_OPUS ?? 'claude-opus-4.7',
+        sonnet: process.env.COPILOT_MODEL_SONNET ?? 'gpt-5-mini',
+        haiku: process.env.COPILOT_MODEL_HAIKU ?? 'gpt-5-mini',
+      },
+      plus: {
+        opus: process.env.COPILOT_MODEL_OPUS ?? 'claude-opus-4.7',
+        sonnet: process.env.COPILOT_MODEL_SONNET ?? 'gpt-5.4',
+        haiku: process.env.COPILOT_MODEL_HAIKU ?? 'gpt-5-mini',
+      },
+    },
+  },
+
   gemini: {
     displayName: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',

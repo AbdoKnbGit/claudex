@@ -476,10 +476,13 @@ export function getModelOptions(fastMode = false): ModelOption[] {
     })
   }
 
-  // Append additional model options fetched during bootstrap
-  for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
-    if (!options.some(existing => existing.value === opt.value)) {
-      options.push(opt)
+  // Bootstrap-provided extra model options are first-party Anthropic-only.
+  // Do not leak them into third-party providers like OpenAI/Copilot.
+  if (getAPIProvider() === 'firstParty') {
+    for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
+      if (!options.some(existing => existing.value === opt.value)) {
+        options.push(opt)
+      }
     }
   }
 

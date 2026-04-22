@@ -13,6 +13,7 @@
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
+import { isCopilotModelAllowedForCurrentPlan } from '../../../utils/model/copilotAccount.js'
 
 // Headers below mirror the reference executor exactly. The chat gateway
 // gates non-VSCode UAs hard, so don't tweak these unless GitHub bumps
@@ -22,6 +23,53 @@ const COPILOT_VSCODE_VERSION = '1.110.0'
 const COPILOT_CHAT_VERSION = '0.38.0'
 const COPILOT_USER_AGENT = `GitHubCopilotChat/${COPILOT_CHAT_VERSION}`
 const COPILOT_API_VERSION = '2025-04-01'
+const COPILOT_INTERNAL_ROUTER_PREFIX = 'accounts/msft/routers/'
+const COPILOT_SUPPORTED_MODELS = new Set<string>([
+  'gpt-4.1',
+  'gpt-5-mini',
+  'gpt-5.2',
+  'gpt-5.2-codex',
+  'gpt-5.3-codex',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'claude-haiku-4.5',
+  'claude-sonnet-4',
+  'claude-sonnet-4.5',
+  'claude-sonnet-4.6',
+  'claude-opus-4.5',
+  'claude-opus-4.6',
+  'claude-opus-4.7',
+])
+
+const COPILOT_RETIRED_MODEL_PATTERNS = [
+  /^claude-opus-4\.1$/i,
+  /^claude-opus-4$/i,
+  /^claude-sonnet-3\.5$/i,
+  /^claude-sonnet-3\.7(?:-thinking)?$/i,
+  /^gpt-5$/i,
+  /^gpt-5-codex$/i,
+  /^gpt-5\.1(?:-codex(?:-mini|-max)?)?$/i,
+  /^o1-mini$/i,
+  /^o3(?:-mini)?$/i,
+  /^o4-mini$/i,
+]
+
+const COPILOT_NAME_OVERRIDES: Record<string, string> = {
+  'claude-haiku-4.5': 'Claude Haiku 4.5',
+  'claude-opus-4.5': 'Claude Opus 4.5',
+  'claude-opus-4.6': 'Claude Opus 4.6',
+  'claude-opus-4.7': 'Claude Opus 4.7',
+  'claude-sonnet-4': 'Claude Sonnet 4',
+  'claude-sonnet-4.5': 'Claude Sonnet 4.5',
+  'claude-sonnet-4.6': 'Claude Sonnet 4.6',
+  'gpt-4.1': 'GPT-4.1',
+  'gpt-5-mini': 'GPT-5 mini',
+  'gpt-5.2': 'GPT-5.2',
+  'gpt-5.2-codex': 'GPT-5.2-Codex',
+  'gpt-5.3-codex': 'GPT-5.3-Codex',
+  'gpt-5.4': 'GPT-5.4',
+  'gpt-5.4-mini': 'GPT-5.4 mini',
+}
 
 function _requestId(): string {
   // crypto.randomUUID exists on Node 16+; fall back for older runtimes.
@@ -37,6 +85,35 @@ function _requiresMaxCompletionTokens(model: string): boolean {
 function _supportsTemperature(model: string): boolean {
   // gpt-5.4 (and any future variant matching the pattern) rejects temperature.
   return !/gpt-5\.4/i.test(model)
+}
+
+function _isCopilotSnapshotModel(model: string): boolean {
+  return /-\d{4}-\d{2}-\d{2}$/i.test(model) || /-\d{4}$/i.test(model)
+}
+
+function _isRetiredCopilotModel(model: string): boolean {
+  return COPILOT_RETIRED_MODEL_PATTERNS.some(pattern => pattern.test(model))
+}
+
+function _isChatCapableCopilotModel(model: string): boolean {
+  const m = model.toLowerCase()
+  if (m.startsWith(COPILOT_INTERNAL_ROUTER_PREFIX)) return false
+  if (m.startsWith('text-embedding-')) return false
+  if (m.startsWith('whisper-') || m.startsWith('tts-') || m.startsWith('omni-moderation-')) return false
+  if (_isCopilotSnapshotModel(m)) return false
+  if (_isRetiredCopilotModel(m)) return false
+  return COPILOT_SUPPORTED_MODELS.has(m)
+}
+
+function _isCurrentPlanEligibleCopilotModel(model: string): boolean {
+  return isCopilotModelAllowedForCurrentPlan(model)
+}
+
+function _copilotDisplayName(id: string): string {
+  const lowered = id.toLowerCase()
+  const override = COPILOT_NAME_OVERRIDES[lowered]
+  if (override) return override
+  return id
 }
 
 export const copilotTransformer: Transformer = {
@@ -99,7 +176,7 @@ export const copilotTransformer: Transformer = {
   },
 
   smallFastModel(_model: string): string | null {
-    return 'gpt-4o-mini'
+    return 'gpt-5-mini'
   },
 
   cacheControlMode(model: string): 'none' | 'passthrough' | 'last-only' {
@@ -108,42 +185,46 @@ export const copilotTransformer: Transformer = {
     return 'none'
   },
 
-  // Curated catalog mirrors reference/9router-master/open-sse/config/providerModels.js
-  // (the `gh` block). Mix of OpenAI / Anthropic / Google / xAI / vendor-internal IDs.
+  // Copilot's supported model set changes often. Prefer the live `/models`
+  // response when possible, then fall back to a docs-aligned catalog.
+  preferLiveModelCatalog(): boolean {
+    return true
+  },
+
+  filterModelCatalog(models: Array<{ id: string; name?: string }>): Array<{ id: string; name?: string }> {
+    const deduped = new Map<string, { id: string; name?: string }>()
+    for (const model of models) {
+      if (!_isChatCapableCopilotModel(model.id)) continue
+      if (!_isCurrentPlanEligibleCopilotModel(model.id)) continue
+      deduped.set(model.id, {
+        id: model.id,
+        name: _copilotDisplayName(model.id),
+      })
+    }
+    return Array.from(deduped.values())
+  },
+
+  // Fallback catalog aligned with GitHub's supported-model docs as of
+  // April 22, 2026. IDs stay on the Copilot/openai-compat path; OpenAI's
+  // native Codex lane remains separate.
   staticCatalog() {
     return [
       // OpenAI
-      { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo' },
-      { id: 'gpt-4', name: 'GPT-4' },
-      { id: 'gpt-4o', name: 'GPT-4o' },
-      { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
       { id: 'gpt-4.1', name: 'GPT-4.1' },
-      { id: 'gpt-5', name: 'GPT-5' },
-      { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
-      { id: 'gpt-5-codex', name: 'GPT-5 Codex' },
-      { id: 'gpt-5.1', name: 'GPT-5.1' },
-      { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
-      { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini' },
-      { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max' },
+      { id: 'gpt-5-mini', name: 'GPT-5 mini' },
       { id: 'gpt-5.2', name: 'GPT-5.2' },
-      { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex' },
-      { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' },
+      { id: 'gpt-5.2-codex', name: 'GPT-5.2-Codex' },
+      { id: 'gpt-5.3-codex', name: 'GPT-5.3-Codex' },
       { id: 'gpt-5.4', name: 'GPT-5.4' },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
       // Anthropic
       { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
-      { id: 'claude-opus-4.1', name: 'Claude Opus 4.1' },
       { id: 'claude-opus-4.5', name: 'Claude Opus 4.5' },
+      { id: 'claude-opus-4.6', name: 'Claude Opus 4.6' },
+      { id: 'claude-opus-4.7', name: 'Claude Opus 4.7' },
       { id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
       { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5' },
       { id: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6' },
-      { id: 'claude-opus-4.6', name: 'Claude Opus 4.6' },
-      // Google
-      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-      { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash' },
-      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro' },
-      // Other
-      { id: 'grok-code-fast-1', name: 'Grok Code Fast 1' },
-      { id: 'oswe-vscode-prime', name: 'Raptor Mini' },
-    ]
+    ].filter(model => _isCurrentPlanEligibleCopilotModel(model.id))
   },
 }

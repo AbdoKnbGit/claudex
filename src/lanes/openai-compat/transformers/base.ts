@@ -130,6 +130,15 @@ export interface Transformer {
   staticCatalog?(): Array<{ id: string; name: string }>
 
   /**
+   * Optional hint: prefer the live `/v1/models` response and use
+   * `staticCatalog()` only as a fallback when the upstream call fails
+   * or returns an empty list. Useful for providers like Copilot where
+   * the available model set changes frequently but a curated fallback is
+   * still valuable when auth scopes or gateway behavior break `/models`.
+   */
+  preferLiveModelCatalog?(): boolean
+
+  /**
    * Optional post-filter on the provider's /v1/models response. Used
    * when the upstream catalog contains non-chat (whisper, TTS) or
    * preview/retired models we don't want surfaced in `/models`. Default

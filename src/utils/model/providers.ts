@@ -123,7 +123,7 @@ export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
   return ['openai', 'openrouter', 'groq', 'nim', 'deepseek', 'ollama',
-          'cline', 'iflow', 'kilocode'].includes(p)
+          'cline', 'copilot', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
