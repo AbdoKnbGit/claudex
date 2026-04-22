@@ -7,6 +7,7 @@ import {
   getProviderBrowseLabel,
   loadProviderModelSections,
   type BrowsableModelProvider,
+  type ModelVariantInfo,
   type ModelTag,
   type ProviderModelSection,
   type SectionedModelInfo,
@@ -42,6 +43,7 @@ const TAG_STYLE: Record<ModelTag, { label: string; color: string }> = {
   'no-tools':{ label: 'no tools',  color: 'yellow' },
   thinking:  { label: 'thinking',  color: 'blue' },
   reasoning: { label: 'reasoning', color: 'blue' },
+  fast:      { label: 'fast',      color: 'cyan' },
   pulled:    { label: 'ready',     color: 'green' },
   missing:   { label: 'pull',      color: 'yellow' },
 }
@@ -63,7 +65,11 @@ function filterSections(
     .map(section => ({
       ...section,
       models: section.models.filter(model => {
-        const haystack = `${model.id} ${model.name ?? ''}`.toLowerCase()
+        const variantHaystack = model.variants
+          ?.map(variant => `${variant.id} ${variant.name ?? ''} ${variant.label}`)
+          .join(' ')
+          ?? ''
+        const haystack = `${model.id} ${model.name ?? ''} ${variantHaystack}`.toLowerCase()
         return haystack.includes(normalized)
       }),
     }))
@@ -119,6 +125,40 @@ function lastModelIndex(rows: readonly FlatRow[]): number {
   return 0
 }
 
+function variantSelectionKey(
+  provider: BrowsableModelProvider,
+  model: SectionedModelInfo,
+): string {
+  return `${provider}:${model.id}`
+}
+
+function getSelectedVariant(
+  provider: BrowsableModelProvider,
+  model: SectionedModelInfo,
+  variantSelections: Readonly<Record<string, number>>,
+): ModelVariantInfo | null {
+  const variants = model.variants
+  if (!variants || variants.length === 0) return null
+  const key = variantSelectionKey(provider, model)
+  const selectedIndex = variantSelections[key] ?? getDefaultVariantIndex(model)
+  return variants[Math.max(0, Math.min(selectedIndex, variants.length - 1))] ?? variants[0] ?? null
+}
+
+function getDefaultVariantIndex(model: SectionedModelInfo): number {
+  const variants = model.variants
+  if (!variants || variants.length === 0 || !model.defaultVariantId) return 0
+  const index = variants.findIndex(variant => variant.id === model.defaultVariantId)
+  return index >= 0 ? index : 0
+}
+
+function getSelectedModelId(
+  provider: BrowsableModelProvider,
+  model: SectionedModelInfo,
+  variantSelections: Readonly<Record<string, number>>,
+): string {
+  return getSelectedVariant(provider, model, variantSelections)?.id ?? model.id
+}
+
 export function ProviderModelPicker({
   initialProvider,
   onSelect,
@@ -138,6 +178,7 @@ export function ProviderModelPicker({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
   const [reasoningLevel, setReasoningLevel] = useState(getOpenAIReasoningLevel)
+  const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
 
   const selectedProvider =
     lockedProvider
@@ -261,7 +302,10 @@ export function ProviderModelPicker({
     if (key.return) {
       const row = flatRows[selectedRowIndex]
       if (row?.kind === 'model') {
-        onSelect(selectedProvider, row.model.id)
+        onSelect(
+          selectedProvider,
+          getSelectedModelId(selectedProvider, row.model, variantSelections),
+        )
       }
       return
     }
@@ -302,10 +346,28 @@ export function ProviderModelPicker({
       return
     }
 
-    // ← → cycle reasoning level for OpenAI Codex models
+    // Cursor and similar providers own their variants. OpenAI reasoning is
+    // intentionally gated to the OpenAI provider so same-named Cursor models
+    // never mutate or rely on OpenAI lane state.
     if (key.leftArrow || key.rightArrow) {
       const row = flatRows[selectedRowIndex]
-      if (row?.kind === 'model' && modelSupportsReasoning(row.model.id)) {
+      const variants = row?.kind === 'model' ? row.model.variants : undefined
+      if (row?.kind === 'model' && variants && variants.length > 1) {
+        const direction = key.leftArrow ? -1 : 1
+        setVariantSelections(current => {
+          const selectionKey = variantSelectionKey(selectedProvider, row.model)
+          const currentIndex = current[selectionKey] ?? getDefaultVariantIndex(row.model)
+          const wrapped = (currentIndex + direction + variants.length) % variants.length
+          return { ...current, [selectionKey]: wrapped }
+        })
+        return
+      }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'openai'
+        && modelSupportsReasoning(row.model.id)
+      ) {
         const newLevel = cycleOpenAIReasoningLevel(key.leftArrow ? 'left' : 'right')
         setReasoningLevel(newLevel)
       }
@@ -446,7 +508,20 @@ export function ProviderModelPicker({
                 model.name && model.name !== model.id
                   ? `${model.id} - ${model.name}`
                   : model.id
-              const isReasoning = modelSupportsReasoning(model.id)
+              const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
+              const selectedVariant = getSelectedVariant(
+                selectedProvider,
+                model,
+                variantSelections,
+              )
+              const canCycleVariant = (model.variants?.length ?? 0) > 1
+              const showVariant =
+                !!selectedVariant
+                && (
+                  canCycleVariant
+                  || selectedVariant.id !== model.id
+                  || (selectedVariant.name != null && selectedVariant.name !== model.name)
+                )
 
               return (
                 <Box key={`model-${row.sectionId}-${model.id}`}>
@@ -461,6 +536,14 @@ export function ProviderModelPicker({
                   {isReasoning && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ {getReasoningLabel(reasoningLevel)} ▶
+                    </Text>
+                  )}
+                  {showVariant && selectedVariant && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}
+                      {canCycleVariant ? '◀ ' : '['}
+                      {selectedVariant.label}
+                      {canCycleVariant ? ' ▶' : ']'}
                     </Text>
                   )}
                   {model.tags && model.tags.length > 0 && (
@@ -496,7 +579,7 @@ export function ProviderModelPicker({
 
       <Box marginTop={1}>
         <Text dimColor>
-          Type to filter | ↑/↓ navigate | ←/→ reasoning level | Enter select | Esc back
+          Type to filter | ↑/↓ navigate | ←/→ variant/reasoning | Enter select | Esc back
         </Text>
       </Box>
     </Box>

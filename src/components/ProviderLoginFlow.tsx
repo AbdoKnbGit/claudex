@@ -1,8 +1,8 @@
 /**
  * ProviderLoginFlow — handles provider-specific login for third-party providers.
  *
- * For OAuth providers (OpenAI, Gemini): launches browser-based PKCE flow.
- * For API key providers (OpenRouter, Groq, NIM, DeepSeek): prompts for key input.
+ * For OAuth/browser-login providers: launches the provider sign-in flow.
+ * For API-key providers: prompts for key input.
  */
 
 import * as React from 'react'
@@ -20,7 +20,6 @@ import {
   initiateCopilotOAuth, completeCopilotOAuth, type CopilotDeviceHandles,
   initiateKiroOAuth, completeKiroOAuth, type KiroDeviceHandles,
   initiateKiroSocialOAuth, completeKiroSocialOAuth,
-  saveCursorToken,
 } from '../services/api/auth/oauth_services.js'
 import { openBrowser } from '../utils/browser.js'
 import TextInput from './TextInput.js'
@@ -200,7 +199,6 @@ type FlowState =
   | { step: 'oauth_pending' }
   | { step: 'device_code'; userCode: string; verificationUri: string }
   | { step: 'kiro_social_callback'; providerLabel: string; authUrl: string }
-  | { step: 'cursor_paste' }
   | { step: 'validating' }
   | { step: 'success' }
   | { step: 'error'; message: string }
@@ -216,6 +214,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   const isGemini = provider === 'gemini'
   const isAntigravity = provider === 'antigravity'
   const isKiro = provider === 'kiro'
+  const isCursor = provider === 'cursor'
   const methodOptions: { method: AuthMethod; label: string }[] = isGemini
     ? [
         { method: 'oauth_cli', label: 'Google OAuth (free tier — flash/lite)' },
@@ -232,7 +231,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
             { method: 'oauth_kiro_github', label: 'GitHub OAuth' },
           ]
       : oauthOnly
-        ? [{ method: 'oauth', label: 'OAuth (Browser Login)' }]
+        ? [{ method: 'oauth', label: isCursor ? 'Cursor browser login' : 'OAuth (Browser Login)' }]
         : supportsOAuth
           ? [
               { method: 'oauth', label: 'OAuth (Browser Login)' },
@@ -257,12 +256,6 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
 
   function runOAuthFlow(method: AuthMethod) {
-    // Cursor requires manual token paste — there's no public OAuth app.
-    if (provider === 'cursor') {
-      setState({ step: 'cursor_paste' })
-      return
-    }
-
     // GitHub Copilot + Kiro use device-code flows that need the user_code
     // visible in the terminal (the verification_uri does NOT pre-fill
     // the code for Copilot, and Kiro's completeUri isn't always honored).
@@ -352,22 +345,6 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       .catch((err) => {
         setState({ step: 'error', message: err?.message ?? 'OAuth flow failed' })
       })
-  }
-
-  function handleCursorTokenSubmit(value: string) {
-    const token = value.trim()
-    if (!token) return
-    try {
-      saveCursorToken(token)
-      deleteProviderKey('cursor')  // remove any stale api_key record
-      setState({ step: 'success' })
-      setTimeout(() => onDone(true), 800)
-    } catch (err) {
-      setState({
-        step: 'error',
-        message: (err as Error)?.message ?? 'Cursor token save failed',
-      })
-    }
   }
 
   function handleKiroSocialCallbackSubmit(value: string) {
@@ -549,7 +526,11 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       {state.step === 'oauth_pending' && (
         <Box flexDirection="column">
           <Text color="warning">Opening browser for {name} authentication...</Text>
-          <Text dimColor>Complete the login in your browser. Waiting for callback...</Text>
+          <Text dimColor>
+            {provider === 'cursor'
+              ? 'Complete the login in your browser. Waiting for Cursor to confirm the sign-in...'
+              : 'Complete the login in your browser. Waiting for callback...'}
+          </Text>
         </Box>
       )}
 
@@ -590,35 +571,6 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
               columns={inputColumns}
               cursorOffset={callbackUrlCursorOffset}
               onChangeCursorOffset={setCallbackUrlCursorOffset}
-            />
-          </Box>
-          <Box marginTop={1}>
-            <Text dimColor>Enter to submit, Esc to cancel</Text>
-          </Box>
-        </Box>
-      )}
-
-      {state.step === 'cursor_paste' && (
-        <Box flexDirection="column">
-          <Text dimColor>
-            Cursor does not expose a public OAuth app. Paste your Cursor access token below.
-          </Text>
-          <Text dimColor>
-            Get it from: <Text color="suggestion">Cursor → Settings → Cursor Auth → Copy token</Text>
-          </Text>
-          <Box marginTop={1}>
-            <Text>Token: </Text>
-            <TextInput
-              value={apiKeyInput}
-              onChange={setApiKeyInput}
-              onSubmit={handleCursorTokenSubmit}
-              mask="*"
-              placeholder="Paste Cursor token..."
-              focus={true}
-              showCursor={true}
-              columns={inputColumns}
-              cursorOffset={apiKeyCursorOffset}
-              onChangeCursorOffset={setApiKeyCursorOffset}
             />
           </Box>
           <Box marginTop={1}>

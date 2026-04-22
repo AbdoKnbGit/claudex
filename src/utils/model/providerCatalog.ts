@@ -13,6 +13,12 @@ import {
   PROVIDER_DISPLAY_NAMES,
 } from './providers.js'
 import { modelSupportsReasoning } from './openaiReasoning.js'
+import {
+  CURSOR_MODEL_GROUPS,
+  type CursorModelGroup,
+  type CursorModelSection,
+  type CursorVariantTag,
+} from '../../lanes/cursor/catalog.js'
 
 export type BrowsableModelProvider = Exclude<APIProvider, 'firstParty'>
 
@@ -100,8 +106,20 @@ export interface ProviderModelSection {
 export interface SectionedModelInfo extends ModelInfo {
   /** Optional tags to render beside the model name (tools, thinking, etc). */
   tags?: readonly ModelTag[]
+  /**
+   * Provider-owned concrete variants for this display row. Cursor uses this
+   * to keep thinking/high variants separate from OpenAI's reasoning setting.
+   */
+  variants?: readonly ModelVariantInfo[]
+  /** Optional provider-owned default variant id for picker initialization. */
+  defaultVariantId?: string
   /** True when the model requires an extra pull/auth step before use. */
   needsPull?: boolean
+}
+
+export interface ModelVariantInfo extends ModelInfo {
+  label: string
+  tags?: readonly ModelTag[]
 }
 
 export type ModelTag =
@@ -111,6 +129,7 @@ export type ModelTag =
   | 'no-tools'
   | 'thinking'
   | 'reasoning'
+  | 'fast'
   | 'pulled'
   | 'missing'
 
@@ -126,6 +145,11 @@ export async function loadProviderModelSections(
   if (provider === 'ollama') {
     const catalog = await getOllamaCatalog()
     return buildOllamaSections(catalog)
+  }
+
+  if (provider === 'cursor') {
+    await resolveProviderAuth(provider)
+    return buildCursorSections()
   }
 
   const models = await loadProviderModels(provider)
@@ -160,6 +184,71 @@ export async function loadProviderModelSections(
       models: models.map(m => ({ ...m })),
     },
   ]
+}
+
+const CURSOR_SECTION_ORDER: readonly CursorModelSection[] = [
+  'recommended',
+  'anthropic',
+  'openai',
+  'other',
+]
+
+const CURSOR_SECTION_TITLES: Record<CursorModelSection, string> = {
+  recommended: 'Recommended Cursor models',
+  anthropic: 'Cursor Anthropic models',
+  openai: 'Cursor OpenAI/Codex models',
+  other: 'Cursor other models',
+}
+
+function buildCursorSections(): ProviderModelSection[] {
+  const buckets: Record<CursorModelSection, SectionedModelInfo[]> = {
+    recommended: [],
+    anthropic: [],
+    openai: [],
+    other: [],
+  }
+
+  for (const group of CURSOR_MODEL_GROUPS) {
+    buckets[group.section].push(toCursorSectionedModel(group))
+  }
+
+  return CURSOR_SECTION_ORDER
+    .map(section => ({
+      id: `cursor-${section}`,
+      title: CURSOR_SECTION_TITLES[section],
+      accent: section === 'openai' ? 'cloud' : undefined,
+      models: buckets[section],
+    }))
+    .filter(section => section.models.length > 0)
+}
+
+function toCursorSectionedModel(group: CursorModelGroup): SectionedModelInfo {
+  const variants = group.variants.map(variant => ({
+    id: variant.id,
+    name: variant.name ?? `${group.name} ${variant.label}`,
+    label: variant.label,
+    tags: variant.tags?.map(toCursorModelTag),
+  }))
+
+  const tags = new Set<ModelTag>()
+  if (variants.some(variant => variant.tags?.includes('thinking'))) {
+    tags.add('thinking')
+  }
+  if (variants.some(variant => variant.tags?.includes('fast'))) {
+    tags.add('fast')
+  }
+
+  return {
+    id: group.id,
+    name: group.name,
+    variants,
+    ...(group.defaultVariantId ? { defaultVariantId: group.defaultVariantId } : {}),
+    tags: tags.size > 0 ? Array.from(tags) : undefined,
+  }
+}
+
+function toCursorModelTag(tag: CursorVariantTag): ModelTag {
+  return tag
 }
 
 function buildOllamaSections(catalog: OllamaCatalog): ProviderModelSection[] {

@@ -35,11 +35,67 @@ import { buildCursorBody } from './request.js'
 import {
   parseConnectFrame,
   extractFromResponsePayload,
+  formatCursorToolName,
+  unformatCursorToolName,
 } from './protobuf.js'
 import { buildCursorHeaders } from './checksum.js'
-import { CURSOR_MODELS, isCursorModel } from './catalog.js'
+import {
+  CURSOR_AUTO_MODEL_ID,
+  CURSOR_AUTO_WIRE_MODEL_ID,
+  CURSOR_MODELS,
+  isCursorModel,
+  resolveCursorModelId,
+} from './catalog.js'
+import {
+  getCursorRegistrationByImplId,
+  getCursorRegistrationByNativeName,
+  resolveCursorToolCall,
+} from './tools.js'
 
 const CURSOR_ENDPOINT = 'https://api2.cursor.sh/aiserver.v1.ChatService/StreamUnifiedChatWithTools'
+const CURSOR_HTTP2_TIMEOUT_MS = 60_000
+const CURSOR_THINK_CLOSE_MARKER = '</think>'
+const CURSOR_PRINTED_TOOL_CALLS_OPEN = '<|tool_calls_begin|>'
+const CURSOR_PRINTED_TOOL_CALLS_CLOSE = '<|tool_calls_end|>'
+const CURSOR_PRINTED_TOOL_CALL_OPEN = '<|tool_call_begin|>'
+const CURSOR_PRINTED_TOOL_CALL_CLOSE = '<|tool_call_end|>'
+const CURSOR_PRINTED_TOOL_SEP = '<|tool_sep|>'
+const CURSOR_PRINTED_TOOL_MARKERS = [
+  CURSOR_PRINTED_TOOL_CALLS_OPEN,
+  CURSOR_PRINTED_TOOL_CALLS_CLOSE,
+  CURSOR_PRINTED_TOOL_CALL_OPEN,
+  CURSOR_PRINTED_TOOL_CALL_CLOSE,
+  CURSOR_PRINTED_TOOL_SEP,
+] as const
+
+interface CursorHttpStreamResponse {
+  status: number
+  body: AsyncIterable<Uint8Array>
+}
+
+interface CursorAttemptResult {
+  usage: NormalizedUsage
+  retry: boolean
+}
+
+interface CursorThinkingSplitState {
+  mode: 'thinking' | 'text'
+  carry: string
+  trimLeadingText: boolean
+}
+
+export interface CursorPrintedToolCall {
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface CursorPrintedToolTextState {
+  pending: string
+}
+
+export type CursorPrintedToolTextChunk =
+  | { type: 'text'; text: string }
+  | { type: 'tool_calls'; calls: CursorPrintedToolCall[] }
 
 export class CursorLane implements Lane {
   readonly name = 'cursor'
@@ -47,16 +103,26 @@ export class CursorLane implements Lane {
 
   private accessToken: string | null = null
   private machineId: string | null = null
+  private conversationId = _newCursorConversationId()
 
   configure(opts: { accessToken?: string | null; machineId?: string | null }): void {
+    const accessTokenChanged =
+      opts.accessToken !== undefined && (opts.accessToken || null) !== this.accessToken
+    const machineIdChanged =
+      opts.machineId !== undefined && (opts.machineId || null) !== this.machineId
+
     if (opts.accessToken !== undefined) this.accessToken = opts.accessToken || null
     if (opts.machineId !== undefined) this.machineId = opts.machineId || null
+
+    if (accessTokenChanged || machineIdChanged) {
+      this._resetSessionState()
+    }
   }
 
   supportsModel(model: string): boolean {
-    // Cursor's dotted/slashed ids (`claude-4.5-sonnet`, `gpt-5.2-codex`…)
-    // don't collide with Anthropic-canonical (`claude-sonnet-4-20250514`)
-    // or OpenAI-canonical (`gpt-5-codex`), so strict match is safe.
+    // Catalog membership only. Provider-shim routing is provider-scoped, so
+    // same-looking ids such as `gpt-5.3-codex` stay on Cursor when the active
+    // provider is Cursor and stay on OpenAI when the active provider is OpenAI.
     return isCursorModel(model)
   }
 
@@ -65,7 +131,7 @@ export class CursorLane implements Lane {
   }
 
   resolveModel(model: string): string {
-    return model
+    return resolveCursorModelId(model)
   }
 
   async listModels(_providerFilter?: string): Promise<ModelInfo[]> {
@@ -74,7 +140,9 @@ export class CursorLane implements Lane {
     return CURSOR_MODELS
   }
 
-  dispose(): void {}
+  dispose(): void {
+    this._resetSessionState()
+  }
 
   async *run(_context: LaneRunContext): AsyncGenerator<AnthropicStreamEvent, LaneRunResult> {
     throw new Error(
@@ -89,7 +157,7 @@ export class CursorLane implements Lane {
 
     if (!this.accessToken) {
       throw new Error(
-        'Cursor lane: not authenticated. Run `/login cursor` to import your Cursor token.',
+        'Cursor lane: not authenticated. Run `/login cursor` to complete the browser login.',
       )
     }
 
@@ -104,262 +172,588 @@ export class CursorLane implements Lane {
         ? ((thinking.budget_tokens ?? 0) >= 16_000 ? 'high' : 'medium')
         : null
 
-    const body = buildCursorBody({
-      model: this.resolveModel(model),
-      system: systemText,
-      messages,
-      tools,
-      reasoningEffort,
-    })
-
-    const headers = buildCursorHeaders({
-      accessToken: this.accessToken,
-      machineId: this.machineId,
-    })
-
-    const messageId = `cursor-${Date.now()}`
-    let messageStartEmitted = false
-    let outputTokens = 0
-    let totalContentChars = 0
-
-    // Content-block state.
-    let currentIndex = 0
-    let openBlock: 'text' | 'thinking' | null = null
-
-    // Per-tool accumulation. Cursor re-emits the same toolCallId across
-    // frames and appends raw-args chunks; we open the block once, push
-    // input_json_delta per chunk, and close at stream end.
-    interface ToolEntry {
-      anthropicIndex: number
-      emittedStart: boolean
-      name: string
+    const accessToken = this.accessToken
+    if (_looksLikeFreshCursorConversation(messages)) {
+      this.conversationId = _newCursorConversationId()
     }
-    const toolBlocks = new Map<string, ToolEntry>()
+    const requestedCursorModel = this.resolveModel(model)
+    const autoWireModel = resolveCursorModelId(CURSOR_AUTO_MODEL_ID)
+    const attemptModels = requestedCursorModel === autoWireModel
+      ? [requestedCursorModel]
+      : [requestedCursorModel, autoWireModel]
 
-    const emitMessageStart = (): AnthropicStreamEvent | undefined => {
-      if (messageStartEmitted) return undefined
-      messageStartEmitted = true
-      return {
-        type: 'message_start',
-        message: {
-          id: messageId,
-          type: 'message',
-          role: 'assistant',
-          content: [],
-          model,
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
-        },
-      }
-    }
-
-    let response: Response
-    try {
-      response = await fetch(CURSOR_ENDPOINT, {
-        method: 'POST',
-        headers,
-        body: body as unknown as BodyInit,
+    for (let attempt = 0; attempt < attemptModels.length; attempt++) {
+      const attemptModel = attemptModels[attempt]!
+      const gen = _streamCursorAttempt({
+        displayModel: model,
+        cursorModel: attemptModel,
+        accessToken,
+        machineId: this.machineId,
+        conversationId: this.conversationId,
+        systemText,
+        messages,
+        tools,
+        reasoningEffort,
         signal,
+        allowAutoRetry: attempt < attemptModels.length - 1,
       })
-    } catch (err: unknown) {
-      const mst = emitMessageStart()
-      if (mst) yield mst
-      const message = err instanceof Error ? err.message : String(err)
-      yield* _emitErrorText(`cursor API connection error: ${message}`)
-      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-      yield { type: 'message_stop' }
-      return _blankUsage()
-    }
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '')
-      const mst = emitMessageStart()
-      if (mst) yield mst
-      yield* _emitErrorText(`cursor API error ${response.status}: ${errText.slice(0, 500)}`)
-      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-      yield { type: 'message_stop' }
-      return _blankUsage()
-    }
-
-    if (!response.body) throw new Error('Cursor: empty response body')
-
-    const reader = response.body.getReader()
-    // Residual buffer for partial frames that straddle fetch() chunks.
-    let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
-    let deferredError: string | null = null
-
-    try {
       while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value && value.length > 0) {
-          const merged = new Uint8Array(buffer.length + value.length)
-          merged.set(buffer)
-          merged.set(value, buffer.length)
-          buffer = merged
+        const next = await gen.next()
+        if (next.done) {
+          if (next.value.retry) break
+          return next.value.usage
         }
-
-        // Drain every complete frame from the buffer.
-        while (true) {
-          const frame = parseConnectFrame(buffer)
-          if (!frame) break
-          buffer = buffer.slice(frame.consumed)
-
-          const result = extractFromResponsePayload(frame.payload)
-
-          if (result.error) {
-            // 9router's pattern: if the turn already produced content,
-            // swallow a trailing error frame (usually a soft rate-limit
-            // notice). Otherwise surface it.
-            const hadContent = messageStartEmitted && (totalContentChars > 0 || toolBlocks.size > 0)
-            if (!hadContent) deferredError = result.error
-            continue
-          }
-
-          if (result.text) {
-            totalContentChars += result.text.length
-            const mst = emitMessageStart()
-            if (mst) yield mst
-            if (openBlock === 'thinking') {
-              yield { type: 'content_block_stop', index: currentIndex }
-              currentIndex++
-              openBlock = null
-            }
-            if (openBlock !== 'text') {
-              yield {
-                type: 'content_block_start',
-                index: currentIndex,
-                content_block: { type: 'text', text: '' },
-              }
-              openBlock = 'text'
-            }
-            yield {
-              type: 'content_block_delta',
-              index: currentIndex,
-              delta: { type: 'text_delta', text: result.text },
-            }
-          }
-
-          if (result.thinking) {
-            const mst = emitMessageStart()
-            if (mst) yield mst
-            if (openBlock === 'text') {
-              yield { type: 'content_block_stop', index: currentIndex }
-              currentIndex++
-              openBlock = null
-            }
-            if (openBlock !== 'thinking') {
-              yield {
-                type: 'content_block_start',
-                index: currentIndex,
-                content_block: { type: 'thinking', thinking: '' },
-              }
-              openBlock = 'thinking'
-            }
-            yield {
-              type: 'content_block_delta',
-              index: currentIndex,
-              delta: { type: 'thinking_delta', thinking: result.thinking },
-            }
-          }
-
-          if (result.toolCall) {
-            const tc = result.toolCall
-            const mst = emitMessageStart()
-            if (mst) yield mst
-
-            let entry = toolBlocks.get(tc.id)
-            if (!entry) {
-              // First slice of this tool — close any open text/thinking
-              // block, claim the next block index.
-              if (openBlock !== null) {
-                yield { type: 'content_block_stop', index: currentIndex }
-                currentIndex++
-                openBlock = null
-              }
-              entry = {
-                anthropicIndex: currentIndex,
-                emittedStart: false,
-                name: tc.name,
-              }
-              toolBlocks.set(tc.id, entry)
-              currentIndex++
-            }
-
-            if (!entry.emittedStart) {
-              yield {
-                type: 'content_block_start',
-                index: entry.anthropicIndex,
-                content_block: {
-                  type: 'tool_use',
-                  id: tc.id,
-                  name: tc.name,
-                  input: {},
-                },
-              }
-              entry.emittedStart = true
-            }
-
-            if (tc.argumentsDelta) {
-              yield {
-                type: 'content_block_delta',
-                index: entry.anthropicIndex,
-                delta: { type: 'input_json_delta', partial_json: tc.argumentsDelta },
-              }
-            }
-          }
-        }
+        yield next.value
       }
-    } finally {
-      reader.releaseLock()
     }
 
-    // If a pre-content error was deferred, surface it now.
-    if (deferredError !== null && !messageStartEmitted) {
-      const mst = emitMessageStart()
-      if (mst) yield mst
-      yield* _emitErrorText(deferredError)
+    return _blankUsage()
+  }
+
+  private _resetSessionState(): void {
+    this.conversationId = _newCursorConversationId()
+  }
+}
+
+export function createCursorThinkingSplitState(): CursorThinkingSplitState {
+  return { mode: 'thinking', carry: '', trimLeadingText: false }
+}
+
+export function splitCursorThinkingDelta(
+  chunk: string,
+  state: CursorThinkingSplitState,
+): { thinking: string | null; text: string | null } {
+  if (!chunk) return { thinking: null, text: null }
+  if (state.mode === 'text') {
+    const text = state.trimLeadingText ? _trimLeadingCursorThinkText(chunk) : chunk
+    state.trimLeadingText = false
+    return { thinking: null, text: text || null }
+  }
+
+  let combined = _stripLeadingCursorThinkTag(state.carry + chunk)
+  state.carry = ''
+
+  const closeIdx = combined.indexOf(CURSOR_THINK_CLOSE_MARKER)
+  if (closeIdx >= 0) {
+    const thinking = combined.slice(0, closeIdx) || null
+    const text = _trimLeadingCursorThinkText(
+      combined.slice(closeIdx + CURSOR_THINK_CLOSE_MARKER.length),
+    )
+    state.mode = 'text'
+    state.trimLeadingText = !text
+    return { thinking, text: text || null }
+  }
+
+  const suffixLen = _cursorThinkClosePrefixSuffixLen(combined)
+  if (suffixLen > 0) {
+    state.carry = combined.slice(-suffixLen)
+    combined = combined.slice(0, -suffixLen)
+  }
+
+  return { thinking: combined || null, text: null }
+}
+
+export function flushCursorThinkingSplitState(
+  state: CursorThinkingSplitState,
+): { thinking: string | null; text: string | null } {
+  if (!state.carry) return { thinking: null, text: null }
+  const carry = state.carry
+  state.carry = ''
+  if (state.mode === 'text') {
+    const text = state.trimLeadingText ? _trimLeadingCursorThinkText(carry) : carry
+    state.trimLeadingText = false
+    return { thinking: null, text: text || null }
+  }
+  return { thinking: carry, text: null }
+}
+
+export function createCursorPrintedToolTextState(): CursorPrintedToolTextState {
+  return { pending: '' }
+}
+
+export function consumeCursorPrintedToolText(
+  chunk: string,
+  state: CursorPrintedToolTextState,
+  flushAll = false,
+): CursorPrintedToolTextChunk[] {
+  if (chunk) state.pending += chunk
+
+  const out: CursorPrintedToolTextChunk[] = []
+  let pending = state.pending
+
+  while (pending.length > 0) {
+    const openIndex = _findCursorToolMarker(pending, CURSOR_PRINTED_TOOL_CALLS_OPEN)
+    if (openIndex === -1) {
+      if (!flushAll) {
+        const keepTail = _cursorPrintedToolOpenPrefixSuffixLen(pending)
+        const emitLength = pending.length - keepTail
+        if (emitLength > 0) {
+          out.push({ type: 'text', text: pending.slice(0, emitLength) })
+          pending = pending.slice(emitLength)
+        }
+        break
+      }
+
+      const stripped = _stripDanglingCursorPrintedToolText(pending)
+      if (stripped) out.push({ type: 'text', text: stripped })
+      pending = ''
+      break
     }
 
-    // Close any still-open text/thinking block.
-    if (openBlock !== null) {
+    if (openIndex > 0) {
+      out.push({ type: 'text', text: pending.slice(0, openIndex) })
+      pending = pending.slice(openIndex)
+      continue
+    }
+
+    const closeIndex = _findCursorToolMarker(
+      pending,
+      CURSOR_PRINTED_TOOL_CALLS_CLOSE,
+      CURSOR_PRINTED_TOOL_CALLS_OPEN.length,
+    )
+    if (closeIndex === -1) {
+      if (flushAll) {
+        const stripped = _stripDanglingCursorPrintedToolText(pending)
+        if (stripped) out.push({ type: 'text', text: stripped })
+        pending = ''
+      }
+      break
+    }
+
+    const blockEnd = closeIndex + CURSOR_PRINTED_TOOL_CALLS_CLOSE.length
+    const block = pending.slice(0, blockEnd)
+    const calls = parseCursorPrintedToolCalls(block)
+    if (calls === null) {
+      out.push({ type: 'text', text: block })
+    } else if (calls.length > 0) {
+      out.push({ type: 'tool_calls', calls })
+    }
+    pending = pending.slice(blockEnd)
+  }
+
+  state.pending = pending
+  return out
+}
+
+export function flushCursorPrintedToolText(
+  state: CursorPrintedToolTextState,
+): CursorPrintedToolTextChunk[] {
+  return consumeCursorPrintedToolText('', state, true)
+}
+
+export function parseCursorPrintedToolCalls(
+  block: string,
+): CursorPrintedToolCall[] | null {
+  if (
+    !_cursorToolMarkerMatchesAt(block, 0, CURSOR_PRINTED_TOOL_CALLS_OPEN) ||
+    !_cursorToolMarkerMatchesAt(
+      block,
+      block.length - CURSOR_PRINTED_TOOL_CALLS_CLOSE.length,
+      CURSOR_PRINTED_TOOL_CALLS_CLOSE,
+    )
+  ) {
+    return null
+  }
+
+  const inner = block.slice(
+    CURSOR_PRINTED_TOOL_CALLS_OPEN.length,
+    block.length - CURSOR_PRINTED_TOOL_CALLS_CLOSE.length,
+  )
+  const calls: CursorPrintedToolCall[] = []
+  let pos = 0
+
+  while (pos < inner.length) {
+    const trimmedLeading = inner.slice(pos).match(/^\s*/)
+    pos += trimmedLeading?.[0]?.length ?? 0
+    if (pos >= inner.length) break
+
+    if (!_cursorToolMarkerMatchesAt(inner, pos, CURSOR_PRINTED_TOOL_CALL_OPEN)) return null
+    pos += CURSOR_PRINTED_TOOL_CALL_OPEN.length
+
+    const closeIndex = _findCursorToolMarker(inner, CURSOR_PRINTED_TOOL_CALL_CLOSE, pos)
+    if (closeIndex === -1) return null
+
+    const call = _parseCursorPrintedToolCallBody(inner.slice(pos, closeIndex))
+    if (!call) return null
+    calls.push(call)
+
+    pos = closeIndex + CURSOR_PRINTED_TOOL_CALL_CLOSE.length
+  }
+
+  return calls
+}
+
+async function* _streamCursorAttempt(params: {
+  displayModel: string
+  cursorModel: string
+  accessToken: string
+  machineId: string | null
+  conversationId: string
+  systemText: string
+  messages: LaneProviderCallParams['messages']
+  tools: LaneProviderCallParams['tools']
+  reasoningEffort: 'medium' | 'high' | null
+  signal: AbortSignal
+  allowAutoRetry: boolean
+}): AsyncGenerator<AnthropicStreamEvent, CursorAttemptResult> {
+  const body = buildCursorBody({
+    model: params.cursorModel,
+    system: params.systemText,
+    messages: params.messages,
+    tools: params.tools,
+    reasoningEffort: params.reasoningEffort,
+    conversationId: params.conversationId,
+  })
+  const toolNameMap = _buildCursorToolNameMap(params.tools)
+
+  const headers = buildCursorHeaders({
+    accessToken: params.accessToken,
+    machineId: params.machineId,
+  })
+
+  const messageId = `cursor-${Date.now()}`
+  let messageStartEmitted = false
+  let outputTokens = 0
+  let totalContentChars = 0
+
+  // Content-block state.
+  let currentIndex = 0
+  let openBlock: 'text' | 'thinking' | null = null
+  const thinkingSplitState = createCursorThinkingSplitState()
+  const printedToolTextState = createCursorPrintedToolTextState()
+  let syntheticToolCallCount = 0
+
+  // Per-tool accumulation. Cursor re-emits the same toolCallId across
+  // frames and appends raw-args chunks. We buffer arguments so Cursor-native
+  // schemas (read_file, replace, run_shell_command, ...) can be adapted back
+  // to Claudex executor schemas before the shared tool runner sees them.
+  interface ToolEntry {
+    anthropicIndex: number
+    nativeName: string
+    name: string
+    rawArgs: string
+  }
+  const toolBlocks = new Map<string, ToolEntry>()
+
+  const emitMessageStart = (): AnthropicStreamEvent | undefined => {
+    if (messageStartEmitted) return undefined
+    messageStartEmitted = true
+    return {
+      type: 'message_start',
+      message: {
+        id: messageId,
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model: params.displayModel,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    }
+  }
+
+  const emitTextDelta = function* (text: string): Generator<AnthropicStreamEvent> {
+    if (!text) return
+    totalContentChars += text.length
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    if (openBlock === 'thinking') {
       yield { type: 'content_block_stop', index: currentIndex }
+      currentIndex++
       openBlock = null
     }
+    if (openBlock !== 'text') {
+      yield {
+        type: 'content_block_start',
+        index: currentIndex,
+        content_block: { type: 'text', text: '' },
+      }
+      openBlock = 'text'
+    }
+    yield {
+      type: 'content_block_delta',
+      index: currentIndex,
+      delta: { type: 'text_delta', text },
+    }
+  }
 
-    // Close in-flight tool_use blocks.
-    for (const [, entry] of toolBlocks) {
-      if (entry.emittedStart) {
-        yield { type: 'content_block_stop', index: entry.anthropicIndex }
+  const emitThinkingDelta = function* (thinking: string): Generator<AnthropicStreamEvent> {
+    if (!thinking) return
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    if (openBlock === 'text') {
+      yield { type: 'content_block_stop', index: currentIndex }
+      currentIndex++
+      openBlock = null
+    }
+    if (openBlock !== 'thinking') {
+      yield {
+        type: 'content_block_start',
+        index: currentIndex,
+        content_block: { type: 'thinking', thinking: '' },
+      }
+      openBlock = 'thinking'
+    }
+    yield {
+      type: 'content_block_delta',
+      index: currentIndex,
+      delta: { type: 'thinking_delta', thinking },
+    }
+  }
+
+  const flushThinkingCarry = function* (): Generator<AnthropicStreamEvent> {
+    const flushed = flushCursorThinkingSplitState(thinkingSplitState)
+    if (flushed.thinking) yield* emitThinkingDelta(flushed.thinking)
+    if (flushed.text) yield* emitCursorVisibleText(flushed.text)
+  }
+
+  const queueToolUse = (toolName: string, rawInput: Record<string, unknown>): void => {
+    const nativeName = _normalizeCursorToolName(toolName, toolNameMap)
+    const resolved = resolveCursorToolCall(nativeName, rawInput)
+    const entryName = resolved?.implId ?? _implNameForCursorToolName(nativeName)
+    const entryInput = resolved?.input ?? rawInput
+    const id = `cursor-printed-tool-${++syntheticToolCallCount}`
+    toolBlocks.set(id, {
+      anthropicIndex: currentIndex,
+      nativeName,
+      name: entryName,
+      rawArgs: JSON.stringify(entryInput),
+    })
+    currentIndex++
+  }
+
+  const emitCursorPrintedToolChunks = function* (
+    chunks: CursorPrintedToolTextChunk[],
+  ): Generator<AnthropicStreamEvent> {
+    for (const chunk of chunks) {
+      if (chunk.type === 'text') {
+        yield* emitTextDelta(chunk.text)
+        continue
+      }
+      if (chunk.type === 'tool_calls') {
+        if (openBlock !== null) {
+          yield { type: 'content_block_stop', index: currentIndex }
+          currentIndex++
+          openBlock = null
+        }
+        for (const call of chunk.calls) {
+          queueToolUse(call.name, call.input)
+        }
       }
     }
+  }
 
-    if (!messageStartEmitted) {
-      const mst = emitMessageStart()
-      if (mst) yield mst
-    }
+  const emitCursorVisibleText = function* (
+    text: string,
+  ): Generator<AnthropicStreamEvent> {
+    if (!text) return
+    const chunks = consumeCursorPrintedToolText(text, printedToolTextState, false)
+    yield* emitCursorPrintedToolChunks(chunks)
+  }
 
-    // Cursor doesn't emit token counts — estimate output from char count.
-    if (outputTokens === 0 && totalContentChars > 0) {
-      outputTokens = Math.max(1, Math.floor(totalContentChars / 4))
-    }
+  const flushPrintedToolText = function* (
+    flushAll: boolean,
+  ): Generator<AnthropicStreamEvent> {
+    const chunks = flushAll
+      ? flushCursorPrintedToolText(printedToolTextState)
+      : consumeCursorPrintedToolText('', printedToolTextState, false)
+    yield* emitCursorPrintedToolChunks(chunks)
+  }
 
-    const hadToolUse = toolBlocks.size > 0
-    yield {
-      type: 'message_delta',
-      delta: { stop_reason: hadToolUse ? 'tool_use' : 'end_turn' },
-      usage: { output_tokens: outputTokens },
-    }
+  let response: CursorHttpStreamResponse
+  try {
+    response = await _openCursorHttp2Stream({
+      url: CURSOR_ENDPOINT,
+      headers,
+      body,
+      signal: params.signal,
+    })
+  } catch (err: unknown) {
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    const message = err instanceof Error ? err.message : String(err)
+    yield* _emitErrorText(`cursor API connection error: ${message}`)
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
     yield { type: 'message_stop' }
+    return { usage: _blankUsage(), retry: false }
+  }
 
-    return {
+  if (response.status < 200 || response.status >= 300) {
+    const errText = await _collectStreamText(response.body).catch(() => '')
+    if (params.allowAutoRetry && _isCursorNamedModelUnavailable(errText, params.cursorModel)) {
+      return { usage: _blankUsage(), retry: true }
+    }
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    yield* _emitErrorText(formatCursorApiError(response.status, errText, params.cursorModel))
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
+    yield { type: 'message_stop' }
+    return { usage: _blankUsage(), retry: false }
+  }
+
+  // Residual buffer for partial frames that straddle fetch() chunks.
+  let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
+  let deferredError: string | null = null
+  let sawAnyFrame = false
+
+  for await (const value of response.body) {
+    if (value && value.length > 0) {
+      const merged = new Uint8Array(buffer.length + value.length)
+      merged.set(buffer)
+      merged.set(value, buffer.length)
+      buffer = merged
+    }
+
+    // Drain every complete frame from the buffer.
+    while (true) {
+      const frame = parseConnectFrame(buffer)
+      if (!frame) break
+      buffer = buffer.slice(frame.consumed)
+      sawAnyFrame = true
+
+      const result = extractFromResponsePayload(frame.payload)
+
+      if (result.error) {
+        // 9router's pattern: if the turn already produced content,
+        // swallow a trailing error frame (usually a soft rate-limit
+        // notice). Otherwise surface it.
+        const hadContent = messageStartEmitted && (totalContentChars > 0 || toolBlocks.size > 0)
+        if (!hadContent) deferredError = result.error
+        continue
+      }
+
+      if (result.text) {
+        yield* flushThinkingCarry()
+        yield* emitCursorVisibleText(result.text)
+      }
+
+      if (result.thinking) {
+        const split = splitCursorThinkingDelta(result.thinking, thinkingSplitState)
+        if (split.thinking) {
+          yield* flushPrintedToolText(true)
+          yield* emitThinkingDelta(split.thinking)
+        }
+        if (split.text) yield* emitCursorVisibleText(split.text)
+      }
+
+      if (result.toolCall) {
+        yield* flushPrintedToolText(true)
+        yield* flushThinkingCarry()
+        const tc = result.toolCall
+        const nativeName = _normalizeCursorToolName(tc.name, toolNameMap)
+        const toolName = _implNameForCursorToolName(nativeName)
+        const mst = emitMessageStart()
+        if (mst) yield mst
+
+        let entry = toolBlocks.get(tc.id)
+        if (!entry) {
+          // First slice of this tool — close any open text/thinking
+          // block, claim the next block index.
+          if (openBlock !== null) {
+            yield { type: 'content_block_stop', index: currentIndex }
+            currentIndex++
+            openBlock = null
+          }
+          entry = {
+            anthropicIndex: currentIndex,
+            nativeName,
+            name: toolName,
+            rawArgs: '',
+          }
+          toolBlocks.set(tc.id, entry)
+          currentIndex++
+        }
+
+        if (tc.argumentsDelta) {
+          entry.rawArgs += tc.argumentsDelta
+        }
+      }
+    }
+  }
+
+  yield* flushPrintedToolText(true)
+  yield* flushThinkingCarry()
+
+  if (
+    deferredError !== null
+    && !messageStartEmitted
+    && params.allowAutoRetry
+    && _isCursorNamedModelUnavailable(deferredError, params.cursorModel)
+  ) {
+    return { usage: _blankUsage(), retry: true }
+  }
+
+  // If a pre-content error was deferred, surface it now.
+  if (deferredError !== null && !messageStartEmitted) {
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    yield* _emitErrorText(deferredError)
+  }
+  if (!sawAnyFrame && deferredError === null) {
+    const mst = emitMessageStart()
+    if (mst) yield mst
+    yield* _emitErrorText('cursor API returned an empty stream. This usually means the HTTP/2 session closed before Cursor sent any response frames.')
+  }
+
+  // Close any still-open text/thinking block.
+  if (openBlock !== null) {
+    yield { type: 'content_block_stop', index: currentIndex }
+    openBlock = null
+  }
+
+  // Emit complete tool_use blocks after native-to-shared input adaptation.
+  for (const [id, entry] of toolBlocks) {
+    const nativeInput = _parseCursorToolArgs(entry.rawArgs)
+    const resolved = resolveCursorToolCall(entry.nativeName, nativeInput)
+    const name = resolved?.implId ?? entry.name
+    const input = resolved?.input ?? nativeInput
+    yield {
+      type: 'content_block_start',
+      index: entry.anthropicIndex,
+      content_block: {
+        type: 'tool_use',
+        id,
+        name,
+        input: {},
+      },
+    }
+    yield {
+      type: 'content_block_delta',
+      index: entry.anthropicIndex,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+    }
+    yield { type: 'content_block_stop', index: entry.anthropicIndex }
+  }
+
+  if (!messageStartEmitted) {
+    const mst = emitMessageStart()
+    if (mst) yield mst
+  }
+
+  // Cursor doesn't emit token counts — estimate output from char count.
+  if (outputTokens === 0 && totalContentChars > 0) {
+    outputTokens = Math.max(1, Math.floor(totalContentChars / 4))
+  }
+
+  const hadToolUse = toolBlocks.size > 0
+  yield {
+    type: 'message_delta',
+    delta: { stop_reason: hadToolUse ? 'tool_use' : 'end_turn' },
+    usage: { output_tokens: outputTokens },
+  }
+  yield { type: 'message_stop' }
+
+  return {
+    usage: {
       input_tokens: 0,
       output_tokens: outputTokens,
       cache_read_tokens: 0,
       cache_write_tokens: 0,
       thinking_tokens: 0,
-    }
+    },
+    retry: false,
   }
 }
 
@@ -373,10 +767,432 @@ function _blankUsage(): NormalizedUsage {
   }
 }
 
+function _cursorThinkClosePrefixSuffixLen(text: string): number {
+  const maxLen = Math.min(text.length, CURSOR_THINK_CLOSE_MARKER.length - 1)
+  for (let len = maxLen; len > 0; len--) {
+    if (CURSOR_THINK_CLOSE_MARKER.startsWith(text.slice(-len))) {
+      return len
+    }
+  }
+  return 0
+}
+
+function _stripLeadingCursorThinkTag(text: string): string {
+  if (text.startsWith('<think>')) return text.slice('<think>'.length)
+  if (text.startsWith('<thinking>')) return text.slice('<thinking>'.length)
+  return text
+}
+
+function _trimLeadingCursorThinkText(text: string): string {
+  return text.replace(/^\r?\n/, '')
+}
+
+function _cursorPrintedToolOpenPrefixSuffixLen(text: string): number {
+  const maxLen = Math.min(text.length, CURSOR_PRINTED_TOOL_CALLS_OPEN.length - 1)
+  for (let len = maxLen; len > 0; len--) {
+    if (_cursorToolMarkerPrefixMatches(text, text.length - len, CURSOR_PRINTED_TOOL_CALLS_OPEN)) {
+      return len
+    }
+  }
+  return 0
+}
+
+function _stripDanglingCursorPrintedToolText(text: string): string {
+  const markerIndex = _findLastCursorToolMarkerPrefixIndex(text)
+  if (markerIndex === -1) return text
+  return text.slice(0, markerIndex)
+}
+
+function _parseCursorPrintedToolCallBody(body: string): CursorPrintedToolCall | null {
+  const trimmed = body.trim()
+  if (!trimmed) return null
+
+  const firstSep = _findCursorToolMarker(trimmed, CURSOR_PRINTED_TOOL_SEP)
+  const header = (firstSep === -1 ? trimmed : trimmed.slice(0, firstSep)).trim()
+  const name = header
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(Boolean)
+  if (!name) return null
+
+  const input: Record<string, unknown> = {}
+  if (firstSep === -1) return { name, input }
+
+  let params = trimmed.slice(firstSep)
+  while (params.length > 0) {
+    if (!_cursorToolMarkerMatchesAt(params, 0, CURSOR_PRINTED_TOOL_SEP)) return null
+    params = params.slice(CURSOR_PRINTED_TOOL_SEP.length)
+    const nextSep = _findCursorToolMarker(params, CURSOR_PRINTED_TOOL_SEP)
+    const segment = nextSep === -1 ? params : params.slice(0, nextSep)
+    const parsed = _parseCursorPrintedToolParam(segment)
+    if (!parsed) return null
+    if (Object.prototype.hasOwnProperty.call(input, parsed.key)) return null
+    input[parsed.key] = parsed.value
+    params = nextSep === -1 ? '' : params.slice(nextSep)
+  }
+
+  return { name, input }
+}
+
+function _parseCursorPrintedToolParam(
+  segment: string,
+): { key: string; value: unknown } | null {
+  const trimmed = segment.replace(/^\s+/, '')
+  const keyMatch = trimmed.match(/^([A-Za-z0-9_.-]+)/)
+  if (!keyMatch) return null
+  const key = keyMatch[1]
+  const rawValue = trimmed.slice(key.length).replace(/^\s+/, '').trimEnd()
+  return { key, value: _parseCursorPrintedToolValue(rawValue) }
+}
+
+function _parseCursorPrintedToolValue(raw: string): unknown {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  if (trimmed === 'null') return null
+  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed)
+  if (
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    try {
+      return JSON.parse(trimmed) as unknown
+    } catch {
+      return trimmed
+    }
+  }
+  return trimmed
+}
+
+function _findCursorToolMarker(
+  text: string,
+  marker: string,
+  fromIndex = 0,
+): number {
+  const start = Math.max(0, fromIndex)
+  const lastStart = text.length - marker.length
+  for (let i = start; i <= lastStart; i++) {
+    if (_cursorToolMarkerMatchesAt(text, i, marker)) return i
+  }
+  return -1
+}
+
+function _findLastCursorToolMarkerPrefixIndex(text: string): number {
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i] !== '<') continue
+    for (const marker of CURSOR_PRINTED_TOOL_MARKERS) {
+      if (_cursorToolMarkerPrefixMatches(text, i, marker)) return i
+    }
+  }
+  return -1
+}
+
+function _cursorToolMarkerMatchesAt(
+  text: string,
+  start: number,
+  marker: string,
+): boolean {
+  if (start < 0 || start + marker.length > text.length) return false
+  for (let i = 0; i < marker.length; i++) {
+    if (!_cursorToolMarkerCharMatches(text[start + i]!, marker[i]!)) return false
+  }
+  return true
+}
+
+function _cursorToolMarkerPrefixMatches(
+  text: string,
+  start: number,
+  marker: string,
+): boolean {
+  const len = text.length - start
+  if (len <= 0 || len > marker.length) return false
+  for (let i = 0; i < len; i++) {
+    if (!_cursorToolMarkerCharMatches(text[start + i]!, marker[i]!)) return false
+  }
+  return true
+}
+
+function _cursorToolMarkerCharMatches(actual: string, expected: string): boolean {
+  if (expected === '|') return actual === '|' || actual === '\uFF5C'
+  if (expected === '_') return actual === '_' || actual === '\u2581' || actual === '?'
+  return actual === expected
+}
+
+function _buildCursorToolNameMap(
+  tools: LaneProviderCallParams['tools'],
+): Map<string, string> {
+  const map = new Map<string, string>()
+  const selectedMcpNames = new Map<string, string | null>()
+
+  for (const tool of tools) {
+    const original = tool.name
+    if (!original) continue
+
+    const formatted = formatCursorToolName(original)
+    map.set(original, original)
+    map.set(formatted, original)
+
+    const reg =
+      getCursorRegistrationByImplId(original) ??
+      getCursorRegistrationByNativeName(original)
+    if (reg) {
+      map.set(reg.nativeName, reg.nativeName)
+      map.set(formatCursorToolName(reg.nativeName), reg.nativeName)
+    }
+
+    if (original.startsWith('mcp__')) {
+      const selected = _extractMcpSelectedToolName(original)
+      if (selected) {
+        selectedMcpNames.set(
+          selected,
+          selectedMcpNames.has(selected) ? null : original,
+        )
+      }
+      continue
+    }
+
+    const unformatted = unformatCursorToolName(formatted)
+    if (unformatted && !map.has(unformatted)) {
+      map.set(unformatted, original)
+    }
+  }
+
+  for (const [selected, original] of selectedMcpNames) {
+    if (original && !map.has(selected)) {
+      map.set(selected, original)
+    }
+  }
+
+  return map
+}
+
+function _extractMcpSelectedToolName(name: string): string | null {
+  const rest = name.startsWith('mcp__') ? name.slice('mcp__'.length) : ''
+  const idx = rest.indexOf('__')
+  if (idx < 0) return null
+  return rest.slice(idx + 2) || null
+}
+
+function _normalizeCursorToolName(
+  name: string,
+  toolNameMap: Map<string, string>,
+): string {
+  return (
+    toolNameMap.get(name) ??
+    toolNameMap.get(formatCursorToolName(name)) ??
+    unformatCursorToolName(name)
+  )
+}
+
+function _implNameForCursorToolName(name: string): string {
+  return getCursorRegistrationByNativeName(name)?.implId ?? name
+}
+
+function _parseCursorToolArgs(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
 function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {
   yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
   yield { type: 'content_block_stop', index: 0 }
 }
 
+async function _openCursorHttp2Stream(opts: {
+  url: string
+  headers: Record<string, string>
+  body: Uint8Array
+  signal?: AbortSignal
+}): Promise<CursorHttpStreamResponse> {
+  const { connect, constants } = await import('node:http2')
+  const url = new URL(opts.url)
+  const client = connect(`${url.protocol}//${url.host}`)
+  const requestHeaders: Record<string, string> = {
+    ':method': 'POST',
+    ':path': `${url.pathname}${url.search}`,
+    ':authority': url.host,
+    ':scheme': url.protocol.replace(':', ''),
+  }
+
+  for (const [name, value] of Object.entries(opts.headers)) {
+    requestHeaders[name.toLowerCase()] = value
+  }
+
+  let settled = false
+  let status = 0
+  let abortHandler: (() => void) | null = null
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  const session = client
+
+  let onSessionError: ((error: Error) => void) | null = null
+  let onSessionClose: (() => void) | null = null
+  let onSessionGoaway: (() => void) | null = null
+
+  const cleanup = (): void => {
+    if (abortHandler && opts.signal) {
+      opts.signal.removeEventListener('abort', abortHandler)
+      abortHandler = null
+    }
+    if (timeout) {
+      clearTimeout(timeout)
+      timeout = null
+    }
+    if (onSessionError) {
+      session.off('error', onSessionError)
+      onSessionError = null
+    }
+    if (onSessionClose) {
+      session.off('close', onSessionClose)
+      onSessionClose = null
+    }
+    if (onSessionGoaway) {
+      session.off('goaway', onSessionGoaway)
+      onSessionGoaway = null
+    }
+    if (!session.closed && !session.destroyed) {
+      try {
+        session.close()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return new Promise<CursorHttpStreamResponse>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+
+    onSessionError = error => {
+      fail(error)
+    }
+    onSessionClose = () => {
+      fail(new Error('Cursor HTTP/2 session closed before a response was received'))
+    }
+    onSessionGoaway = () => {
+      fail(new Error('Cursor HTTP/2 session was closed by the server'))
+    }
+    session.on('error', onSessionError)
+    session.on('close', onSessionClose)
+    session.on('goaway', onSessionGoaway)
+
+    const req = client.request(requestHeaders)
+    timeout = setTimeout(() => {
+      req.close(constants.NGHTTP2_CANCEL)
+      fail(new Error('Cursor HTTP/2 request timed out'))
+    }, CURSOR_HTTP2_TIMEOUT_MS)
+
+    abortHandler = () => {
+      req.close(constants.NGHTTP2_CANCEL)
+      fail(new DOMException('Aborted', 'AbortError'))
+    }
+    if (opts.signal?.aborted) {
+      abortHandler()
+      return
+    }
+    opts.signal?.addEventListener('abort', abortHandler, { once: true })
+
+    req.once('response', headers => {
+      status = Number(headers[':status'] ?? 0)
+      if (settled) return
+      settled = true
+      resolve({
+        status,
+        body: _iterateHttp2Body(req, constants, cleanup),
+      })
+    })
+    req.once('error', fail)
+
+    req.end(Buffer.from(opts.body))
+  })
+}
+
+async function* _iterateHttp2Body(
+  req: AsyncIterable<Buffer | Uint8Array>,
+  constants: typeof import('node:http2').constants,
+  cleanup: () => void,
+): AsyncGenerator<Uint8Array> {
+  try {
+    for await (const chunk of req) {
+      yield chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+    }
+  } finally {
+    cleanup()
+    const stream = req as import('node:http2').ClientHttp2Stream
+    try {
+      if (!stream.closed && !stream.destroyed) {
+        stream.close(constants.NGHTTP2_NO_ERROR)
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function _collectStreamText(body: AsyncIterable<Uint8Array>): Promise<string> {
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for await (const chunk of body) {
+    chunks.push(chunk)
+    total += chunk.length
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.length
+  }
+  return new TextDecoder().decode(merged)
+}
+
+function formatCursorApiError(status: number, body: string, model: string): string {
+  const detail = body.trim().slice(0, 500)
+  if (status === 464) {
+    return (
+      `cursor API error 464: Cursor rejected the native request for model "${model}". `
+      + 'This status usually means Cursor did not receive the chat call over HTTP/2. '
+      + `If you selected Auto, claudex stores it as "${CURSOR_AUTO_MODEL_ID}" but sends Cursor's "${CURSOR_AUTO_WIRE_MODEL_ID}" wire model, not Composer. `
+      + (detail ? `Details: ${detail}` : 'Cursor returned no error body.')
+    )
+  }
+
+  return `cursor API error ${status}: ${detail}`
+}
+
+function _isCursorNamedModelUnavailable(message: string, model: string): boolean {
+  if (model === CURSOR_AUTO_WIRE_MODEL_ID) return false
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('named models unavailable')
+    || normalized.includes('ai model not found')
+    || normalized.includes('model not found')
+  )
+}
+
 export const cursorLane = new CursorLane()
+
+function _looksLikeFreshCursorConversation(
+  messages: LaneProviderCallParams['messages'],
+): boolean {
+  return messages.length <= 1 && messages.every(message => message.role === 'user')
+}
+
+function _newCursorConversationId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return `cursor-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}

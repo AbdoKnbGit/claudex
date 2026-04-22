@@ -35,7 +35,7 @@ import {
   getKiloCodeOAuthToken,
   getCopilotOAuthToken,
   getKiroOAuthToken,
-  getCursorOAuthToken,
+  getValidCursorOAuthToken,
   getCursorMachineId,
 } from '../auth/oauth_services.js'
 import type {
@@ -84,10 +84,10 @@ function _ensureLanesInitialized(): void {
     // Builder-ID users (who don't get one back from the token endpoint).
     const kiroToken = getKiroOAuthToken() ?? undefined
     const kiroProfileArn = _readStoredKiroProfileArn() ?? undefined
-    // Cursor: accessToken is pasted from the user's Cursor IDE (Settings
-    // → Cursor Auth, or from state.vscdb). machineId is optional — the
-    // lane derives it from the token when absent.
-    const cursorToken = getCursorOAuthToken() ?? undefined
+    // Cursor: accessToken comes from browser login (or a legacy manual
+    // import). machineId is optional — the lane derives it from the
+    // token when absent.
+    const cursorToken = getValidCursorOAuthToken() ?? undefined
     const cursorMachineId = getCursorMachineId() ?? undefined
     initLanes({
       geminiApiKey: getProviderApiKey('gemini') ?? undefined,
@@ -278,7 +278,7 @@ function createProvider(provider: APIProvider): BaseProvider {
       )
     case 'cursor':
       throw new Error(
-        'Cursor chat requires the cursor lane to be healthy. Run `/login cursor` to paste your Cursor token.',
+        'Cursor chat requires the cursor lane to be healthy. Run `/login cursor` to complete the browser login.',
       )
     default:
       throw new Error(`Unknown third-party provider: ${provider}`)
@@ -586,7 +586,7 @@ export async function reloadCopilotLaneAuth(): Promise<void> {
  * session picks it up without a process restart.
  */
 export async function reloadCursorLaneAuth(): Promise<void> {
-  const accessToken = getCursorOAuthToken() ?? undefined
+  const accessToken = getValidCursorOAuthToken() ?? undefined
   const machineId = getCursorMachineId() ?? undefined
   const { cursorLane } = await import('../../../lanes/cursor/index.js')
   cursorLane.configure({ accessToken, machineId })

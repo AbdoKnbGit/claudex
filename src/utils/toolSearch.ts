@@ -38,6 +38,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from './model/providers.js'
+import { providerSupportsAnthropicToolSearch } from './model/providerCapabilities.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 
@@ -176,9 +177,7 @@ export function getToolSearchMode(): ToolSearchMode {
   // Without this, deferred tools appear as empty name-only stubs that the
   // model can see but never invoke — breaking ToolSearch, Agents, and MCP.
   const provider = getAPIProvider()
-  if (provider === 'openrouter' || provider === 'nim' || provider === 'ollama'
-    || provider === 'gemini' || provider === 'openai' || provider === 'groq'
-    || provider === 'deepseek' || provider === 'kiro') {
+  if (!providerSupportsAnthropicToolSearch(provider)) {
     return 'standard'
   }
 

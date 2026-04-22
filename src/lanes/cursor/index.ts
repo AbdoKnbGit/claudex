@@ -2,16 +2,22 @@
  * Cursor Lane entry point.
  *
  * Auth source: the blob written by `/login cursor` at
- * `~/.config/claude-code/provider-keys.json:cursor_oauth`. Cursor has no
- * public OAuth app, so the login flow is a manual paste — users copy the
- * accessToken from their Cursor IDE (Settings → Cursor Auth, or from the
- * SQLite state.vscdb) plus optionally the machineId. When the user didn't
- * supply a machineId, `buildCursorHeaders` derives one from the token
- * (same SHA-256 scheme the reference uses).
+ * `~/.config/claude-code/provider-keys.json:cursor_oauth`. `/login cursor`
+ * now uses Cursor's native browser login (`loginDeepControl` → `auth/poll`)
+ * and stores the resulting access/refresh tokens here. Legacy manual token
+ * imports may still include a machineId; otherwise `buildCursorHeaders`
+ * derives one from the token (same SHA-256 scheme the reference uses).
  */
 
 export { cursorLane, CursorLane } from './loop.js'
-export { CURSOR_MODELS, isCursorModel } from './catalog.js'
+export {
+  CURSOR_AUTO_MODEL_ID,
+  CURSOR_AUTO_WIRE_MODEL_ID,
+  CURSOR_MODEL_GROUPS,
+  CURSOR_MODELS,
+  isCursorModel,
+  resolveCursorModelId,
+} from './catalog.js'
 export { buildCursorBody } from './request.js'
 export { buildCursorHeaders, cursorChecksum } from './checksum.js'
 

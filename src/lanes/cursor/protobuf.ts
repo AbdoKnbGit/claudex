@@ -27,6 +27,31 @@ const UNIFIED_MODE = { CHAT: 1, AGENT: 2 } as const
 const THINKING_LEVEL = { UNSPECIFIED: 0, MEDIUM: 1, HIGH: 2 } as const
 const CLIENT_SIDE_TOOL_V2_MCP = 19
 
+const CLIENT_SIDE_TOOL_V2_NAME_BY_ID = new Map<number, string>([
+  [3, 'grep_search'],
+  [5, 'read_file'],
+  [6, 'list_dir'],
+  [7, 'edit_file'],
+  [8, 'file_search'],
+  [15, 'run_terminal_cmd'],
+  [18, 'web_search'],
+  [19, 'mcp'],
+  [23, 'search_symbols'],
+  [31, 'go_to_definition'],
+  [38, 'edit_file_v2'],
+  [39, 'list_dir_v2'],
+  [40, 'read_file_v2'],
+  [41, 'ripgrep_raw_search'],
+  [42, 'glob_file_search'],
+  [43, 'create_plan'],
+  [44, 'list_mcp_resources'],
+  [45, 'read_mcp_resource'],
+  [49, 'call_mcp_tool'],
+  [51, 'ask_question'],
+  [52, 'switch_mode'],
+  [55, 'write_shell_stdin'],
+])
+
 /** Field-number map for every message type we touch. */
 const F = {
   // StreamUnifiedChatWithToolsRequest
@@ -203,7 +228,7 @@ export function encodeField(fieldNum: number, wireType: number, value: FieldValu
  * become "mcp_custom_Bash" on the wire. Anthropic-IR round-trips them
  * unprefixed so the rest of the stack isn't aware of the wrap.
  */
-function formatToolName(name: string): string {
+export function formatCursorToolName(name: string): string {
   const base = name || 'tool'
   if (base.startsWith('mcp__')) {
     const rest = base.slice(5)
@@ -219,7 +244,7 @@ function formatToolName(name: string): string {
   return `mcp_custom_${base}`
 }
 
-function unformatToolName(formatted: string): string {
+export function unformatCursorToolName(formatted: string): string {
   if (formatted.startsWith('mcp_custom_')) return formatted.slice('mcp_custom_'.length)
   if (formatted.startsWith('mcp_')) {
     const tail = formatted.slice(4)
@@ -315,7 +340,7 @@ export interface EncodeToolResultInput {
 }
 
 export function encodeToolResult(tr: EncodeToolResultInput): Uint8Array {
-  const formatted = formatToolName(tr.tool_name || '')
+  const formatted = formatCursorToolName(tr.tool_name || '')
   const rawArgs = tr.raw_args || '{}'
   const { toolCallId, modelCallId } = parseToolId(tr.tool_call_id || '')
   const idx = tr.tool_index ?? 1
@@ -353,7 +378,6 @@ export function encodeMessage(m: EncodeMessageInput): Uint8Array {
     ...m.toolResults.map(tr => encodeField(F.MSG_TOOL_RESULTS, WIRE.LEN, encodeToolResult(tr))),
     encodeField(F.MSG_IS_AGENTIC, WIRE.VARINT, m.hasTools ? 1 : 0),
     encodeField(F.MSG_UNIFIED_MODE, WIRE.VARINT, m.hasTools ? UNIFIED_MODE.AGENT : UNIFIED_MODE.CHAT),
-    ...(m.isLast && m.hasTools ? [encodeField(F.MSG_SUPPORTED_TOOLS, WIRE.LEN, encodeVarint(1))] : []),
   )
 }
 
@@ -434,10 +458,20 @@ export function encodeRequest(
   messages: NormalizedCursorMessage[],
   modelName: string,
   tools: EncodeMcpToolInput[],
+  supportedToolEnums: number[],
   reasoningEffort: 'medium' | 'high' | null,
+  opts?: {
+    conversationId?: string | null
+  },
 ): Uint8Array {
-  const hasTools = tools.length > 0
+  const normalizedSupportedTools = [...new Set(supportedToolEnums)]
+    .filter(tool => Number.isInteger(tool) && tool > 0)
+  const hasTools = tools.length > 0 || normalizedSupportedTools.length > 0
   const isAgentic = hasTools
+  const conversationId =
+    (typeof opts?.conversationId === 'string' && opts.conversationId.trim())
+      ? opts.conversationId.trim()
+      : _randomUUID()
 
   interface Prepared {
     content: string
@@ -480,10 +514,10 @@ export function encodeRequest(
     encodeField(F.UNKNOWN_13, WIRE.VARINT, 1),
     encodeField(F.CURSOR_SETTING, WIRE.LEN, encodeCursorSetting()),
     encodeField(F.UNKNOWN_19, WIRE.VARINT, 1),
-    encodeField(F.CONVERSATION_ID, WIRE.LEN, _randomUUID()),
+    encodeField(F.CONVERSATION_ID, WIRE.LEN, conversationId),
     encodeField(F.METADATA, WIRE.LEN, encodeMetadata()),
     encodeField(F.IS_AGENTIC, WIRE.VARINT, isAgentic ? 1 : 0),
-    ...(isAgentic ? [encodeField(F.SUPPORTED_TOOLS, WIRE.LEN, encodeVarint(1))] : []),
+    ...normalizedSupportedTools.map(tool => encodeField(F.SUPPORTED_TOOLS, WIRE.VARINT, tool)),
     ...messageIds.map(m => encodeField(F.MESSAGE_IDS, WIRE.LEN, encodeMessageId(m.messageId, m.role))),
     ...tools.map(t => encodeField(F.MCP_TOOLS, WIRE.LEN, encodeMcpTool(t))),
     encodeField(F.LARGE_CONTEXT, WIRE.VARINT, 0),
@@ -502,12 +536,16 @@ export function buildChatRequestPayload(
   messages: NormalizedCursorMessage[],
   modelName: string,
   tools: EncodeMcpToolInput[],
+  supportedToolEnums: number[],
   reasoningEffort: 'medium' | 'high' | null,
+  opts?: {
+    conversationId?: string | null
+  },
 ): Uint8Array {
   return encodeField(
     F.REQUEST,
     WIRE.LEN,
-    encodeRequest(messages, modelName, tools, reasoningEffort),
+    encodeRequest(messages, modelName, tools, supportedToolEnums, reasoningEffort, opts),
   )
 }
 
@@ -533,11 +571,22 @@ export function generateCursorBody(
   messages: NormalizedCursorMessage[],
   modelName: string,
   tools: EncodeMcpToolInput[],
+  supportedToolEnums: number[],
   reasoningEffort: 'medium' | 'high' | null,
+  opts?: {
+    conversationId?: string | null
+  },
 ): Uint8Array {
   // Cursor rejects compressed REQUEST frames — compression is only a
   // server→client thing. Send with flags=0.
-  const protobuf = buildChatRequestPayload(messages, modelName, tools, reasoningEffort)
+  const protobuf = buildChatRequestPayload(
+    messages,
+    modelName,
+    tools,
+    supportedToolEnums,
+    reasoningEffort,
+    opts,
+  )
   return wrapConnectFrame(protobuf, false)
 }
 
@@ -671,10 +720,17 @@ export interface CursorExtracted {
 
 function extractToolCall(data: Uint8Array): CursorToolCall | null {
   const fields = decodeMessage(data)
+  let toolEnum: number | null = null
   let toolCallId = ''
   let toolName = ''
   let rawArgs = ''
   let isLast = false
+
+  const toolEnumField = fields.get(F.CV2C_TOOL)?.[0]
+  if (toolEnumField && typeof toolEnumField.value === 'number') {
+    toolEnum = toolEnumField.value
+    toolName = CLIENT_SIDE_TOOL_V2_NAME_BY_ID.get(toolEnum) ?? ''
+  }
 
   const idField = fields.get(F.TOOL_ID)?.[0]
   if (idField && idField.value instanceof Uint8Array) {
@@ -718,13 +774,160 @@ function extractToolCall(data: Uint8Array): CursorToolCall | null {
     }
   }
 
+  if (!rawArgs && toolEnum != null) {
+    rawArgs = extractTypedToolArgs(fields, toolEnum)
+  }
+
   if (!toolCallId || !toolName) return null
   return {
     id: toolCallId,
-    name: unformatToolName(toolName),
+    name: toolName,
     argumentsDelta: rawArgs || '',
     isLast,
   }
+}
+
+function extractTypedToolArgs(
+  fields: Map<number, Array<{ wireType: number; value: Uint8Array | number | null }>>,
+  toolEnum: number,
+): string {
+  const paramsField = cursorTypedParamsFieldForTool(toolEnum)
+  if (paramsField == null) return ''
+  const paramsValue = fields.get(paramsField)?.[0]?.value
+  if (!(paramsValue instanceof Uint8Array)) return ''
+
+  try {
+    const params = decodeMessage(paramsValue)
+    const args = cursorTypedParamsToArgs(toolEnum, params)
+    return Object.keys(args).length > 0 ? JSON.stringify(args) : ''
+  } catch {
+    return ''
+  }
+}
+
+function cursorTypedParamsFieldForTool(toolEnum: number): number | null {
+  switch (toolEnum) {
+    case 3: return 5
+    case 5: return 8
+    case 6: return 12
+    case 7: return 13
+    case 8: return 16
+    case 15: return 23
+    case 18: return 26
+    case 23: return 31
+    case 31: return 41
+    case 38: return 50
+    case 39: return 52
+    case 40: return 53
+    case 41: return 54
+    case 42: return 55
+    case 43: return 56
+    case 44: return 57
+    case 45: return 58
+    case 49: return 62
+    case 51: return 64
+    case 52: return 65
+    default: return null
+  }
+}
+
+function cursorTypedParamsToArgs(
+  toolEnum: number,
+  params: Map<number, Array<{ wireType: number; value: Uint8Array | number | null }>>,
+): Record<string, unknown> {
+  switch (toolEnum) {
+    case 5:
+      return {
+        file_path: fieldString(params, 1),
+        start_line: fieldNumber(params, 3),
+        end_line: fieldNumber(params, 4),
+      }
+    case 6:
+      return { dir_path: fieldString(params, 1) }
+    case 7:
+      return {
+        file_path: fieldString(params, 1),
+        content: fieldString(params, 3),
+        instruction: fieldString(params, 5),
+      }
+    case 8:
+      return { pattern: `**/*${fieldString(params, 1) ?? ''}*` }
+    case 15:
+      return {
+        command: fieldString(params, 1),
+        dir_path: fieldString(params, 2),
+        is_background: fieldBool(params, 5),
+      }
+    case 18:
+      return { query: fieldString(params, 1) ?? fieldString(params, 2) }
+    case 23:
+      return { query: fieldString(params, 1) }
+    case 31:
+      return {
+        file_path: fieldString(params, 1),
+        symbol: fieldString(params, 2),
+        start_line: fieldNumber(params, 3),
+        end_line: fieldNumber(params, 4),
+      }
+    case 38:
+      return {
+        file_path: fieldString(params, 1),
+        content: fieldString(params, 2),
+      }
+    case 39:
+      return { dir_path: fieldString(params, 1) }
+    case 40:
+      return {
+        file_path: fieldString(params, 1) ?? fieldString(params, 2),
+        start_line: fieldNumber(params, 2),
+        end_line: fieldNumber(params, 3),
+      }
+    case 41:
+      return { pattern: fieldString(params, 1), dir_path: fieldString(params, 2) }
+    case 42:
+      return { pattern: fieldString(params, 1) }
+    case 43:
+      return { reason: fieldString(params, 1) }
+    case 44:
+      return {}
+    case 45:
+      return { uri: fieldString(params, 1) }
+    case 49:
+      return {
+        server: fieldString(params, 1),
+        tool_name: fieldString(params, 2),
+      }
+    case 51:
+      return { question: fieldString(params, 1) }
+    case 52:
+      return { reason: fieldString(params, 1) }
+    default:
+      return {}
+  }
+}
+
+function fieldString(
+  fields: Map<number, Array<{ wireType: number; value: Uint8Array | number | null }>>,
+  fieldNum: number,
+): string | undefined {
+  const value = fields.get(fieldNum)?.[0]?.value
+  return value instanceof Uint8Array ? _decoder.decode(value) : undefined
+}
+
+function fieldNumber(
+  fields: Map<number, Array<{ wireType: number; value: Uint8Array | number | null }>>,
+  fieldNum: number,
+): number | undefined {
+  const value = fields.get(fieldNum)?.[0]?.value
+  return typeof value === 'number' ? value : undefined
+}
+
+function fieldBool(
+  fields: Map<number, Array<{ wireType: number; value: Uint8Array | number | null }>>,
+  fieldNum: number,
+): boolean | undefined {
+  const value = fieldNumber(fields, fieldNum)
+  return value == null ? undefined : value !== 0
 }
 
 function extractTextAndThinking(data: Uint8Array): { text: string | null; thinking: string | null } {

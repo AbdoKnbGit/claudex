@@ -6,7 +6,7 @@
  *   - iFlow          OAuth2 authorization-code + Basic Auth exchange
  *   - GitHub Copilot OAuth2 device-code flow
  *   - Kiro           AWS SSO OIDC device-code (Builder ID path)
- *   - Cursor         Manual token import (from Cursor IDE state.vscdb)
+ *   - Cursor         Native browser login (Cursor deep-link + auth poll)
  *
  * Each flow returns { accessToken, refreshToken } and writes the blob to
  * provider-keys.json under `<provider>_oauth`, matching the shape used by
@@ -19,7 +19,7 @@
  */
 
 import { createServer } from 'http'
-import { randomBytes, createHash } from 'crypto'
+import { randomBytes, createHash, randomUUID } from 'crypto'
 import { saveProviderKey, loadProviderKey, deleteProviderKey } from './api_key_manager.js'
 import { openBrowser } from '../../../utils/browser.js'
 
@@ -81,6 +81,27 @@ function _pkce(): { verifier: string; challenge: string } {
   return { verifier, challenge }
 }
 
+function _sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function _getJwtExpirySeconds(token: string): number | undefined {
+  const parts = token.split('.')
+  if (parts.length < 2) return undefined
+
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf-8')) as {
+      exp?: number
+    }
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return undefined
+
+    const seconds = Math.floor(payload.exp - Date.now() / 1000)
+    return seconds > 0 ? seconds : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function _getStringField(
   data: Record<string, unknown>,
   ...keys: string[]
@@ -134,6 +155,11 @@ async function _reloadKiroLaneAuth(): Promise<void> {
 async function _reloadCopilotLaneAuth(): Promise<void> {
   const { reloadCopilotLaneAuth } = await import('../providers/providerShim.js')
   await reloadCopilotLaneAuth()
+}
+
+async function _reloadCursorLaneAuth(): Promise<void> {
+  const { reloadCursorLaneAuth } = await import('../providers/providerShim.js')
+  await reloadCursorLaneAuth()
 }
 
 /** Bind a local http server on the first available port, capture callback params. */
@@ -1176,31 +1202,130 @@ export async function refreshKiroOAuth(refreshToken: string): Promise<string> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Cursor — manual token import (from Cursor IDE state.vscdb or Settings)
+// Cursor — native browser login
 // ═══════════════════════════════════════════════════════════════════
 //
-// Cursor does not expose a public OAuth app. Users paste the accessToken
-// from their Cursor IDE (Settings → Cursor Auth → copy token, or pulled
-// programmatically from the SQLite state.vscdb). The UI side handles the
-// paste prompt; this function just validates + stores.
+// Mirrors Cursor CLI/IDE's loginDeepControl flow without shelling out to
+// either binary. The browser approves a uuid/challenge pair, then api2's
+// /auth/poll returns the account tokens for this standalone claudex session.
 
 const CURSOR_STORAGE = 'cursor_oauth'
+const CURSOR_WEBSITE_BASE = process.env.CURSOR_WEBSITE_URL ?? 'https://cursor.com'
+const CURSOR_API_BASE = process.env.CURSOR_API_BASE_URL ?? 'https://api2.cursor.sh'
+const CURSOR_POLL_INITIAL_DELAY_MS = 1000
+const CURSOR_POLL_MAX_DELAY_MS = 10_000
+const CURSOR_POLL_MAX_ATTEMPTS = 150
+
+interface CursorPollPayload {
+  accessToken?: string
+  refreshToken?: string
+}
+
+async function _waitForCursorOAuthResult(
+  uuid: string,
+  verifier: string,
+): Promise<{ accessToken: string; refreshToken: string } | null> {
+  const pollUrl = new URL(`${CURSOR_API_BASE}/auth/poll`)
+  pollUrl.searchParams.set('uuid', uuid)
+  pollUrl.searchParams.set('verifier', verifier)
+
+  let delayMs = CURSOR_POLL_INITIAL_DELAY_MS
+  let consecutiveFailures = 0
+
+  for (let attempt = 0; attempt < CURSOR_POLL_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(pollUrl, {
+        headers: { 'Content-Type': 'application/json' },
+      })
+
+      if (res.status === 404) {
+        consecutiveFailures = 0
+      } else if (!res.ok) {
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 3) return null
+      } else {
+        const data = await res.json() as CursorPollPayload
+        if (data.accessToken && data.refreshToken) {
+          return {
+            accessToken: data.accessToken,
+            refreshToken: data.refreshToken,
+          }
+        }
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 3) return null
+      }
+    } catch {
+      consecutiveFailures += 1
+      if (consecutiveFailures >= 3) return null
+    }
+
+    await _sleep(delayMs)
+    delayMs = Math.min(delayMs * 2, CURSOR_POLL_MAX_DELAY_MS)
+  }
+
+  return null
+}
+
+export async function startCursorOAuth(): Promise<{
+  accessToken: string
+  refreshToken: string
+}> {
+  const { verifier, challenge } = _pkce()
+  const uuid = randomUUID()
+
+  const authUrl = new URL(`${CURSOR_WEBSITE_BASE}/loginDeepControl`)
+  authUrl.searchParams.set('challenge', challenge)
+  authUrl.searchParams.set('uuid', uuid)
+  authUrl.searchParams.set('mode', 'login')
+  authUrl.searchParams.set('redirectTarget', 'cli')
+
+  await openBrowser(authUrl.toString())
+
+  const tokens = await _waitForCursorOAuthResult(uuid, verifier)
+  if (!tokens) {
+    throw new Error(
+      'Cursor browser login did not complete. Re-run `/login cursor` and approve the sign-in in your browser.',
+    )
+  }
+
+  _saveTokens(CURSOR_STORAGE, {
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresIn: _getJwtExpirySeconds(tokens.accessToken),
+    meta: { authMethod: 'browser' },
+  })
+  await _reloadCursorLaneAuth()
+
+  return tokens
+}
 
 export function saveCursorToken(
   accessToken: string,
   machineId?: string,
 ): void {
+  // Legacy/manual escape hatch only. Normal Cursor auth uses startCursorOAuth().
   if (!accessToken || accessToken.length < 10) {
     throw new Error('Cursor token looks invalid (too short)')
   }
   _saveTokens(CURSOR_STORAGE, {
     accessToken,
+    expiresIn: _getJwtExpirySeconds(accessToken),
     meta: machineId ? { machineId } : undefined,
   })
+  void _reloadCursorLaneAuth().catch(() => {})
 }
 
 export function getCursorOAuthToken(): string | null {
   return _loadTokens(CURSOR_STORAGE)?.accessToken ?? null
+}
+
+export function getValidCursorOAuthToken(): string | null {
+  const blob = _loadTokens(CURSOR_STORAGE)
+  if (!blob?.accessToken) return null
+  if (blob.expiresAt && Date.now() > blob.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
+    return null
+  }
+  return blob.accessToken
 }
 
 export function getCursorMachineId(): string | null {
@@ -1210,4 +1335,5 @@ export function getCursorMachineId(): string | null {
 
 export function clearCursorToken(): void {
   deleteProviderKey(CURSOR_STORAGE)
+  void _reloadCursorLaneAuth().catch(() => {})
 }

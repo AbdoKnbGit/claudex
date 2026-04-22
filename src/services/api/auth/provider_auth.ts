@@ -25,7 +25,7 @@
  *   │ iFlow      │ ✗       │ ✓     │ OAuth2 code + Basic Auth        │
  *   │ Copilot    │ ✗       │ ✓     │ GitHub device-code + token mint │
  *   │ Kiro       │ ✗       │ ✓     │ AWS SSO OIDC device-code        │
- *   │ Cursor     │ ✗       │ ✓     │ Manual token import             │
+ *   │ Cursor     │ ✗       │ ✓     │ Native browser login            │
  *   └────────────┴─────────┴───────┴─────────────────────────────────┘
  */
 
@@ -54,7 +54,7 @@ import {
   startIFlowOAuth, getIFlowOAuthToken, refreshIFlowOAuth,
   startCopilotOAuth, getValidCopilotOAuthToken, refreshCopilotOAuth,
   startKiroOAuth, getValidKiroOAuthToken, refreshKiroOAuth,
-  getCursorOAuthToken,
+  startCursorOAuth, getValidCursorOAuthToken, clearCursorToken,
 } from './oauth_services.js'
 import { loadProviderKey, deleteProviderKey } from './api_key_manager.js'
 
@@ -122,7 +122,7 @@ async function _getValidOAuthToken(provider: APIProvider): Promise<string | null
     case 'kiro':
       return getValidKiroOAuthToken()
     case 'cursor':
-      return getCursorOAuthToken()
+      return getValidCursorOAuthToken()
     default:
       return null
   }
@@ -168,15 +168,7 @@ export async function startProviderOAuth(provider: APIProvider): Promise<{
     case 'kiro':
       return startKiroOAuth()
     case 'cursor':
-      // Cursor has no public OAuth app — token must be pasted from the IDE.
-      // The UI layer (ProviderLoginFlow) renders a paste prompt that calls
-      // `saveCursorToken` directly; this branch is only hit if someone wires
-      // Cursor into the generic browser-login path.
-      throw new Error(
-        'Cursor uses manual token entry, not browser OAuth. ' +
-        'Open Cursor IDE → Settings → Cursor Auth → copy the access token, ' +
-        'then paste it into the Cursor login dialog.',
-      )
+      return startCursorOAuth()
     default:
       throw new Error(`OAuth not implemented for ${provider}`)
   }
@@ -231,8 +223,7 @@ export async function refreshProviderOAuth(provider: APIProvider): Promise<strin
       // KiloCode issues long-lived tokens with no refresh endpoint.
       throw new Error('KiloCode has no refresh endpoint — re-login via `/login`.')
     case 'cursor':
-      // Cursor tokens are manually pasted; user must re-paste on expiry.
-      throw new Error('Cursor tokens are not auto-refreshable — re-paste via `/login`.')
+      throw new Error('Cursor browser sessions are not auto-refreshable yet — run `/login cursor` again.')
     default:
       throw new Error(`OAuth refresh not implemented for ${provider}`)
   }
@@ -275,6 +266,10 @@ export function getProviderAuthStatus(provider: APIProvider): ProviderAuthStatus
  * Clear OAuth tokens for a provider (logout).
  */
 export function clearProviderOAuth(provider: APIProvider): void {
+  if (provider === 'cursor') {
+    clearCursorToken()
+    return
+  }
   deleteProviderKey(`${provider}_oauth`)
   if (provider === 'gemini') {
     // Gemini provider = CLI tier only. Clear legacy dual-key too.
@@ -302,7 +297,7 @@ function _envVarName(provider: APIProvider): string {
     iflow: '(OAuth only)',
     copilot: '(OAuth only)',
     kiro: '(OAuth only)',
-    cursor: '(OAuth only — paste token)',
+    cursor: '(OAuth only — browser login)',
   }
   return map[provider] ?? 'API_KEY'
 }

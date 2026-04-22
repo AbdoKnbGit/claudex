@@ -89,8 +89,9 @@ export function cursorChecksum(machineId: string): string {
 /**
  * Build the full Cursor request header set. machineId is optional — when
  * the user paste-flow didn't capture one we derive it from the token
- * (same SHA-256 scheme the reference uses). ghostMode=true means
- * "don't log conversations for training" per Cursor's privacy docs.
+ * (same SHA-256 scheme the reference uses). The client identity mirrors
+ * Cursor's IDE ConnectRPC endpoint expectations, but does not require the
+ * `cursor` binary or Cursor IDE to be installed.
  */
 export function buildCursorHeaders(opts: {
   accessToken: string
@@ -107,6 +108,9 @@ export function buildCursorHeaders(opts: {
   const sessionId = uuidV5(clean)
   const clientKey = hashed64Hex(clean)
   const checksum = cursorChecksum(machineId)
+  const clientVersion =
+    process.env.CURSOR_CLIENT_VERSION ?? '3.1.0'
+  const clientType = process.env.CURSOR_CLIENT_TYPE ?? 'ide'
 
   let os = 'linux'
   if (process.platform === 'win32') os = 'windows'
@@ -122,8 +126,8 @@ export function buildCursorHeaders(opts: {
     'x-amzn-trace-id': `Root=${randomUUID()}`,
     'x-client-key': clientKey,
     'x-cursor-checksum': checksum,
-    'x-cursor-client-version': '3.1.0',
-    'x-cursor-client-type': 'ide',
+    'x-cursor-client-version': clientVersion,
+    'x-cursor-client-type': clientType,
     'x-cursor-client-os': os,
     'x-cursor-client-arch': arch,
     'x-cursor-client-device-type': 'desktop',

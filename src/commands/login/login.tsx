@@ -178,6 +178,7 @@ function ProviderPickerLogin({
           const isAntigravity = p === 'antigravity'
           const authType = isFirstParty ? 'OAuth'
             : isAntigravity ? 'Google login'
+            : p === 'cursor' ? 'Browser login'
             : p === 'gemini' ? 'Google / API Key'
             : isOAuth ? 'OAuth / API Key'
             : 'API Key'

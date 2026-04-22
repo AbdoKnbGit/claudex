@@ -21,12 +21,14 @@ import {
 
 function ModelsPickerWrapper({
   onDone,
+  lockedProvider,
 }: {
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
+  lockedProvider?: BrowsableModelProvider
 }) {
   const setAppState = useSetAppState()
   const currentProvider = getAPIProvider()
-  const initialProvider = getDefaultBrowsableProvider(currentProvider)
+  const initialProvider = lockedProvider ?? getDefaultBrowsableProvider(currentProvider)
 
   function handleSelect(provider: BrowsableModelProvider, modelId: string) {
     if (currentProvider !== provider) {
@@ -53,10 +55,16 @@ function ModelsPickerWrapper({
   return (
     <ProviderModelPicker
       initialProvider={initialProvider}
+      lockedProvider={lockedProvider}
       onSelect={handleSelect}
       onCancel={handleCancel}
     />
   )
+}
+
+function isCursorProviderOnlyArgs(rawArgs: string): boolean {
+  const normalized = rawArgs.trim().toLowerCase()
+  return normalized === 'cursor' || normalized === 'cursor:'
 }
 
 async function showSearchResults(
@@ -127,6 +135,7 @@ function showHelp(
     `  ${chalk.cyan('/models')}                    Pick a provider, then browse its live models`,
     `  ${chalk.cyan('/models <query>')}            Search the active provider's models`,
     `  ${chalk.cyan('/models <provider>:<query>')} Search a specific provider`,
+    `  ${chalk.cyan('/models cursor')}             Browse Cursor models and variants`,
     `  ${chalk.cyan('/models <provider>')}         List models from one provider`,
     `  ${chalk.cyan('/model <model-id>')}          Set a specific model directly`,
     '',
@@ -156,6 +165,9 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   }
 
   if (trimmedArgs) {
+    if (isCursorProviderOnlyArgs(trimmedArgs)) {
+      return <ModelsPickerWrapper onDone={onDone} lockedProvider="cursor" />
+    }
     await showSearchResults(trimmedArgs, onDone)
     return
   }
