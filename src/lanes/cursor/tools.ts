@@ -587,10 +587,19 @@ export function resolveCursorToolCall(
   }
 
   if (normalizedName === 'ask_user') {
+    // The model may send questions without the required `options` and
+    // `multiSelect` fields. Fill in safe defaults so Zod validation passes.
     if (Array.isArray(nativeInput.questions)) {
+      const adapted = (nativeInput.questions as Array<Record<string, unknown>>).map(q => ({
+        question: q.question ?? q.prompt ?? '',
+        header: q.header ?? 'Question',
+        options: Array.isArray(q.options) ? q.options : [],
+        multiSelect: typeof q.multiSelect === 'boolean' ? q.multiSelect : false,
+        ...(q.type ? { type: q.type } : {}),
+      }))
       return {
         implId: 'AskUserQuestion',
-        input: nativeInput,
+        input: { questions: adapted },
       }
     }
     return {
@@ -600,7 +609,8 @@ export function resolveCursorToolCall(
           {
             question: nativeInput.question ?? nativeInput.prompt ?? 'Clarify the next step?',
             header: 'Question',
-            type: 'text',
+            options: [],
+            multiSelect: false,
           },
         ],
       },
@@ -648,6 +658,63 @@ export function resolveCursorToolCall(
 
   if (normalizedName === 'replace' || nativeName === 'edit_file' || nativeName === 'edit_file_v2') {
     return _adaptCursorEditInput(nativeInput)
+  }
+
+  // ── TaskCreate ───────────────────────────────────────────────────
+  // The model sometimes wraps multiple tasks in a `tasks` array instead
+  // of sending `{subject, description}` as the flat schema requires.
+  if (nativeName === 'TaskCreate') {
+    if (Array.isArray(nativeInput.tasks) && (nativeInput.tasks as Array<Record<string, unknown>>).length > 0) {
+      const first = (nativeInput.tasks as Array<Record<string, unknown>>)[0]!
+      return {
+        implId: 'TaskCreate',
+        input: {
+          subject: first.subject ?? '',
+          description: first.description ?? '',
+          ...(first.activeForm ? { activeForm: first.activeForm } : {}),
+        },
+      }
+    }
+    return { implId: 'TaskCreate', input: nativeInput }
+  }
+
+  // ── WebFetch ─────────────────────────────────────────────────────
+  // The model sometimes puts the prompt text in the `url` field or omits
+  // the `url` entirely. Detect these cases and fix them.
+  if (nativeName === 'WebFetch' || normalizedName === 'web_fetch') {
+    const rawUrl = typeof nativeInput.url === 'string' ? nativeInput.url : ''
+    const rawPrompt = typeof nativeInput.prompt === 'string' ? nativeInput.prompt : ''
+
+    // Case 1: url field contains prompt text (no URL), prompt also has same text
+    // Case 2: url is a valid URL, prompt is a valid prompt — pass through
+    // Case 3: prompt contains a URL but url doesn't — extract from prompt
+    const urlInUrl = rawUrl.match(/https?:\/\/[^\s]+/)
+    const urlInPrompt = rawPrompt.match(/https?:\/\/[^\s]+/)
+
+    let finalUrl = rawUrl
+    let finalPrompt = rawPrompt
+
+    if (!urlInUrl && urlInPrompt) {
+      // URL is in the prompt field instead of url field
+      finalUrl = urlInPrompt[0]
+      finalPrompt = rawPrompt
+    } else if (!urlInUrl && !urlInPrompt) {
+      // Neither field has a URL — pass through as-is for error reporting
+      finalUrl = rawUrl || rawPrompt
+      finalPrompt = rawPrompt || rawUrl
+    }
+
+    return {
+      implId: 'WebFetch',
+      input: { url: finalUrl, prompt: finalPrompt },
+    }
+  }
+
+  // ── MCP tools called by direct mcp__* name ──────────────────────
+  // When the model calls an MCP tool directly (e.g. mcp__context7__resolve-library-id)
+  // instead of going through call_mcp_tool, pass through with the native input.
+  if (nativeName.startsWith('mcp__')) {
+    return { implId: nativeName, input: nativeInput }
   }
 
   const reg = getCursorRegistrationByNativeName(normalizedName)

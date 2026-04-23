@@ -675,7 +675,20 @@ async function* _streamCursorAttempt(params: {
         }
 
         if (tc.argumentsDelta) {
-          entry.rawArgs += tc.argumentsDelta
+          // Structured protobuf snapshots resend the full args object on
+          // each frame. Detect a complete JSON snapshot and replace
+          // (overwrite) instead of concatenating — otherwise we get
+          // malformed JSON like `{"cmd":"ls"}{"cmd":"ls"}`.
+          const delta = tc.argumentsDelta.trim()
+          if (
+            delta.startsWith('{') &&
+            delta.endsWith('}') &&
+            entry.rawArgs.trim().startsWith('{')
+          ) {
+            entry.rawArgs = delta
+          } else {
+            entry.rawArgs += tc.argumentsDelta
+          }
         }
       }
     }
@@ -990,13 +1003,33 @@ function _implNameForCursorToolName(name: string): string {
 }
 
 function _parseCursorToolArgs(raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {}
+  if (!raw.trim()) {
+    if (process.env.CLAUDE_CODE_DEBUG) {
+      // eslint-disable-next-line no-console
+      console.error('[cursor] _parseCursorToolArgs: empty raw args')
+    }
+    return {}
+  }
   try {
     const parsed = JSON.parse(raw) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {}
-  } catch {
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+    if (process.env.CLAUDE_CODE_DEBUG) {
+      // eslint-disable-next-line no-console
+      console.error('[cursor] _parseCursorToolArgs: parsed to non-object:', typeof parsed)
+    }
+    return {}
+  } catch (err) {
+    if (process.env.CLAUDE_CODE_DEBUG) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[cursor] _parseCursorToolArgs: JSON parse failed:',
+        err instanceof Error ? err.message : String(err),
+        '| raw (first 200 chars):',
+        raw.slice(0, 200),
+      )
+    }
     return {}
   }
 }

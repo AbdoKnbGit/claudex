@@ -846,12 +846,84 @@ function decodeJsonValue(
   return null
 }
 
+function decodeJsonStructBytes(
+  bytes: Uint8Array | null,
+): Record<string, unknown> | null {
+  if (!bytes) return null
+  const fields = decodeMessage(bytes)
+  const entries = fields.get(F.JSON_STRUCT_FIELDS)
+  if (!entries) return null
+
+  const out: Record<string, unknown> = {}
+  for (const entry of entries) {
+    if (!(entry.value instanceof Uint8Array)) continue
+    const decoded = decodeMessage(entry.value)
+    const key = fieldString(decoded, F.JSON_STRUCT_ENTRY_KEY)
+    if (!key) continue
+    out[key] = decodeJsonValue(fieldBytes(decoded, F.JSON_STRUCT_ENTRY_VALUE))
+  }
+
+  return out
+}
+
+function extractToolCallArgs(
+  fields: Map<number, Array<{ wireType: number; value: Uint8Array | number | null }>>,
+  isComplete: boolean,
+): string {
+  const argsBytes = fieldBytes(fields, F.TOOL_CALL_STREAM_ARGS)
+  if (!argsBytes) return ''
+
+  const rawText = _decoder.decode(argsBytes)
+  const trimmedText = rawText.trim()
+  if (
+    trimmedText
+    && (
+      trimmedText.startsWith('{')
+      || trimmedText.startsWith('[')
+      || trimmedText.startsWith('"')
+    )
+  ) {
+    return trimmedText
+  }
+
+  // Cursor sometimes streams structured protobuf args as full snapshots on
+  // multiple frames. Emit the structured payload on every frame — the loop
+  // overwrites the entire rawArgs accumulator with each snapshot so
+  // duplicates are harmless. Previously gated on `isComplete`, which caused
+  // args to be silently dropped when the flag was never set.
+  const structuredArgs = decodeJsonStructBytes(argsBytes)
+  if (structuredArgs != null) {
+    return JSON.stringify(structuredArgs)
+  }
+
+  const jsonValue = decodeJsonValue(argsBytes)
+  if (jsonValue != null) {
+    return typeof jsonValue === 'string'
+      ? jsonValue
+      : JSON.stringify(jsonValue)
+  }
+
+  // Fallback: try JSON.parse on the raw decoded text. Some models encode
+  // args as raw UTF-8 JSON that doesn't start with '{' due to leading
+  // whitespace or BOM bytes that were already trimmed above.
+  if (trimmedText) {
+    try {
+      JSON.parse(trimmedText)
+      return trimmedText
+    } catch {
+      // Not valid JSON — fall through.
+    }
+  }
+
+  return /[\u0000-\u001f]/.test(rawText) ? '' : trimmedText
+}
+
 function extractToolCall(data: Uint8Array): CursorToolCall | null {
   const fields = decodeMessage(data)
   const id = fieldString(fields, F.TOOL_CALL_STREAM_ID)
   const name = fieldString(fields, F.TOOL_CALL_STREAM_NAME)
-  const args = fieldString(fields, F.TOOL_CALL_STREAM_ARGS) ?? ''
   const isComplete = fieldBool(fields, F.TOOL_CALL_STREAM_IS_COMPLETE) ?? false
+  const args = extractToolCallArgs(fields, isComplete)
 
   if (!id || (!name && !args)) return null
   return {

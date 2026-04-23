@@ -7,6 +7,7 @@
 import {
   decodeMessage,
   encodeRequest,
+  encodeVarint,
   extractFromResponsePayload,
   parseConnectFrame,
 } from './protobuf.js'
@@ -31,6 +32,44 @@ function assert(cond: unknown, hint: string): void {
 
 function decodeBody(body: Uint8Array): string {
   return new TextDecoder().decode(body)
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  let total = 0
+  for (const part of parts) total += part.length
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const part of parts) {
+    out.set(part, offset)
+    offset += part.length
+  }
+  return out
+}
+
+function encodeFieldLen(fieldNum: number, value: string | Uint8Array): Uint8Array {
+  const data = typeof value === 'string' ? new TextEncoder().encode(value) : value
+  return concat(encodeVarint((fieldNum << 3) | 2), encodeVarint(data.length), data)
+}
+
+function encodeFieldVarint(fieldNum: number, value: number): Uint8Array {
+  return concat(encodeVarint((fieldNum << 3) | 0), encodeVarint(value))
+}
+
+function encodeJsonStringValue(value: string): Uint8Array {
+  return encodeFieldLen(3, value)
+}
+
+function encodeJsonStruct(input: Record<string, string>): Uint8Array {
+  return concat(
+    ...Object.entries(input).map(([key, value]) =>
+      encodeFieldLen(
+        1,
+        concat(
+          encodeFieldLen(1, key),
+          encodeFieldLen(2, encodeJsonStringValue(value)),
+        ),
+      )),
+  )
 }
 
 test('Cursor request preserves a provided conversation id', () => {
@@ -184,6 +223,74 @@ test('Cursor parser ignores empty JSON trailer envelopes', () => {
     extracted.error === null,
     `empty JSON trailer should be ignored: ${JSON.stringify(extracted)}`,
   )
+})
+
+test('Cursor parser decodes structured protobuf tool args', () => {
+  const toolCall = concat(
+    encodeFieldLen(1, 'call_taskcreate'),
+    encodeFieldLen(2, 'TaskCreate'),
+    encodeFieldLen(
+      3,
+      encodeJsonStruct({
+        subject: 'Fix cursor workflow',
+        description: 'Restore normal tool calling',
+      }),
+    ),
+    encodeFieldVarint(4, 1),
+  )
+  const payload = encodeFieldLen(2, toolCall)
+
+  const extracted = extractFromResponsePayload(payload)
+  assert(extracted.toolCall?.id === 'call_taskcreate', 'wrong structured tool id')
+  assert(extracted.toolCall?.name === 'TaskCreate', 'wrong structured tool name')
+
+  const args = JSON.parse(extracted.toolCall?.argumentsDelta ?? '{}') as Record<string, unknown>
+  assert(args.subject === 'Fix cursor workflow', 'missing structured subject arg')
+  assert(args.description === 'Restore normal tool calling', 'missing structured description arg')
+  assert(extracted.toolCall?.isLast === true, 'missing structured completion flag')
+})
+
+test('Cursor parser emits structured protobuf args on every frame for snapshot replacement', () => {
+  const firstPayload = encodeFieldLen(
+    2,
+    concat(
+      encodeFieldLen(1, 'call_bash'),
+      encodeFieldLen(2, 'run_shell_command'),
+      encodeFieldLen(
+        3,
+        encodeJsonStruct({
+          command: 'pwd',
+        }),
+      ),
+      encodeFieldVarint(4, 0),
+    ),
+  )
+  const finalPayload = encodeFieldLen(
+    2,
+    concat(
+      encodeFieldLen(1, 'call_bash'),
+      encodeFieldLen(2, 'run_shell_command'),
+      encodeFieldLen(
+        3,
+        encodeJsonStruct({
+          command: 'pwd',
+        }),
+      ),
+      encodeFieldVarint(4, 1),
+    ),
+  )
+
+  const first = extractFromResponsePayload(firstPayload)
+  const final = extractFromResponsePayload(finalPayload)
+
+  // Structured args are now emitted on every frame (not gated on isComplete).
+  // The loop handles deduplication via snapshot replacement.
+  const firstArgs = JSON.parse(first.toolCall?.argumentsDelta ?? '{}') as Record<string, unknown>
+  assert(firstArgs.command === 'pwd', 'non-final frame should still emit structured args')
+
+  const finalArgs = JSON.parse(final.toolCall?.argumentsDelta ?? '{}') as Record<string, unknown>
+  assert(finalArgs.command === 'pwd', 'missing final structured command arg')
+  assert(final.toolCall?.isLast === true, 'missing final structured completion flag')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
