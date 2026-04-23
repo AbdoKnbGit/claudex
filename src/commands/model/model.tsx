@@ -24,10 +24,9 @@ import {
   checkSonnet1mAccess,
 } from '../../utils/model/check1mAccess.js'
 import {
-  getDefaultMainLoopModelSetting,
   isOpus1mMergeEnabled,
-  renderDefaultModelSetting,
 } from '../../utils/model/model.js'
+import { renderModelLabelForProvider } from '../../utils/model/display.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import {
   BROWSABLE_MODEL_PROVIDERS,
@@ -367,8 +366,5 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
 }
 
 function renderModelLabel(model: string | null): string {
-  const rendered = renderDefaultModelSetting(
-    model ?? getDefaultMainLoopModelSetting(),
-  )
-  return model === null ? `${rendered} (default)` : rendered
+  return renderModelLabelForProvider(model, getAPIProvider())
 }

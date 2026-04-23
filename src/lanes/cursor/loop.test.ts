@@ -8,6 +8,7 @@ import {
   consumeCursorPrintedToolText,
   createCursorPrintedToolTextState,
   createCursorThinkingSplitState,
+  formatCursorApiError,
   flushCursorPrintedToolText,
   flushCursorThinkingSplitState,
   parseCursorPrintedToolCalls,
@@ -194,6 +195,57 @@ test('Cursor printed tool parser handles ASCII fallback markers from stream JSON
   assert(
     toolChunk?.calls[0]?.input.target_directory === 'C:/repo',
     'wrong ASCII parsed glob directory',
+  )
+})
+
+test('Cursor 464 surfaces the native named-model rejection message', () => {
+  const message = formatCursorApiError(
+    464,
+    '{"error":{"message":"Named models unavailable"}}',
+    'gpt-5.3-codex',
+  )
+  assert(
+    message === [
+      'Error: Named models unavailable',
+      'Free plans can only use Auto. Switch to Auto or upgrade plans to continue.',
+      'hideIcon: true',
+      'hideKeybindings: true',
+    ].join('\n'),
+    `wrong 464 native message: ${JSON.stringify(message)}`,
+  )
+})
+
+test('Cursor infers the native named-model rejection block when 464 has no body', () => {
+  const message = formatCursorApiError(464, '', 'gpt-5.3-codex')
+  assert(
+    message.includes('Free plans can only use Auto. Switch to Auto or upgrade plans to continue.'),
+    `missing inferred named-model guidance: ${JSON.stringify(message)}`,
+  )
+})
+
+test('Cursor does not misclassify the auto wire model as a named-model failure', () => {
+  const message = formatCursorApiError(464, '', 'default')
+  assert(
+    message === 'Cursor request failed (464).',
+    `wrong auto-wire 464 message: ${JSON.stringify(message)}`,
+  )
+})
+
+test('Cursor prefers top-level title/detail errors for auth failures', () => {
+  const message = formatCursorApiError(
+    401,
+    JSON.stringify({
+      error: 'ERROR_UNAUTHORIZED',
+      details: {
+        title: 'Unauthorized request.',
+        detail: 'User is unauthorized',
+      },
+    }),
+    'default',
+  )
+  assert(
+    message === 'Unauthorized request.\nUser is unauthorized',
+    `wrong auth detail message: ${JSON.stringify(message)}`,
   )
 })
 

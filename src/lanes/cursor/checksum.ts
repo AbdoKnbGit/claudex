@@ -11,6 +11,8 @@
  */
 
 import { createHash, randomUUID } from 'crypto'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
 
 /** SHA-256(input + salt) as 64-char lowercase hex. */
 export function hashed64Hex(input: string, salt = ''): string {
@@ -104,12 +106,15 @@ export function buildCursorHeaders(opts: {
     ? (opts.accessToken.split('::')[1] ?? opts.accessToken)
     : opts.accessToken
 
-  const machineId = opts.machineId || hashed64Hex(clean, 'machineId')
+  const machineId =
+    opts.machineId
+    || process.env.CURSOR_MACHINE_ID
+    || _detectCursorMachineId()
+    || hashed64Hex(clean, 'machineId')
   const sessionId = uuidV5(clean)
   const clientKey = hashed64Hex(clean)
   const checksum = cursorChecksum(machineId)
-  const clientVersion =
-    process.env.CURSOR_CLIENT_VERSION ?? '3.1.0'
+  const clientVersion = process.env.CURSOR_CLIENT_VERSION ?? _detectCursorClientVersion()
   const clientType = process.env.CURSOR_CLIENT_TYPE ?? 'ide'
 
   let os = 'linux'
@@ -134,7 +139,87 @@ export function buildCursorHeaders(opts: {
     'x-cursor-config-version': randomUUID(),
     'x-cursor-timezone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     'x-ghost-mode': opts.ghostMode === false ? 'false' : 'true',
+    'x-verified-ghost-mode': opts.ghostMode === false ? 'false' : 'true',
     'x-request-id': randomUUID(),
     'x-session-id': sessionId,
   }
+}
+
+function _detectCursorMachineId(): string | null {
+  for (const candidate of _cursorGlobalStoragePaths('storage.json')) {
+    try {
+      if (!existsSync(candidate)) continue
+      const raw = readFileSync(candidate, 'utf8')
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const machineId =
+        _readStringRecordField(parsed, 'storage.serviceMachineId')
+        ?? _readStringRecordField(parsed, 'telemetry.machineId')
+        ?? _readStringRecordField(parsed, 'machineId')
+      if (machineId) return machineId
+    } catch {
+      // ignore and keep falling back
+    }
+  }
+
+  return null
+}
+
+function _cursorGlobalStoragePaths(filename: string): string[] {
+  const candidates: string[] = []
+  const appData = process.env.APPDATA
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME
+  const home = process.env.HOME ?? process.env.USERPROFILE
+
+  if (appData) {
+    candidates.push(join(appData, 'Cursor', 'User', 'globalStorage', filename))
+  }
+  if (xdgConfigHome) {
+    candidates.push(join(xdgConfigHome, 'Cursor', 'User', 'globalStorage', filename))
+  }
+  if (home) {
+    candidates.push(join(home, '.config', 'Cursor', 'User', 'globalStorage', filename))
+    candidates.push(join(home, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', filename))
+  }
+
+  return candidates
+}
+
+function _readStringRecordField(
+  record: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = record[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function _detectCursorClientVersion(): string {
+  const candidates: string[] = []
+  const localAppData = process.env.LOCALAPPDATA
+  const home = process.env.HOME ?? process.env.USERPROFILE
+
+  if (localAppData) {
+    candidates.push(join(localAppData, 'Programs', 'cursor', 'resources', 'app', 'package.json'))
+    candidates.push(join(localAppData, 'Programs', 'Cursor', 'resources', 'app', 'package.json'))
+  }
+  if (home) {
+    candidates.push(join(home, 'Applications', 'Cursor.app', 'Contents', 'Resources', 'app', 'package.json'))
+  }
+  candidates.push('/Applications/Cursor.app/Contents/Resources/app/package.json')
+  candidates.push('/opt/Cursor/resources/app/package.json')
+  candidates.push('/usr/share/cursor/resources/app/package.json')
+
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue
+      const raw = readFileSync(candidate, 'utf8')
+      const parsed = JSON.parse(raw) as { version?: string }
+      if (typeof parsed.version === 'string' && parsed.version.trim()) {
+        return parsed.version.trim()
+      }
+    } catch {
+      // ignore and keep falling back
+    }
+  }
+
+  return '3.1.17'
 }

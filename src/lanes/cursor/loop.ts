@@ -40,9 +40,8 @@ import {
 } from './protobuf.js'
 import { buildCursorHeaders } from './checksum.js'
 import {
-  CURSOR_AUTO_MODEL_ID,
-  CURSOR_AUTO_WIRE_MODEL_ID,
   CURSOR_MODELS,
+  isCursorAutoModelId,
   isCursorModel,
   resolveCursorModelId,
 } from './catalog.js'
@@ -52,8 +51,8 @@ import {
   resolveCursorToolCall,
 } from './tools.js'
 
-const CURSOR_ENDPOINT = 'https://api2.cursor.sh/aiserver.v1.ChatService/StreamUnifiedChatWithTools'
-const CURSOR_HTTP2_TIMEOUT_MS = 60_000
+const CURSOR_ENDPOINT = 'https://api2.cursor.sh/aiserver.v1.InferenceService/Stream'
+const CURSOR_HTTP_TIMEOUT_MS = 60_000
 const CURSOR_THINK_CLOSE_MARKER = '</think>'
 const CURSOR_PRINTED_TOOL_CALLS_OPEN = '<|tool_calls_begin|>'
 const CURSOR_PRINTED_TOOL_CALLS_CLOSE = '<|tool_calls_end|>'
@@ -176,36 +175,25 @@ export class CursorLane implements Lane {
     if (_looksLikeFreshCursorConversation(messages)) {
       this.conversationId = _newCursorConversationId()
     }
-    const requestedCursorModel = this.resolveModel(model)
-    const autoWireModel = resolveCursorModelId(CURSOR_AUTO_MODEL_ID)
-    const attemptModels = requestedCursorModel === autoWireModel
-      ? [requestedCursorModel]
-      : [requestedCursorModel, autoWireModel]
+    const gen = _streamCursorAttempt({
+      displayModel: model,
+      cursorModel: this.resolveModel(model),
+      accessToken,
+      machineId: this.machineId,
+      conversationId: this.conversationId,
+      systemText,
+      messages,
+      tools,
+      reasoningEffort,
+      signal,
+    })
 
-    for (let attempt = 0; attempt < attemptModels.length; attempt++) {
-      const attemptModel = attemptModels[attempt]!
-      const gen = _streamCursorAttempt({
-        displayModel: model,
-        cursorModel: attemptModel,
-        accessToken,
-        machineId: this.machineId,
-        conversationId: this.conversationId,
-        systemText,
-        messages,
-        tools,
-        reasoningEffort,
-        signal,
-        allowAutoRetry: attempt < attemptModels.length - 1,
-      })
-
-      while (true) {
-        const next = await gen.next()
-        if (next.done) {
-          if (next.value.retry) break
-          return next.value.usage
-        }
-        yield next.value
+    while (true) {
+      const next = await gen.next()
+      if (next.done) {
+        return next.value.usage
       }
+      yield next.value
     }
 
     return _blankUsage()
@@ -395,7 +383,6 @@ async function* _streamCursorAttempt(params: {
   tools: LaneProviderCallParams['tools']
   reasoningEffort: 'medium' | 'high' | null
   signal: AbortSignal
-  allowAutoRetry: boolean
 }): AsyncGenerator<AnthropicStreamEvent, CursorAttemptResult> {
   const body = buildCursorBody({
     model: params.cursorModel,
@@ -414,7 +401,10 @@ async function* _streamCursorAttempt(params: {
 
   const messageId = `cursor-${Date.now()}`
   let messageStartEmitted = false
+  let inputTokens = 0
   let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
   let totalContentChars = 0
 
   // Content-block state.
@@ -564,7 +554,7 @@ async function* _streamCursorAttempt(params: {
 
   let response: CursorHttpStreamResponse
   try {
-    response = await _openCursorHttp2Stream({
+    response = await _openCursorHttpStream({
       url: CURSOR_ENDPOINT,
       headers,
       body,
@@ -582,9 +572,6 @@ async function* _streamCursorAttempt(params: {
 
   if (response.status < 200 || response.status >= 300) {
     const errText = await _collectStreamText(response.body).catch(() => '')
-    if (params.allowAutoRetry && _isCursorNamedModelUnavailable(errText, params.cursorModel)) {
-      return { usage: _blankUsage(), retry: true }
-    }
     const mst = emitMessageStart()
     if (mst) yield mst
     yield* _emitErrorText(formatCursorApiError(response.status, errText, params.cursorModel))
@@ -615,12 +602,33 @@ async function* _streamCursorAttempt(params: {
 
       const result = extractFromResponsePayload(frame.payload)
 
+      if (result.usage) {
+        if (typeof result.usage.promptTokens === 'number') {
+          inputTokens = result.usage.promptTokens
+        }
+        if (typeof result.usage.completionTokens === 'number') {
+          outputTokens = result.usage.completionTokens
+        }
+        if (typeof result.usage.inputTokens === 'number') {
+          inputTokens = result.usage.inputTokens
+        }
+        if (typeof result.usage.outputTokens === 'number') {
+          outputTokens = result.usage.outputTokens
+        }
+        if (typeof result.usage.cacheReadTokens === 'number') {
+          cacheReadTokens = result.usage.cacheReadTokens
+        }
+        if (typeof result.usage.cacheWriteTokens === 'number') {
+          cacheWriteTokens = result.usage.cacheWriteTokens
+        }
+      }
+
       if (result.error) {
         // 9router's pattern: if the turn already produced content,
         // swallow a trailing error frame (usually a soft rate-limit
         // notice). Otherwise surface it.
         const hadContent = messageStartEmitted && (totalContentChars > 0 || toolBlocks.size > 0)
-        if (!hadContent) deferredError = result.error
+        if (!hadContent) deferredError = _formatCursorNativeError(result.error, params.cursorModel)
         continue
       }
 
@@ -676,15 +684,6 @@ async function* _streamCursorAttempt(params: {
   yield* flushPrintedToolText(true)
   yield* flushThinkingCarry()
 
-  if (
-    deferredError !== null
-    && !messageStartEmitted
-    && params.allowAutoRetry
-    && _isCursorNamedModelUnavailable(deferredError, params.cursorModel)
-  ) {
-    return { usage: _blankUsage(), retry: true }
-  }
-
   // If a pre-content error was deferred, surface it now.
   if (deferredError !== null && !messageStartEmitted) {
     const mst = emitMessageStart()
@@ -694,7 +693,7 @@ async function* _streamCursorAttempt(params: {
   if (!sawAnyFrame && deferredError === null) {
     const mst = emitMessageStart()
     if (mst) yield mst
-    yield* _emitErrorText('cursor API returned an empty stream. This usually means the HTTP/2 session closed before Cursor sent any response frames.')
+    yield* _emitErrorText('Cursor returned an empty stream.')
   }
 
   // Close any still-open text/thinking block.
@@ -747,10 +746,10 @@ async function* _streamCursorAttempt(params: {
 
   return {
     usage: {
-      input_tokens: 0,
+      input_tokens: inputTokens,
       output_tokens: outputTokens,
-      cache_read_tokens: 0,
-      cache_write_tokens: 0,
+      cache_read_tokens: cacheReadTokens,
+      cache_write_tokens: cacheWriteTokens,
       thinking_tokens: 0,
     },
     retry: false,
@@ -1008,36 +1007,13 @@ function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {
   yield { type: 'content_block_stop', index: 0 }
 }
 
-async function _openCursorHttp2Stream(opts: {
+async function _openCursorHttpStream(opts: {
   url: string
   headers: Record<string, string>
   body: Uint8Array
   signal?: AbortSignal
 }): Promise<CursorHttpStreamResponse> {
-  const { connect, constants } = await import('node:http2')
-  const url = new URL(opts.url)
-  const client = connect(`${url.protocol}//${url.host}`)
-  const requestHeaders: Record<string, string> = {
-    ':method': 'POST',
-    ':path': `${url.pathname}${url.search}`,
-    ':authority': url.host,
-    ':scheme': url.protocol.replace(':', ''),
-  }
-
-  for (const [name, value] of Object.entries(opts.headers)) {
-    requestHeaders[name.toLowerCase()] = value
-  }
-
-  let settled = false
-  let status = 0
-  let abortHandler: (() => void) | null = null
-  let timeout: ReturnType<typeof setTimeout> | null = null
-  const session = client
-
-  let onSessionError: ((error: Error) => void) | null = null
-  let onSessionClose: (() => void) | null = null
-  let onSessionGoaway: (() => void) | null = null
-
+  const controller = new AbortController()
   const cleanup = (): void => {
     if (abortHandler && opts.signal) {
       opts.signal.removeEventListener('abort', abortHandler)
@@ -1047,98 +1023,51 @@ async function _openCursorHttp2Stream(opts: {
       clearTimeout(timeout)
       timeout = null
     }
-    if (onSessionError) {
-      session.off('error', onSessionError)
-      onSessionError = null
-    }
-    if (onSessionClose) {
-      session.off('close', onSessionClose)
-      onSessionClose = null
-    }
-    if (onSessionGoaway) {
-      session.off('goaway', onSessionGoaway)
-      onSessionGoaway = null
-    }
-    if (!session.closed && !session.destroyed) {
-      try {
-        session.close()
-      } catch {
-        // ignore
-      }
-    }
   }
 
-  return new Promise<CursorHttpStreamResponse>((resolve, reject) => {
-    const fail = (error: unknown): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error)
-    }
+  let abortHandler: (() => void) | null = null
+  let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    controller.abort(new Error('Cursor HTTP request timed out'))
+  }, CURSOR_HTTP_TIMEOUT_MS)
 
-    onSessionError = error => {
-      fail(error)
-    }
-    onSessionClose = () => {
-      fail(new Error('Cursor HTTP/2 session closed before a response was received'))
-    }
-    onSessionGoaway = () => {
-      fail(new Error('Cursor HTTP/2 session was closed by the server'))
-    }
-    session.on('error', onSessionError)
-    session.on('close', onSessionClose)
-    session.on('goaway', onSessionGoaway)
-
-    const req = client.request(requestHeaders)
-    timeout = setTimeout(() => {
-      req.close(constants.NGHTTP2_CANCEL)
-      fail(new Error('Cursor HTTP/2 request timed out'))
-    }, CURSOR_HTTP2_TIMEOUT_MS)
-
-    abortHandler = () => {
-      req.close(constants.NGHTTP2_CANCEL)
-      fail(new DOMException('Aborted', 'AbortError'))
-    }
-    if (opts.signal?.aborted) {
-      abortHandler()
-      return
-    }
+  abortHandler = () => {
+    controller.abort(opts.signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+  }
+  if (opts.signal?.aborted) {
+    abortHandler()
+  } else {
     opts.signal?.addEventListener('abort', abortHandler, { once: true })
+  }
 
-    req.once('response', headers => {
-      status = Number(headers[':status'] ?? 0)
-      if (settled) return
-      settled = true
-      resolve({
-        status,
-        body: _iterateHttp2Body(req, constants, cleanup),
-      })
+  try {
+    const response = await fetch(opts.url, {
+      method: 'POST',
+      headers: opts.headers,
+      body: opts.body,
+      signal: controller.signal,
     })
-    req.once('error', fail)
 
-    req.end(Buffer.from(opts.body))
-  })
+    return {
+      status: response.status,
+      body: _iterateFetchBody(response.body, cleanup),
+    }
+  } catch (error) {
+    cleanup()
+    throw error
+  }
 }
 
-async function* _iterateHttp2Body(
-  req: AsyncIterable<Buffer | Uint8Array>,
-  constants: typeof import('node:http2').constants,
+async function* _iterateFetchBody(
+  body: ReadableStream<Uint8Array> | null,
   cleanup: () => void,
 ): AsyncGenerator<Uint8Array> {
   try {
-    for await (const chunk of req) {
+    if (!body) return
+    for await (const chunk of body as AsyncIterable<Uint8Array | Buffer>) {
       yield chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
     }
   } finally {
     cleanup()
-    const stream = req as import('node:http2').ClientHttp2Stream
-    try {
-      if (!stream.closed && !stream.destroyed) {
-        stream.close(constants.NGHTTP2_NO_ERROR)
-      }
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -1158,28 +1087,135 @@ async function _collectStreamText(body: AsyncIterable<Uint8Array>): Promise<stri
   return new TextDecoder().decode(merged)
 }
 
-function formatCursorApiError(status: number, body: string, model: string): string {
-  const detail = body.trim().slice(0, 500)
-  if (status === 464) {
-    return (
-      `cursor API error 464: Cursor rejected the native request for model "${model}". `
-      + 'This status usually means Cursor did not receive the chat call over HTTP/2. '
-      + `If you selected Auto, claudex stores it as "${CURSOR_AUTO_MODEL_ID}" but sends Cursor's "${CURSOR_AUTO_WIRE_MODEL_ID}" wire model, not Composer. `
-      + (detail ? `Details: ${detail}` : 'Cursor returned no error body.')
-    )
+export function formatCursorApiError(status: number, body: string, model: string): string {
+  const detail = _extractCursorErrorDetail(body)
+  if (detail) return _formatCursorNativeError(detail, model)
+  if (status === 464 && !isCursorAutoModelId(model)) {
+    return _namedModelUnavailableMessage()
   }
-
-  return `cursor API error ${status}: ${detail}`
+  return `Cursor request failed (${status}).`
 }
 
-function _isCursorNamedModelUnavailable(message: string, model: string): boolean {
-  if (model === CURSOR_AUTO_WIRE_MODEL_ID) return false
-  const normalized = message.toLowerCase()
-  return (
-    normalized.includes('named models unavailable')
-    || normalized.includes('ai model not found')
-    || normalized.includes('model not found')
-  )
+function _extractCursorErrorDetail(body: string): string {
+  const trimmed = body.trim()
+  if (!trimmed) return ''
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    const detail = _extractCursorJsonErrorDetail(parsed)
+    return detail ? detail.slice(0, 500) : ''
+  } catch {
+    return trimmed.slice(0, 500)
+  }
+}
+
+function _formatCursorNativeError(detail: string, model: string): string {
+  const normalized = detail.trim()
+  if (!normalized) {
+    return !isCursorAutoModelId(model)
+      ? _namedModelUnavailableMessage()
+      : 'Cursor request failed.'
+  }
+
+  if (
+    !isCursorAutoModelId(model)
+    && (
+      /named models unavailable/i.test(normalized)
+      || /free plans can only use auto/i.test(normalized)
+    )
+  ) {
+    return _namedModelUnavailableMessage()
+  }
+
+  return normalized
+}
+
+function _extractCursorJsonErrorDetail(parsed: unknown): string | null {
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return typeof parsed === 'string' && parsed.trim() ? parsed.trim() : null
+  }
+
+  const record = parsed as Record<string, unknown>
+  const topLevelDetails =
+    record.details != null
+    && typeof record.details === 'object'
+    && !Array.isArray(record.details)
+      ? record.details as Record<string, unknown>
+      : null
+  const topLevelTitle =
+    topLevelDetails && typeof topLevelDetails.title === 'string'
+      ? topLevelDetails.title.trim()
+      : ''
+  const topLevelDetail =
+    topLevelDetails && typeof topLevelDetails.detail === 'string'
+      ? topLevelDetails.detail.trim()
+      : ''
+  if (topLevelTitle || topLevelDetail) {
+    return [topLevelTitle, topLevelDetail].filter(Boolean).join('\n')
+  }
+
+  const errorValue = record.error
+  const nestedError =
+    errorValue != null
+    && typeof errorValue === 'object'
+    && !Array.isArray(errorValue)
+      ? errorValue as Record<string, unknown>
+      : null
+  const detailFromDebug =
+    nestedError && Array.isArray(nestedError.details)
+      ? nestedError.details
+          .map(detail => {
+            if (!detail || typeof detail !== 'object') return ''
+            const debug = 'debug' in detail ? detail.debug : null
+            if (!debug || typeof debug !== 'object') return ''
+            const debugRecord = debug as Record<string, unknown>
+            const debugDetails =
+              debugRecord.details != null
+              && typeof debugRecord.details === 'object'
+              && !Array.isArray(debugRecord.details)
+                ? debugRecord.details as Record<string, unknown>
+                : null
+            const title =
+              debugDetails && typeof debugDetails.title === 'string'
+                ? debugDetails.title.trim()
+                : ''
+            const body =
+              debugDetails && typeof debugDetails.detail === 'string'
+                ? debugDetails.detail.trim()
+                : ''
+            if (title || body) return [title, body].filter(Boolean).join('\n')
+            return typeof debugRecord.error === 'string' ? debugRecord.error.trim() : ''
+          })
+          .find(Boolean) ?? null
+      : null
+  if (detailFromDebug) return detailFromDebug
+
+  const nestedMessage =
+    nestedError && typeof nestedError.message === 'string'
+      ? nestedError.message.trim()
+      : ''
+  if (nestedMessage) return nestedMessage
+
+  const topLevelMessage =
+    typeof record.message === 'string'
+      ? record.message.trim()
+      : ''
+  if (topLevelMessage) return topLevelMessage
+
+  const stringError =
+    typeof errorValue === 'string'
+      ? errorValue.trim()
+      : ''
+  return stringError || null
+}
+
+function _namedModelUnavailableMessage(): string {
+  return [
+    'Error: Named models unavailable',
+    'Free plans can only use Auto. Switch to Auto or upgrade plans to continue.',
+    'hideIcon: true',
+    'hideKeybindings: true',
+  ].join('\n')
 }
 
 export const cursorLane = new CursorLane()

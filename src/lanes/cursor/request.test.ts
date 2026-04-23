@@ -52,9 +52,9 @@ test('Cursor rewrites shared tool ids in the injected system instructions', () =
   assert(!text.includes('`Bash`'), 'shared Bash alias leaked into system text')
 })
 
-test('Cursor rewrites tool_result XML names to the advertised native tool name', () => {
+test('Cursor rewrites tool_result names to the advertised native tool name', () => {
   const body = buildCursorBody({
-    model: 'default',
+    model: 'auto',
     system: '',
     messages: [
       {
@@ -85,15 +85,16 @@ test('Cursor rewrites tool_result XML names to the advertised native tool name',
 
   const text = decodeBody(body)
   assert(
-    text.includes('<tool_name>run_terminal_cmd</tool_name>'),
-    'tool_result did not use Cursor-native tool name',
+    text.includes('run_terminal_cmd'),
+    'tool_result did not use the Cursor-native tool name',
   )
-  assert(!text.includes('<tool_name>Bash</tool_name>'), 'shared tool name leaked into tool_result XML')
+  assert(text.includes('toolu_1'), 'missing native tool call id')
+  assert(!text.includes('<tool_result>'), 'legacy XML tool_result block leaked into Cursor request')
 })
 
-test('Cursor includes structured protobuf tool_results with raw args for follow-up turns', () => {
+test('Cursor includes native assistant tool calls and follow-up tool results', () => {
   const body = buildCursorBody({
-    model: 'default',
+    model: 'auto',
     system: '',
     messages: [
       {
@@ -123,12 +124,11 @@ test('Cursor includes structured protobuf tool_results with raw args for follow-
   })
 
   const text = decodeBody(body)
-  assert(text.includes('run_terminal_cmd'), 'missing structured tool name in protobuf body')
-  assert(text.includes('toolu_2'), 'missing structured tool call id in protobuf body')
-  assert(
-    text.includes('{"command":"echo ok","description":"Verify shell command execution"}'),
-    'missing structured raw args in protobuf body',
-  )
+  assert(text.includes('run_terminal_cmd'), 'missing native tool name in protobuf body')
+  assert(text.includes('toolu_2'), 'missing native tool call id in protobuf body')
+  assert(text.includes('echo ok'), 'missing native tool command in protobuf body')
+  assert(text.includes('Verify shell command execution'), 'missing native tool description in protobuf body')
+  assert(!text.includes('<tool_name>'), 'legacy XML tool metadata leaked into protobuf body')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

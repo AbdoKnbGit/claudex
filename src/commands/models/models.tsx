@@ -18,6 +18,7 @@ import {
   parseProviderModelQuery,
   type BrowsableModelProvider,
 } from '../../utils/model/providerCatalog.js'
+import { getProviderModelDisplayName } from '../../utils/model/display.js'
 
 function ModelsPickerWrapper({
   onDone,
@@ -45,7 +46,10 @@ function ModelsPickerWrapper({
       ? ` (switched to ${chalk.bold(PROVIDER_DISPLAY_NAMES[provider])})`
       : ''
 
-    onDone(`Set model to ${chalk.bold(modelId)}${providerNote}`)
+    const displayModel =
+      getProviderModelDisplayName(provider, modelId) ?? modelId
+
+    onDone(`Set model to ${chalk.bold(displayModel)}${providerNote}`)
   }
 
   function handleCancel() {

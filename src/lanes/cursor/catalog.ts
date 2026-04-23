@@ -1,22 +1,19 @@
 /**
  * Cursor static model catalog.
  *
- * Cursor does not expose a clean public model-list endpoint for this lane.
- * The available ids here are Cursor ids for the ConnectRPC Model field, not
- * OpenAI/Anthropic canonical ids. Some labels intentionally match OpenAI
- * names; provider selection still determines the lane, so `/models cursor`
- * and `/models openai` remain separate.
+ * These ids are Cursor-native chat model ids. They stay provider-scoped,
+ * so ids such as `gpt-5.3-codex` remain on the Cursor lane when Cursor is
+ * the active provider.
  */
 
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 
-/** UI/session id used by claudex for Cursor Auto. */
 export const CURSOR_AUTO_MODEL_ID = 'auto'
-/** Wire id Cursor's ConnectRPC endpoint expects for server-picked Auto. */
 export const CURSOR_AUTO_WIRE_MODEL_ID = 'default'
 
 export type CursorModelSection =
   | 'recommended'
+  | 'cursor'
   | 'anthropic'
   | 'openai'
   | 'other'
@@ -24,17 +21,13 @@ export type CursorModelSection =
 export type CursorVariantTag = 'thinking' | 'fast'
 
 export interface CursorModelVariant {
-  /** Concrete Cursor model id sent to the Cursor API. */
   id: string
-  /** Short label shown in the horizontal variant selector. */
   label: string
-  /** Optional expanded display name used in flat search output. */
   name?: string
   tags?: readonly CursorVariantTag[]
 }
 
 export interface CursorModelGroup {
-  /** Stable row id for `/models cursor`; not necessarily sent to the API. */
   id: string
   name: string
   section: CursorModelSection
@@ -42,7 +35,7 @@ export interface CursorModelGroup {
   variants: readonly CursorModelVariant[]
 }
 
-function cursorVariant(
+function variant(
   id: string,
   label: string,
   name: string,
@@ -57,177 +50,187 @@ export const CURSOR_MODEL_GROUPS: readonly CursorModelGroup[] = [
     name: 'Auto',
     section: 'recommended',
     defaultVariantId: 'auto',
-    variants: [
-      {
-        id: 'auto',
-        label: 'Auto',
-        name: 'Auto',
-      },
-    ],
+    variants: [variant('auto', 'Auto', 'Auto')],
   },
   {
     id: 'composer-2',
     name: 'Composer 2',
-    section: 'recommended',
-    defaultVariantId: 'composer-2-fast',
+    section: 'cursor',
+    defaultVariantId: 'composer-2',
     variants: [
-      cursorVariant('composer-2-fast', 'Fast', 'Composer 2 Fast', ['fast']),
-      cursorVariant('composer-2', 'Standard', 'Composer 2'),
+      variant('composer-2-fast', 'Fast', 'Composer 2 Fast', ['fast']),
+      variant('composer-2', 'Default', 'Composer 2'),
     ],
   },
   {
     id: 'composer-1.5',
     name: 'Composer 1.5',
-    section: 'recommended',
-    variants: [
-      cursorVariant('composer-1.5', 'Standard', 'Composer 1.5'),
-    ],
+    section: 'cursor',
+    defaultVariantId: 'composer-1.5',
+    variants: [variant('composer-1.5', 'Default', 'Composer 1.5')],
   },
   {
     id: 'gpt-5.3-codex',
-    name: 'GPT 5.3 Codex',
-    section: 'recommended',
+    name: 'GPT-5.3 Codex',
+    section: 'openai',
     defaultVariantId: 'gpt-5.3-codex',
     variants: [
-      cursorVariant('gpt-5.3-codex-low', 'Low', 'GPT 5.3 Codex Low'),
-      cursorVariant('gpt-5.3-codex-low-fast', 'Low Fast', 'GPT 5.3 Codex Low Fast', ['fast']),
-      cursorVariant('gpt-5.3-codex', 'Medium', 'GPT 5.3 Codex'),
-      cursorVariant('gpt-5.3-codex-fast', 'Medium Fast', 'GPT 5.3 Codex Fast', ['fast']),
-      cursorVariant('gpt-5.3-codex-high', 'High', 'GPT 5.3 Codex High'),
-      cursorVariant('gpt-5.3-codex-high-fast', 'High Fast', 'GPT 5.3 Codex High Fast', ['fast']),
-      cursorVariant('gpt-5.3-codex-xhigh', 'Extra High', 'GPT 5.3 Codex Extra High'),
-      cursorVariant('gpt-5.3-codex-xhigh-fast', 'Extra High Fast', 'GPT 5.3 Codex Extra High Fast', ['fast']),
+      variant('gpt-5.3-codex-low', 'Low', 'GPT-5.3 Codex Low'),
+      variant('gpt-5.3-codex-low-fast', 'Low Fast', 'GPT-5.3 Codex Low Fast', ['fast']),
+      variant('gpt-5.3-codex', 'Default', 'GPT-5.3 Codex'),
+      variant('gpt-5.3-codex-fast', 'Fast', 'GPT-5.3 Codex Fast', ['fast']),
+      variant('gpt-5.3-codex-high', 'High', 'GPT-5.3 Codex High'),
+      variant('gpt-5.3-codex-high-fast', 'High Fast', 'GPT-5.3 Codex High Fast', ['fast']),
+      variant('gpt-5.3-codex-xhigh', 'XHigh', 'GPT-5.3 Codex XHigh'),
+      variant('gpt-5.3-codex-xhigh-fast', 'XHigh Fast', 'GPT-5.3 Codex XHigh Fast', ['fast']),
     ],
   },
   {
     id: 'gpt-5.3-codex-spark-preview',
-    name: 'GPT 5.3 Codex Spark',
+    name: 'GPT-5.3 Codex Spark Preview',
     section: 'openai',
     defaultVariantId: 'gpt-5.3-codex-spark-preview',
     variants: [
-      cursorVariant('gpt-5.3-codex-spark-preview-low', 'Low', 'GPT 5.3 Codex Spark Low'),
-      cursorVariant('gpt-5.3-codex-spark-preview', 'Medium', 'GPT 5.3 Codex Spark'),
-      cursorVariant('gpt-5.3-codex-spark-preview-high', 'High', 'GPT 5.3 Codex Spark High'),
-      cursorVariant('gpt-5.3-codex-spark-preview-xhigh', 'Extra High', 'GPT 5.3 Codex Spark Extra High'),
+      variant('gpt-5.3-codex-spark-preview-low', 'Low', 'GPT-5.3 Codex Spark Preview Low'),
+      variant('gpt-5.3-codex-spark-preview', 'Default', 'GPT-5.3 Codex Spark Preview'),
+      variant('gpt-5.3-codex-spark-preview-high', 'High', 'GPT-5.3 Codex Spark Preview High'),
+      variant('gpt-5.3-codex-spark-preview-xhigh', 'XHigh', 'GPT-5.3 Codex Spark Preview XHigh'),
     ],
   },
   {
     id: 'gpt-5.2-codex',
-    name: 'GPT 5.2 Codex',
+    name: 'GPT-5.2 Codex',
     section: 'openai',
     defaultVariantId: 'gpt-5.2-codex',
     variants: [
-      cursorVariant('gpt-5.2-codex-low', 'Low', 'GPT 5.2 Codex Low'),
-      cursorVariant('gpt-5.2-codex-low-fast', 'Low Fast', 'GPT 5.2 Codex Low Fast', ['fast']),
-      cursorVariant('gpt-5.2-codex', 'Medium', 'GPT 5.2 Codex'),
-      cursorVariant('gpt-5.2-codex-fast', 'Medium Fast', 'GPT 5.2 Codex Fast', ['fast']),
-      cursorVariant('gpt-5.2-codex-high', 'High', 'GPT 5.2 Codex High'),
-      cursorVariant('gpt-5.2-codex-high-fast', 'High Fast', 'GPT 5.2 Codex High Fast', ['fast']),
-      cursorVariant('gpt-5.2-codex-xhigh', 'Extra High', 'GPT 5.2 Codex Extra High'),
-      cursorVariant('gpt-5.2-codex-xhigh-fast', 'Extra High Fast', 'GPT 5.2 Codex Extra High Fast', ['fast']),
+      variant('gpt-5.2-codex-low', 'Low', 'GPT-5.2 Codex Low'),
+      variant('gpt-5.2-codex-low-fast', 'Low Fast', 'GPT-5.2 Codex Low Fast', ['fast']),
+      variant('gpt-5.2-codex', 'Default', 'GPT-5.2 Codex'),
+      variant('gpt-5.2-codex-fast', 'Fast', 'GPT-5.2 Codex Fast', ['fast']),
+      variant('gpt-5.2-codex-high', 'High', 'GPT-5.2 Codex High'),
+      variant('gpt-5.2-codex-high-fast', 'High Fast', 'GPT-5.2 Codex High Fast', ['fast']),
+      variant('gpt-5.2-codex-xhigh', 'XHigh', 'GPT-5.2 Codex XHigh'),
+      variant('gpt-5.2-codex-xhigh-fast', 'XHigh Fast', 'GPT-5.2 Codex XHigh Fast', ['fast']),
     ],
   },
   {
     id: 'gpt-5.1-codex-max',
-    name: 'GPT 5.1 Codex Max',
+    name: 'GPT-5.1 Codex Max',
     section: 'openai',
     defaultVariantId: 'gpt-5.1-codex-max-medium',
     variants: [
-      cursorVariant('gpt-5.1-codex-max-low', 'Low', 'GPT 5.1 Codex Max Low'),
-      cursorVariant('gpt-5.1-codex-max-low-fast', 'Low Fast', 'GPT 5.1 Codex Max Low Fast', ['fast']),
-      cursorVariant('gpt-5.1-codex-max-medium', 'Medium', 'GPT 5.1 Codex Max'),
-      cursorVariant('gpt-5.1-codex-max-medium-fast', 'Medium Fast', 'GPT 5.1 Codex Max Medium Fast', ['fast']),
-      cursorVariant('gpt-5.1-codex-max-high', 'High', 'GPT 5.1 Codex Max High'),
-      cursorVariant('gpt-5.1-codex-max-high-fast', 'High Fast', 'GPT 5.1 Codex Max High Fast', ['fast']),
-      cursorVariant('gpt-5.1-codex-max-xhigh', 'Extra High', 'GPT 5.1 Codex Max Extra High'),
-      cursorVariant('gpt-5.1-codex-max-xhigh-fast', 'Extra High Fast', 'GPT 5.1 Codex Max Extra High Fast', ['fast']),
-    ],
-  },
-  {
-    id: 'gpt-5.1-codex-mini',
-    name: 'GPT 5.1 Codex Mini',
-    section: 'openai',
-    defaultVariantId: 'gpt-5.1-codex-mini',
-    variants: [
-      cursorVariant('gpt-5.1-codex-mini-low', 'Low', 'GPT 5.1 Codex Mini Low'),
-      cursorVariant('gpt-5.1-codex-mini', 'Medium', 'GPT 5.1 Codex Mini'),
-      cursorVariant('gpt-5.1-codex-mini-high', 'High', 'GPT 5.1 Codex Mini High'),
-    ],
-  },
-  {
-    id: 'gpt-5.2',
-    name: 'GPT 5.2',
-    section: 'openai',
-    defaultVariantId: 'gpt-5.2',
-    variants: [
-      cursorVariant('gpt-5.2-low', 'Low', 'GPT 5.2 Low'),
-      cursorVariant('gpt-5.2-low-fast', 'Low Fast', 'GPT 5.2 Low Fast', ['fast']),
-      cursorVariant('gpt-5.2', 'Medium', 'GPT 5.2'),
-      cursorVariant('gpt-5.2-fast', 'Medium Fast', 'GPT 5.2 Fast', ['fast']),
-      cursorVariant('gpt-5.2-high', 'High', 'GPT 5.2 High'),
-      cursorVariant('gpt-5.2-high-fast', 'High Fast', 'GPT 5.2 High Fast', ['fast']),
-      cursorVariant('gpt-5.2-xhigh', 'Extra High', 'GPT 5.2 Extra High'),
-      cursorVariant('gpt-5.2-xhigh-fast', 'Extra High Fast', 'GPT 5.2 Extra High Fast', ['fast']),
+      variant('gpt-5.1-codex-max-low', 'Low', 'GPT-5.1 Codex Max Low'),
+      variant('gpt-5.1-codex-max-low-fast', 'Low Fast', 'GPT-5.1 Codex Max Low Fast', ['fast']),
+      variant('gpt-5.1-codex-max-medium', 'Medium', 'GPT-5.1 Codex Max Medium'),
+      variant('gpt-5.1-codex-max-medium-fast', 'Medium Fast', 'GPT-5.1 Codex Max Medium Fast', ['fast']),
+      variant('gpt-5.1-codex-max-high', 'High', 'GPT-5.1 Codex Max High'),
+      variant('gpt-5.1-codex-max-high-fast', 'High Fast', 'GPT-5.1 Codex Max High Fast', ['fast']),
+      variant('gpt-5.1-codex-max-xhigh', 'XHigh', 'GPT-5.1 Codex Max XHigh'),
+      variant('gpt-5.1-codex-max-xhigh-fast', 'XHigh Fast', 'GPT-5.1 Codex Max XHigh Fast', ['fast']),
     ],
   },
   {
     id: 'gpt-5.4',
-    name: 'GPT 5.4',
+    name: 'GPT-5.4',
     section: 'openai',
     defaultVariantId: 'gpt-5.4-medium',
     variants: [
-      cursorVariant('gpt-5.4-low', 'Low', 'GPT 5.4 Low'),
-      cursorVariant('gpt-5.4-medium', 'Medium', 'GPT 5.4'),
-      cursorVariant('gpt-5.4-medium-fast', 'Medium Fast', 'GPT 5.4 Fast', ['fast']),
-      cursorVariant('gpt-5.4-high', 'High', 'GPT 5.4 High'),
-      cursorVariant('gpt-5.4-high-fast', 'High Fast', 'GPT 5.4 High Fast', ['fast']),
-      cursorVariant('gpt-5.4-xhigh', 'Extra High', 'GPT 5.4 Extra High'),
-      cursorVariant('gpt-5.4-xhigh-fast', 'Extra High Fast', 'GPT 5.4 Extra High Fast', ['fast']),
+      variant('gpt-5.4-low', 'Low', 'GPT-5.4 Low'),
+      variant('gpt-5.4-medium', 'Medium', 'GPT-5.4 Medium'),
+      variant('gpt-5.4-medium-fast', 'Medium Fast', 'GPT-5.4 Medium Fast', ['fast']),
+      variant('gpt-5.4-high', 'High', 'GPT-5.4 High'),
+      variant('gpt-5.4-high-fast', 'High Fast', 'GPT-5.4 High Fast', ['fast']),
+      variant('gpt-5.4-xhigh', 'XHigh', 'GPT-5.4 XHigh'),
+      variant('gpt-5.4-xhigh-fast', 'XHigh Fast', 'GPT-5.4 XHigh Fast', ['fast']),
+    ],
+  },
+  {
+    id: 'gpt-5.2',
+    name: 'GPT-5.2',
+    section: 'openai',
+    defaultVariantId: 'gpt-5.2',
+    variants: [
+      variant('gpt-5.2-low', 'Low', 'GPT-5.2 Low'),
+      variant('gpt-5.2-low-fast', 'Low Fast', 'GPT-5.2 Low Fast', ['fast']),
+      variant('gpt-5.2', 'Default', 'GPT-5.2'),
+      variant('gpt-5.2-fast', 'Fast', 'GPT-5.2 Fast', ['fast']),
+      variant('gpt-5.2-high', 'High', 'GPT-5.2 High'),
+      variant('gpt-5.2-high-fast', 'High Fast', 'GPT-5.2 High Fast', ['fast']),
+      variant('gpt-5.2-xhigh', 'XHigh', 'GPT-5.2 XHigh'),
+      variant('gpt-5.2-xhigh-fast', 'XHigh Fast', 'GPT-5.2 XHigh Fast', ['fast']),
     ],
   },
   {
     id: 'gpt-5.4-mini',
-    name: 'GPT 5.4 Mini',
+    name: 'GPT-5.4 Mini',
     section: 'openai',
     defaultVariantId: 'gpt-5.4-mini-medium',
     variants: [
-      cursorVariant('gpt-5.4-mini-none', 'None', 'GPT 5.4 Mini None'),
-      cursorVariant('gpt-5.4-mini-low', 'Low', 'GPT 5.4 Mini Low'),
-      cursorVariant('gpt-5.4-mini-medium', 'Medium', 'GPT 5.4 Mini'),
-      cursorVariant('gpt-5.4-mini-high', 'High', 'GPT 5.4 Mini High'),
-      cursorVariant('gpt-5.4-mini-xhigh', 'Extra High', 'GPT 5.4 Mini Extra High'),
+      variant('gpt-5.4-mini-none', 'None', 'GPT-5.4 Mini None'),
+      variant('gpt-5.4-mini-low', 'Low', 'GPT-5.4 Mini Low'),
+      variant('gpt-5.4-mini-medium', 'Medium', 'GPT-5.4 Mini Medium'),
+      variant('gpt-5.4-mini-high', 'High', 'GPT-5.4 Mini High'),
+      variant('gpt-5.4-mini-xhigh', 'XHigh', 'GPT-5.4 Mini XHigh'),
     ],
   },
   {
     id: 'gpt-5.4-nano',
-    name: 'GPT 5.4 Nano',
+    name: 'GPT-5.4 Nano',
     section: 'openai',
     defaultVariantId: 'gpt-5.4-nano-medium',
     variants: [
-      cursorVariant('gpt-5.4-nano-none', 'None', 'GPT 5.4 Nano None'),
-      cursorVariant('gpt-5.4-nano-low', 'Low', 'GPT 5.4 Nano Low'),
-      cursorVariant('gpt-5.4-nano-medium', 'Medium', 'GPT 5.4 Nano'),
-      cursorVariant('gpt-5.4-nano-high', 'High', 'GPT 5.4 Nano High'),
-      cursorVariant('gpt-5.4-nano-xhigh', 'Extra High', 'GPT 5.4 Nano Extra High'),
+      variant('gpt-5.4-nano-none', 'None', 'GPT-5.4 Nano None'),
+      variant('gpt-5.4-nano-low', 'Low', 'GPT-5.4 Nano Low'),
+      variant('gpt-5.4-nano-medium', 'Medium', 'GPT-5.4 Nano Medium'),
+      variant('gpt-5.4-nano-high', 'High', 'GPT-5.4 Nano High'),
+      variant('gpt-5.4-nano-xhigh', 'XHigh', 'GPT-5.4 Nano XHigh'),
     ],
   },
   {
     id: 'gpt-5.1',
-    name: 'GPT 5.1',
+    name: 'GPT-5.1',
     section: 'openai',
     defaultVariantId: 'gpt-5.1',
     variants: [
-      cursorVariant('gpt-5.1-low', 'Low', 'GPT 5.1 Low'),
-      cursorVariant('gpt-5.1', 'Medium', 'GPT 5.1'),
-      cursorVariant('gpt-5.1-high', 'High', 'GPT 5.1 High'),
+      variant('gpt-5.1-low', 'Low', 'GPT-5.1 Low'),
+      variant('gpt-5.1', 'Default', 'GPT-5.1'),
+      variant('gpt-5.1-high', 'High', 'GPT-5.1 High'),
+    ],
+  },
+  {
+    id: 'gpt-5.1-codex-mini',
+    name: 'GPT-5.1 Codex Mini',
+    section: 'openai',
+    defaultVariantId: 'gpt-5.1-codex-mini',
+    variants: [
+      variant('gpt-5.1-codex-mini-low', 'Low', 'GPT-5.1 Codex Mini Low'),
+      variant('gpt-5.1-codex-mini', 'Default', 'GPT-5.1 Codex Mini'),
+      variant('gpt-5.1-codex-mini-high', 'High', 'GPT-5.1 Codex Mini High'),
     ],
   },
   {
     id: 'gpt-5-mini',
-    name: 'GPT 5 Mini',
+    name: 'GPT-5 Mini',
     section: 'openai',
+    defaultVariantId: 'gpt-5-mini',
+    variants: [variant('gpt-5-mini', 'Default', 'GPT-5 Mini')],
+  },
+  {
+    id: 'claude-opus-4-7',
+    name: 'Claude Opus 4.7',
+    section: 'anthropic',
+    defaultVariantId: 'claude-opus-4-7-high',
     variants: [
-      cursorVariant('gpt-5-mini', 'Standard', 'GPT 5 Mini'),
+      variant('claude-opus-4-7-low', 'Low', 'Claude Opus 4.7 Low'),
+      variant('claude-opus-4-7-medium', 'Medium', 'Claude Opus 4.7 Medium'),
+      variant('claude-opus-4-7-high', 'High', 'Claude Opus 4.7 High'),
+      variant('claude-opus-4-7-xhigh', 'XHigh', 'Claude Opus 4.7 XHigh'),
+      variant('claude-opus-4-7-max', 'Max', 'Claude Opus 4.7 Max'),
+      variant('claude-opus-4-7-thinking-low', 'Thinking Low', 'Claude Opus 4.7 Thinking Low', ['thinking']),
+      variant('claude-opus-4-7-thinking-medium', 'Thinking Medium', 'Claude Opus 4.7 Thinking Medium', ['thinking']),
+      variant('claude-opus-4-7-thinking-high', 'Thinking High', 'Claude Opus 4.7 Thinking High', ['thinking']),
+      variant('claude-opus-4-7-thinking-xhigh', 'Thinking XHigh', 'Claude Opus 4.7 Thinking XHigh', ['thinking']),
+      variant('claude-opus-4-7-thinking-max', 'Thinking Max', 'Claude Opus 4.7 Thinking Max', ['thinking']),
     ],
   },
   {
@@ -236,8 +239,8 @@ export const CURSOR_MODEL_GROUPS: readonly CursorModelGroup[] = [
     section: 'anthropic',
     defaultVariantId: 'claude-4.6-sonnet-medium',
     variants: [
-      cursorVariant('claude-4.6-sonnet-medium', 'Medium', 'Claude 4.6 Sonnet'),
-      cursorVariant('claude-4.6-sonnet-medium-thinking', 'Medium Thinking', 'Claude 4.6 Sonnet Medium Thinking', ['thinking']),
+      variant('claude-4.6-sonnet-medium', 'Medium', 'Claude 4.6 Sonnet Medium'),
+      variant('claude-4.6-sonnet-medium-thinking', 'Medium Thinking', 'Claude 4.6 Sonnet Medium Thinking', ['thinking']),
     ],
   },
   {
@@ -246,10 +249,10 @@ export const CURSOR_MODEL_GROUPS: readonly CursorModelGroup[] = [
     section: 'anthropic',
     defaultVariantId: 'claude-4.6-opus-high',
     variants: [
-      cursorVariant('claude-4.6-opus-high', 'High', 'Claude 4.6 Opus High'),
-      cursorVariant('claude-4.6-opus-high-thinking', 'High Thinking', 'Claude 4.6 Opus High Thinking', ['thinking']),
-      cursorVariant('claude-4.6-opus-max', 'Max', 'Claude 4.6 Opus Max'),
-      cursorVariant('claude-4.6-opus-max-thinking', 'Max Thinking', 'Claude 4.6 Opus Max Thinking', ['thinking']),
+      variant('claude-4.6-opus-high', 'High', 'Claude 4.6 Opus High'),
+      variant('claude-4.6-opus-max', 'Max', 'Claude 4.6 Opus Max'),
+      variant('claude-4.6-opus-high-thinking', 'High Thinking', 'Claude 4.6 Opus High Thinking', ['thinking']),
+      variant('claude-4.6-opus-max-thinking', 'Max Thinking', 'Claude 4.6 Opus Max Thinking', ['thinking']),
     ],
   },
   {
@@ -258,8 +261,8 @@ export const CURSOR_MODEL_GROUPS: readonly CursorModelGroup[] = [
     section: 'anthropic',
     defaultVariantId: 'claude-4.5-opus-high',
     variants: [
-      cursorVariant('claude-4.5-opus-high', 'High', 'Claude 4.5 Opus High'),
-      cursorVariant('claude-4.5-opus-high-thinking', 'High Thinking', 'Claude 4.5 Opus High Thinking', ['thinking']),
+      variant('claude-4.5-opus-high', 'High', 'Claude 4.5 Opus High'),
+      variant('claude-4.5-opus-high-thinking', 'High Thinking', 'Claude 4.5 Opus High Thinking', ['thinking']),
     ],
   },
   {
@@ -268,8 +271,8 @@ export const CURSOR_MODEL_GROUPS: readonly CursorModelGroup[] = [
     section: 'anthropic',
     defaultVariantId: 'claude-4.5-sonnet',
     variants: [
-      cursorVariant('claude-4.5-sonnet', 'Standard', 'Claude 4.5 Sonnet'),
-      cursorVariant('claude-4.5-sonnet-thinking', 'Thinking', 'Claude 4.5 Sonnet Thinking', ['thinking']),
+      variant('claude-4.5-sonnet', 'Default', 'Claude 4.5 Sonnet'),
+      variant('claude-4.5-sonnet-thinking', 'Thinking', 'Claude 4.5 Sonnet Thinking', ['thinking']),
     ],
   },
   {
@@ -278,65 +281,139 @@ export const CURSOR_MODEL_GROUPS: readonly CursorModelGroup[] = [
     section: 'anthropic',
     defaultVariantId: 'claude-4-sonnet',
     variants: [
-      cursorVariant('claude-4-sonnet', 'Standard', 'Claude 4 Sonnet'),
-      cursorVariant('claude-4-sonnet-1m', '1M', 'Claude 4 Sonnet 1M'),
-      cursorVariant('claude-4-sonnet-thinking', 'Thinking', 'Claude 4 Sonnet Thinking', ['thinking']),
-      cursorVariant('claude-4-sonnet-1m-thinking', '1M Thinking', 'Claude 4 Sonnet 1M Thinking', ['thinking']),
+      variant('claude-4-sonnet', 'Default', 'Claude 4 Sonnet'),
+      variant('claude-4-sonnet-1m', '1M', 'Claude 4 Sonnet 1M'),
+      variant('claude-4-sonnet-thinking', 'Thinking', 'Claude 4 Sonnet Thinking', ['thinking']),
+      variant('claude-4-sonnet-1m-thinking', '1M Thinking', 'Claude 4 Sonnet 1M Thinking', ['thinking']),
+    ],
+  },
+  {
+    id: 'gemini-3.1-pro',
+    name: 'Gemini 3.1 Pro',
+    section: 'other',
+    defaultVariantId: 'gemini-3.1-pro',
+    variants: [variant('gemini-3.1-pro', 'Default', 'Gemini 3.1 Pro')],
+  },
+  {
+    id: 'gemini-3-flash',
+    name: 'Gemini 3 Flash',
+    section: 'other',
+    defaultVariantId: 'gemini-3-flash',
+    variants: [variant('gemini-3-flash', 'Default', 'Gemini 3 Flash')],
+  },
+  {
+    id: 'grok-4-20',
+    name: 'Grok 4.20',
+    section: 'other',
+    defaultVariantId: 'grok-4-20',
+    variants: [
+      variant('grok-4-20', 'Default', 'Grok 4.20'),
+      variant('grok-4-20-thinking', 'Thinking', 'Grok 4.20 Thinking', ['thinking']),
     ],
   },
   {
     id: 'kimi-k2.5',
     name: 'Kimi K2.5',
     section: 'other',
-    variants: [
-      cursorVariant('kimi-k2.5', 'Standard', 'Kimi K2.5'),
-    ],
-  },
-  {
-    id: 'gemini-3',
-    name: 'Gemini 3',
-    section: 'other',
-    variants: [
-      cursorVariant('gemini-3.1-pro', '3.1 Pro', 'Gemini 3.1 Pro'),
-      cursorVariant('gemini-3-pro', '3 Pro', 'Gemini 3 Pro'),
-      cursorVariant('gemini-3-flash', '3 Flash', 'Gemini 3 Flash'),
-    ],
-  },
-  {
-    id: 'grok-4-20',
-    name: 'Grok 4.20',
-    section: 'other',
-    variants: [
-      cursorVariant('grok-4-20', 'Standard', 'Grok 4.20'),
-      cursorVariant('grok-4-20-thinking', 'Thinking', 'Grok 4.20 Thinking', ['thinking']),
-    ],
+    defaultVariantId: 'kimi-k2.5',
+    variants: [variant('kimi-k2.5', 'Default', 'Kimi K2.5')],
   },
 ]
 
-export const CURSOR_MODELS: ModelInfo[] = CURSOR_MODEL_GROUPS.flatMap(group =>
-  group.variants.map(variant => ({
-    id: variant.id,
-    name: variant.name ?? `${group.name} ${variant.label}`,
+const CURSOR_GROUP_ORDER = [
+  'auto',
+  'composer-2',
+  'composer-1.5',
+  'gpt-5.3-codex',
+  'gpt-5.2',
+  'gpt-5.3-codex-spark-preview',
+  'gpt-5.2-codex',
+  'gpt-5.1-codex-max',
+  'gpt-5.4',
+  'claude-opus-4-7',
+  'claude-4.6-sonnet',
+  'claude-4.6-opus',
+  'claude-4.5-opus',
+  'gemini-3.1-pro',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'grok-4-20',
+  'claude-4.5-sonnet',
+  'gpt-5.1',
+  'gemini-3-flash',
+  'gpt-5.1-codex-mini',
+  'claude-4-sonnet',
+  'gpt-5-mini',
+  'kimi-k2.5',
+] as const
+
+const CURSOR_GROUP_ORDER_INDEX = new Map(
+  CURSOR_GROUP_ORDER.map((id, index) => [id, index]),
+)
+
+export const CURSOR_ORDERED_MODEL_GROUPS: readonly CursorModelGroup[] = [...CURSOR_MODEL_GROUPS]
+  .sort((left, right) => {
+    const leftIndex = CURSOR_GROUP_ORDER_INDEX.get(left.id) ?? Number.MAX_SAFE_INTEGER
+    const rightIndex = CURSOR_GROUP_ORDER_INDEX.get(right.id) ?? Number.MAX_SAFE_INTEGER
+    return leftIndex - rightIndex
+  })
+
+export const CURSOR_MODELS: ModelInfo[] = CURSOR_ORDERED_MODEL_GROUPS.flatMap(group =>
+  group.variants.map(variantInfo => ({
+    id: variantInfo.id,
+    name: variantInfo.name ?? `${group.name} ${variantInfo.label}`,
   })),
 )
 
 const CURSOR_MODEL_IDS = new Set(CURSOR_MODELS.map(model => model.id))
 
-/**
- * Strict Cursor catalog membership. This is catalog validation only; actual
- * request routing remains provider-scoped through the Cursor provider shim.
- */
-export function isCursorModel(id: string): boolean {
-  return id === 'default' || CURSOR_MODEL_IDS.has(id)
+const CURSOR_LEGACY_MODEL_ALIASES = new Map<string, string>([
+  ['composer-1', 'composer-1.5'],
+  ['gpt-5.1-codex-max', 'gpt-5.1-codex-max-medium'],
+  ['gpt-5.4', 'gpt-5.4-medium'],
+  ['gpt-5.4-fast', 'gpt-5.4-medium-fast'],
+  ['opus-4.6', 'claude-4.6-opus-high'],
+  ['opus-4.6-thinking', 'claude-4.6-opus-high-thinking'],
+  ['sonnet-4.6', 'claude-4.6-sonnet-medium'],
+  ['sonnet-4.6-thinking', 'claude-4.6-sonnet-medium-thinking'],
+  ['opus-4.5', 'claude-4.5-opus-high'],
+  ['opus-4.5-thinking', 'claude-4.5-opus-high-thinking'],
+  ['sonnet-4.5', 'claude-4.5-sonnet'],
+  ['sonnet-4.5-thinking', 'claude-4.5-sonnet-thinking'],
+  ['grok', 'grok-4-20'],
+])
+
+const CURSOR_MODEL_DISPLAY_NAMES = new Map<string, string>()
+
+for (const group of CURSOR_MODEL_GROUPS) {
+  CURSOR_MODEL_DISPLAY_NAMES.set(group.id, group.name)
+  for (const variantInfo of group.variants) {
+    CURSOR_MODEL_DISPLAY_NAMES.set(
+      variantInfo.id,
+      variantInfo.name ?? `${group.name} ${variantInfo.label}`,
+    )
+  }
 }
 
-/**
- * Older claudex builds stored Cursor Auto as `default`, while the picker now
- * stores `auto` for a clearer UI. The Cursor chat protobuf still expects
- * `default` on the wire for server-picked Auto.
- */
-export function resolveCursorModelId(id: string): string {
+export function isCursorModel(id: string): boolean {
+  return CURSOR_MODEL_IDS.has(id) || id === CURSOR_AUTO_WIRE_MODEL_ID || CURSOR_LEGACY_MODEL_ALIASES.has(id)
+}
+
+export function isCursorAutoModelId(id: string): boolean {
   return id === CURSOR_AUTO_MODEL_ID || id === CURSOR_AUTO_WIRE_MODEL_ID
-    ? CURSOR_AUTO_WIRE_MODEL_ID
-    : id
+}
+
+export function getCursorModelDisplayName(id: string): string | null {
+  const resolvedId =
+    isCursorAutoModelId(id)
+      ? CURSOR_AUTO_MODEL_ID
+      : (CURSOR_LEGACY_MODEL_ALIASES.get(id) ?? id)
+  return CURSOR_MODEL_DISPLAY_NAMES.get(resolvedId) ?? null
+}
+
+export function resolveCursorModelId(id: string): string {
+  if (isCursorAutoModelId(id)) {
+    return CURSOR_AUTO_WIRE_MODEL_ID
+  }
+  return CURSOR_LEGACY_MODEL_ALIASES.get(id) ?? id
 }

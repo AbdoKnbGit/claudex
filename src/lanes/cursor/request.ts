@@ -30,7 +30,7 @@ import {
   generateCursorBody,
   type NormalizedCursorMessage,
   type EncodeMcpToolInput,
-  type EncodeToolResultInput,
+  type CursorContentPart,
 } from './protobuf.js'
 import {
   buildCursorSupportedToolEnums,
@@ -200,19 +200,16 @@ function _buildCursorToolSelectionGuide(
 }
 
 function _buildToolNameMap(messages: ProviderMessage[]): Map<string, string> {
-  const map = new Map<string, { name: string; rawArgs: string }>()
+  const map = new Map<string, string>()
   for (const msg of messages) {
     if (msg.role !== 'assistant' || typeof msg.content === 'string') continue
     for (const block of msg.content) {
       if (block.type === 'tool_use' && block.id && block.name) {
-        const meta = {
-          name: _cursorDisplayedToolName(block.name),
-          rawArgs: JSON.stringify(block.input ?? {}),
-        }
-        map.set(block.id, meta)
+        const nativeName = _cursorDisplayedToolName(block.name)
+        map.set(block.id, nativeName)
         const normalized = _normalizeCursorToolCallId(block.id)
         if (normalized && normalized !== block.id) {
-          map.set(normalized, meta)
+          map.set(normalized, nativeName)
         }
       }
     }
@@ -228,78 +225,83 @@ function _convertMessages(
   const toolNames = _buildToolNameMap(messages)
 
   if (systemText) {
-    out.push({ role: 'user', content: `[System Instructions]\n${systemText}` })
+    out.push({ role: 'system', content: systemText })
   }
 
   for (const msg of messages) {
     const role: 'user' | 'assistant' = msg.role === 'assistant' ? 'assistant' : 'user'
 
     if (role === 'user') {
-      const parts: string[] = []
-      const toolResults: EncodeToolResultInput[] = []
       if (typeof msg.content === 'string') {
-        if (msg.content) parts.push(msg.content)
+        if (msg.content) out.push({ role: 'user', content: msg.content })
       } else {
+        const toolMessages: NormalizedCursorMessage[] = []
+        const parts: CursorContentPart[] = []
         for (const block of msg.content) {
           if (block.type === 'text' && typeof block.text === 'string' && block.text) {
-            parts.push(block.text)
+            parts.push({ type: 'text', text: block.text })
           } else if (block.type === 'tool_result' && block.tool_use_id) {
-            const meta =
+            const nativeName =
               toolNames.get(block.tool_use_id) ??
               toolNames.get(_normalizeCursorToolCallId(block.tool_use_id))
-            const name = meta?.name || 'tool'
-            const resultText = _stringifyToolResult(block.content)
-            parts.push(_buildToolResultBlock(
-              name,
-              block.tool_use_id,
-              resultText,
-            ))
-            toolResults.push({
-              tool_call_id: block.tool_use_id,
-              tool_name: name,
-              result_content: _sanitize(resultText),
-              raw_args: meta?.rawArgs ?? '{}',
+            toolMessages.push({
+              role: 'tool',
+              content: [{
+                type: 'tool-result',
+                toolCallId: block.tool_use_id,
+                toolName: nativeName ?? 'tool',
+                result: _sanitize(_stringifyToolResult(block.content)),
+                ...(block.is_error ? { isError: true } : {}),
+              }],
             })
           }
         }
-      }
-      const content = parts.join('\n')
-      if (content || toolResults.length > 0) {
-        out.push({
-          role: 'user',
-          content,
-          ...(toolResults.length > 0 ? { tool_results: toolResults } : {}),
-        })
+
+        out.push(...toolMessages)
+        if (parts.length > 0) {
+          out.push(
+            parts.length === 1 && parts[0]?.type === 'text'
+              ? { role: 'user', content: parts[0].text }
+              : { role: 'user', content: parts },
+          )
+        }
       }
       continue
     }
 
-    const texts: string[] = []
     if (typeof msg.content === 'string') {
-      if (msg.content) texts.push(msg.content)
+      if (msg.content) out.push({ role: 'assistant', content: msg.content })
     } else {
+      const parts: CursorContentPart[] = []
       for (const block of msg.content) {
         if (block.type === 'text' && typeof block.text === 'string' && block.text) {
-          texts.push(block.text)
+          parts.push({ type: 'text', text: block.text })
+        } else if (block.type === 'tool_use' && block.id && block.name) {
+          parts.push({
+            type: 'tool-call',
+            toolCallId: block.id,
+            toolName: _cursorDisplayedToolName(block.name),
+            args: (block.input ?? {}) as Record<string, unknown>,
+          })
+        }
+      }
+      if (parts.length > 0) {
+        const textOnly = parts.every(part => part.type === 'text')
+        if (textOnly) {
+          const content = parts
+            .filter((part): part is Extract<CursorContentPart, { type: 'text' }> => part.type === 'text')
+            .map(part => part.text)
+            .join('\n')
+            .trim()
+          if (content) out.push({ role: 'assistant', content })
+        } else {
+          out.push({ role: 'assistant', content: parts })
         }
       }
     }
-    const content = texts.join('\n').trim()
-    if (content) out.push({ role: 'assistant', content })
   }
 
   return out
-}
-
-function _buildToolResultBlock(name: string, id: string, result: string): string {
-  const cleanResult = _sanitize(result)
-  return [
-    '<tool_result>',
-    `<tool_name>${_escapeXml(name)}</tool_name>`,
-    `<tool_call_id>${_escapeXml(id)}</tool_call_id>`,
-    `<result>${_escapeXml(cleanResult)}</result>`,
-    '</tool_result>',
-  ].join('\n')
 }
 
 function _stringifyToolResult(
@@ -322,10 +324,6 @@ function _sanitize(text: string): string {
   // Strip non-printable control chars — the Cursor backend errors on them.
   // eslint-disable-next-line no-control-regex
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-}
-
-function _escapeXml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function _buildCursorAliasGuide(originalTools: ProviderTool[]): string {

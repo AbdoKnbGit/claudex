@@ -14,7 +14,7 @@ import {
 } from './providers.js'
 import { modelSupportsReasoning } from './openaiReasoning.js'
 import {
-  CURSOR_MODEL_GROUPS,
+  CURSOR_ORDERED_MODEL_GROUPS,
   type CursorModelGroup,
   type CursorModelSection,
   type CursorVariantTag,
@@ -88,6 +88,11 @@ export async function loadProviderModels(
   await resolveProviderAuth(provider)
 
   const models = await getProvider(provider).listModels()
+  if (provider === 'cursor') {
+    // Cursor's native picker order is provider-owned and should not be
+    // alphabetized away; the ids intentionally mirror Cursor's own model surface.
+    return models
+  }
   return sortProviderModels(models)
 }
 
@@ -188,27 +193,30 @@ export async function loadProviderModelSections(
 
 const CURSOR_SECTION_ORDER: readonly CursorModelSection[] = [
   'recommended',
-  'anthropic',
+  'cursor',
   'openai',
+  'anthropic',
   'other',
 ]
 
 const CURSOR_SECTION_TITLES: Record<CursorModelSection, string> = {
-  recommended: 'Recommended Cursor models',
-  anthropic: 'Cursor Anthropic models',
-  openai: 'Cursor OpenAI/Codex models',
-  other: 'Cursor other models',
+  recommended: 'Auto',
+  cursor: 'Cursor',
+  anthropic: 'Claude',
+  openai: 'OpenAI / Codex',
+  other: 'Others',
 }
 
 function buildCursorSections(): ProviderModelSection[] {
   const buckets: Record<CursorModelSection, SectionedModelInfo[]> = {
     recommended: [],
+    cursor: [],
     anthropic: [],
     openai: [],
     other: [],
   }
 
-  for (const group of CURSOR_MODEL_GROUPS) {
+  for (const group of CURSOR_ORDERED_MODEL_GROUPS) {
     buckets[group.section].push(toCursorSectionedModel(group))
   }
 

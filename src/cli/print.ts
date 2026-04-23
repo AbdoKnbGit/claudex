@@ -267,9 +267,9 @@ import {
 import {
   getDefaultMainLoopModel,
   getMainLoopModel,
-  modelDisplayString,
   parseUserSpecifiedModel,
 } from 'src/utils/model/model.js'
+import { modelDisplayStringForProvider } from 'src/utils/model/display.js'
 import { getModelOptions } from 'src/utils/model/modelOptions.js'
 import {
   modelSupportsEffort,
@@ -1225,7 +1225,7 @@ function runHeadlessStreaming(
   ): void {
     const breadcrumbs = createModelSwitchBreadcrumbs(
       modelArg,
-      modelDisplayString(resolvedModel),
+      modelDisplayStringForProvider(resolvedModel, getAPIProvider()),
     )
     mutableMessages.push(...breadcrumbs)
     for (const crumb of breadcrumbs) {
