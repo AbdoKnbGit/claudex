@@ -51,6 +51,7 @@ import { GroqProvider } from './groq_provider.js'
 import { NimProvider } from './nim_provider.js'
 import { DeepSeekProvider } from './deepseek_provider.js'
 import { OllamaProvider } from './ollama_provider.js'
+import { sanitizeProviderMessagesForNonCursorTransport } from './sanitizeProviderMessages.js'
 import { warmupCodeAssist } from './gemini_code_assist.js'
 import { initLanes, getLane } from '../../../lanes/index.js'
 import { LaneBackedProvider } from '../../../lanes/provider-bridge.js'
@@ -326,6 +327,10 @@ function wrapAsAnthropicStream(
 function createMethod(p: BaseProvider) {
   return function create(params: Record<string, unknown>, opts?: Record<string, unknown>) {
     const isStreaming = params.stream === true
+    const outboundParams =
+      p.name === 'cursor'
+        ? params
+        : sanitizeOutboundParamsForProvider(params)
 
     // Extract signal and timeout from opts (claude.ts passes these).
     const externalSignal = opts?.signal as AbortSignal | undefined
@@ -335,9 +340,9 @@ function createMethod(p: BaseProvider) {
     // AbortSignal.timeout() combined with any external signal.
     let basePromise: Promise<ProviderStreamResult | AnthropicMessage>
     if (isStreaming) {
-      basePromise = p.stream(params as any)
+      basePromise = p.stream(outboundParams as any)
     } else {
-      basePromise = p.create(params as any)
+      basePromise = p.create(outboundParams as any)
       // Apply timeout for non-streaming requests (claude.ts passes
       // timeout: 120000 or 300000 for the non-streaming fallback).
       if (timeoutMs && timeoutMs > 0) {
@@ -394,6 +399,19 @@ function createMethod(p: BaseProvider) {
 
     return enhanced
   }
+}
+
+function sanitizeOutboundParamsForProvider(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const messages = params.messages
+  if (!Array.isArray(messages)) return params
+  const sanitizedMessages = sanitizeProviderMessagesForNonCursorTransport(
+    messages as import('./base_provider.js').ProviderMessage[],
+  )
+  return sanitizedMessages === messages
+    ? params
+    : { ...params, messages: sanitizedMessages }
 }
 
 /**
