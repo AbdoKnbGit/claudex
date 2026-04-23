@@ -174,6 +174,17 @@ test('Cursor native aliases adapt back to shared tool implementations', () => {
   assert(task.input.prompt === 'Inspect the repository and summarize the auth flow.', 'wrong task input')
 })
 
+test('Cursor tolerates Shell as a terminal alias', () => {
+  const shell = resolveCursorToolCall('Shell', {
+    command: 'echo ok',
+    cwd: '/tmp/project',
+    description: 'Verify shell alias',
+  })
+  assert(shell?.implId === 'Bash', 'wrong Shell impl')
+  assert(shell.input.command === 'cd "/tmp/project" && echo ok', 'wrong Shell cwd adaptation')
+  assert(shell.input.description === 'Verify shell alias', 'wrong Shell description')
+})
+
 test('Cursor adapts shared Glob and Grep names from printed-tool syntax', () => {
   const glob = resolveCursorToolCall('Glob', {
     target_directory: '/tmp/project',

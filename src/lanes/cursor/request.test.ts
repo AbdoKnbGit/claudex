@@ -91,5 +91,45 @@ test('Cursor rewrites tool_result XML names to the advertised native tool name',
   assert(!text.includes('<tool_name>Bash</tool_name>'), 'shared tool name leaked into tool_result XML')
 })
 
+test('Cursor includes structured protobuf tool_results with raw args for follow-up turns', () => {
+  const body = buildCursorBody({
+    model: 'default',
+    system: '',
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_2\nmc_abc123',
+            name: 'Bash',
+            input: { command: 'echo ok', description: 'Verify shell command execution' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_2\nmc_abc123',
+            content: 'ok',
+          },
+        ],
+      },
+    ],
+    tools: [{ name: 'Bash', input_schema: { type: 'object' } }],
+    conversationId: 'conv-3',
+  })
+
+  const text = decodeBody(body)
+  assert(text.includes('run_terminal_cmd'), 'missing structured tool name in protobuf body')
+  assert(text.includes('toolu_2'), 'missing structured tool call id in protobuf body')
+  assert(
+    text.includes('{"command":"echo ok","description":"Verify shell command execution"}'),
+    'missing structured raw args in protobuf body',
+  )
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

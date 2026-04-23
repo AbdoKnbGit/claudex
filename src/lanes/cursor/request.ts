@@ -4,9 +4,11 @@
  * Tool-output representation follows 9router's stable pattern from
  * `reference/9router-master/open-sse/translator/request/openai-to-cursor.js`:
  * tool outputs are emitted as `<tool_result>…</tool_result>` XML blocks
- * inside user messages, NOT via the protobuf tool_results field. The
- * comment in the reference spells out why — partial-schema mismatches in
- * the protobuf tool_results path have been observed to loop the model.
+ * inside user messages. On the ConnectRPC protobuf lane we ALSO attach the
+ * matching structured `tool_results` entries so Cursor gets the tool call id,
+ * advertised tool name, and raw args from the prior assistant tool_use block.
+ * This preserves the reference's stable XML path while giving the native
+ * protobuf request the explicit tool-call context it expects on follow-up turns.
  *
  * Mapping summary:
  *   - System prompt → prepended as its own "[System Instructions]" user turn.
@@ -28,6 +30,7 @@ import {
   generateCursorBody,
   type NormalizedCursorMessage,
   type EncodeMcpToolInput,
+  type EncodeToolResultInput,
 } from './protobuf.js'
 import {
   buildCursorSupportedToolEnums,
@@ -197,12 +200,20 @@ function _buildCursorToolSelectionGuide(
 }
 
 function _buildToolNameMap(messages: ProviderMessage[]): Map<string, string> {
-  const map = new Map<string, string>()
+  const map = new Map<string, { name: string; rawArgs: string }>()
   for (const msg of messages) {
     if (msg.role !== 'assistant' || typeof msg.content === 'string') continue
     for (const block of msg.content) {
       if (block.type === 'tool_use' && block.id && block.name) {
-        map.set(block.id, _cursorDisplayedToolName(block.name))
+        const meta = {
+          name: _cursorDisplayedToolName(block.name),
+          rawArgs: JSON.stringify(block.input ?? {}),
+        }
+        map.set(block.id, meta)
+        const normalized = _normalizeCursorToolCallId(block.id)
+        if (normalized && normalized !== block.id) {
+          map.set(normalized, meta)
+        }
       }
     }
   }
@@ -225,6 +236,7 @@ function _convertMessages(
 
     if (role === 'user') {
       const parts: string[] = []
+      const toolResults: EncodeToolResultInput[] = []
       if (typeof msg.content === 'string') {
         if (msg.content) parts.push(msg.content)
       } else {
@@ -232,17 +244,33 @@ function _convertMessages(
           if (block.type === 'text' && typeof block.text === 'string' && block.text) {
             parts.push(block.text)
           } else if (block.type === 'tool_result' && block.tool_use_id) {
-            const name = toolNames.get(block.tool_use_id) || 'tool'
+            const meta =
+              toolNames.get(block.tool_use_id) ??
+              toolNames.get(_normalizeCursorToolCallId(block.tool_use_id))
+            const name = meta?.name || 'tool'
+            const resultText = _stringifyToolResult(block.content)
             parts.push(_buildToolResultBlock(
               name,
               block.tool_use_id,
-              _stringifyToolResult(block.content),
+              resultText,
             ))
+            toolResults.push({
+              tool_call_id: block.tool_use_id,
+              tool_name: name,
+              result_content: _sanitize(resultText),
+              raw_args: meta?.rawArgs ?? '{}',
+            })
           }
         }
       }
       const content = parts.join('\n')
-      if (content) out.push({ role: 'user', content })
+      if (content || toolResults.length > 0) {
+        out.push({
+          role: 'user',
+          content,
+          ...(toolResults.length > 0 ? { tool_results: toolResults } : {}),
+        })
+      }
       continue
     }
 
@@ -351,4 +379,10 @@ function _cursorDisplayedToolName(name: string): string {
 
 function _escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function _normalizeCursorToolCallId(id: string | undefined): string {
+  if (typeof id !== 'string') return ''
+  const idx = id.indexOf('\nmc_')
+  return idx >= 0 ? id.slice(0, idx) : id
 }

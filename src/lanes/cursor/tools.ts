@@ -234,6 +234,29 @@ const CURSOR_EXTRA_TOOL_REGISTRY: LaneToolRegistration[] = [
 
 const CURSOR_COMPAT_ALIAS_REGISTRY: LaneToolRegistration[] = [
   {
+    nativeName: 'Shell',
+    implId: 'Bash',
+    nativeDescription: 'Execute a shell command in the workspace.',
+    nativeSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to execute.' },
+        cwd: { type: 'string', description: 'Optional working directory override.' },
+        description: { type: 'string', description: 'Brief description for the command.' },
+      },
+      required: ['command'],
+    },
+    adaptInput(native) {
+      const command = native.command
+      const cwd = native.cwd ?? native.dir_path
+      const input: Record<string, unknown> = { command }
+      if (native.description) input.description = native.description
+      if (cwd) input.command = `cd ${JSON.stringify(cwd)} && ${command}`
+      return input
+    },
+    adaptOutput: _stringifyToolOutput,
+  },
+  {
     nativeName: 'list_dir',
     implId: 'Bash',
     nativeDescription: 'List directory contents.',
@@ -370,6 +393,7 @@ const CURSOR_TOOL_ENUMS_BY_NAME: Record<string, readonly number[]> = {
   ripgrep_raw_search: [CT.RIPGREP_RAW_SEARCH],
 
   Bash: [CT.RUN_TERMINAL_COMMAND_V2],
+  Shell: [CT.RUN_TERMINAL_COMMAND_V2],
   PowerShell: [CT.RUN_TERMINAL_COMMAND_V2],
   list_dir: [CT.LIST_DIR, CT.LIST_DIR_V2],
   list_dir_v2: [CT.LIST_DIR_V2],
@@ -408,6 +432,7 @@ const CURSOR_TOOL_ALIAS_BY_NAME: Record<string, string> = {
   Write: 'write',
   Edit: 'search_replace',
   Bash: 'run_terminal_cmd',
+  Shell: 'run_terminal_cmd',
   Glob: 'glob_file_search',
   Grep: 'grep',
   WebSearch: 'web_search',
