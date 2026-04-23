@@ -235,6 +235,10 @@ export function deleteAllProviderCredentials(provider: string): void {
     void import('../providers/providerShim.js')
       .then(({ reloadKiroLaneAuth }) => reloadKiroLaneAuth())
       .catch(() => {})
+  } else if (provider === 'kilocode') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadKiloLaneAuth }) => reloadKiloLaneAuth())
+      .catch(() => {})
   } else if (provider === 'cursor') {
     void import('../providers/providerShim.js')
       .then(({ reloadCursorLaneAuth }) => reloadCursorLaneAuth())

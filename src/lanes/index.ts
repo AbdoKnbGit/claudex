@@ -40,6 +40,7 @@ import { initClaudeLane } from './claude/index.js'
 import { initKiroLane } from './kiro/index.js'
 import { initCursorLane } from './cursor/index.js'
 import { initClineLane } from './cline/index.js'
+import { initKiloLane } from './kilo/index.js'
 
 /**
  * Initialize all lanes with available auth credentials.
@@ -81,6 +82,10 @@ export function initLanes(opts?: {
   // derived apiKey pulled from the userinfo endpoint during OAuth.
   iflowApiKey?: string
   kilocodeApiKey?: string
+  /** Kilo organization id (stored alongside the OAuth token in
+   *  provider-keys.json:kilocode_oauth.meta.orgId). Scopes model
+   *  discovery and attribution headers. */
+  kilocodeOrgId?: string | null
   /** GitHub Copilot internal token (NOT the GH OAuth access token — see
    *  oauth_services.ts::completeCopilotOAuth). */
   copilotApiKey?: string
@@ -143,6 +148,17 @@ export function initLanes(opts?: {
 
   // ── Cline lane (native Cline gateway via OAuth) ──
   initClineLane()
+
+  // ── Kilo lane (native Kilo Gateway via OAuth bearer) ──
+  // Registered before openai-compat so provider-scoped routing for the
+  // `kilocode` provider always hits this native lane instead of the
+  // legacy compat transformer. Catalog is fetched from
+  // api.kilo.ai/api/openrouter/models (subscription-aware) with a
+  // curated static fallback.
+  initKiloLane({
+    accessToken: opts?.kilocodeApiKey,
+    orgId: opts?.kilocodeOrgId ?? null,
+  })
 
   // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama,
   //    OpenRouter, iFlow, KiloCode, Copilot) ──

@@ -32,7 +32,7 @@ import { getOpenAISessionToken } from '../auth/openai_oauth.js'
 import {
   getClineOAuthToken,
   getIFlowApiKey, getIFlowOAuthToken,
-  getKiloCodeOAuthToken,
+  getKiloCodeOAuthToken, getKiloCodeOrgId,
   getCopilotOAuthToken,
   getKiroOAuthToken,
   getValidCursorOAuthToken,
@@ -74,6 +74,7 @@ function _ensureLanesInitialized(): void {
     // pulled from the userinfo endpoint during OAuth, stashed at meta.apiKey).
     const iflowChatKey = getIFlowApiKey() ?? getIFlowOAuthToken() ?? undefined
     const kilocodeToken = getKiloCodeOAuthToken() ?? undefined
+    const kilocodeOrgId = getKiloCodeOrgId() ?? null
     // Copilot's stored token IS the internal Copilot API token (not the GH
     // OAuth token). When it expires, refreshCopilotOAuth re-mints via the
     // stored GH refresh token. The session-cached lane snapshot is stale-
@@ -104,6 +105,7 @@ function _ensureLanesInitialized(): void {
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
+      kilocodeOrgId: kilocodeOrgId,
       copilotApiKey: copilotToken,
       kiroApiKey: kiroToken,
       kiroProfileArn: kiroProfileArn,
@@ -144,9 +146,12 @@ function _laneNameForProvider(provider: APIProvider): string {
     // Copilot is OAI-compat at the wire level (just needs special headers
     // + the internal token from the github→copilot exchange).
     case 'iflow':
-    case 'kilocode':
     case 'copilot':
       return 'openai-compat'
+    // Kilo has its own lane (native Kilo Gateway wire + subscription-
+    // aware catalog). Not compat — matches Kilo CLI behavior.
+    case 'kilocode':
+      return 'kilo'
     // Kiro has its own lane (CodeWhisperer EventStream) — not compat.
     case 'kiro':
       return 'kiro'
@@ -268,11 +273,14 @@ function createProvider(provider: APIProvider): BaseProvider {
         'Cline chat requires the cline lane to be healthy. Run `/login cline` to complete the browser login.',
       )
     case 'iflow':
-    case 'kilocode':
     case 'copilot':
       throw new Error(
         `${provider} chat requires the openai-compat lane to be healthy. ` +
         `Run \`/login\` to authenticate, or check that the OAuth tokens were stored.`,
+      )
+    case 'kilocode':
+      throw new Error(
+        'Kilo chat requires the kilo lane to be healthy. Run `/login kilocode` to authenticate.',
       )
     case 'kiro':
       // Kiro chat routes through the dedicated kiro lane above. We only
@@ -623,6 +631,19 @@ export async function reloadClineLaneAuth(): Promise<void> {
   const { clineLane } = await import('../../../lanes/cline/index.js')
   clineLane.configure({ oauthToken: accessToken })
   clineLane.invalidateModelCache()
+}
+
+/**
+ * Reconfigure the Kilo lane's in-memory auth + orgId hint from disk and
+ * drop its model cache. Called by /login kilocode after writing new
+ * tokens so the session picks them up without a process restart.
+ */
+export async function reloadKiloLaneAuth(): Promise<void> {
+  const accessToken = getKiloCodeOAuthToken() ?? null
+  const orgId = getKiloCodeOrgId() ?? null
+  const { kiloLane } = await import('../../../lanes/kilo/index.js')
+  kiloLane.configure({ accessToken, orgId })
+  kiloLane.invalidateModelCache()
 }
 
 /**

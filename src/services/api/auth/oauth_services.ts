@@ -167,6 +167,11 @@ async function _reloadClineLaneAuth(): Promise<void> {
   await reloadClineLaneAuth()
 }
 
+async function _reloadKiloLaneAuth(): Promise<void> {
+  const { reloadKiloLaneAuth } = await import('../providers/providerShim.js')
+  await reloadKiloLaneAuth()
+}
+
 /** Bind a local http server on the first available port, capture callback params. */
 function _startCallbackServer(
   preferredPort: number,
@@ -291,6 +296,10 @@ export async function startKiloCodeOAuth(): Promise<{
         accessToken: data.token,
         meta: { email: data.userEmail, orgId },
       })
+      // Flip the lane's in-memory auth so the current session picks up
+      // the new bearer without a restart (the Kilo lane caches credentials
+      // at init and on reload).
+      await _reloadKiloLaneAuth()
       return { accessToken: data.token, refreshToken: '' }  // no refresh token
     }
   }

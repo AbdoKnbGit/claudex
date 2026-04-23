@@ -284,6 +284,11 @@ export function clearProviderOAuth(provider: APIProvider): void {
       .then(({ reloadClineLaneAuth }) => reloadClineLaneAuth())
       .catch(() => {})
   }
+  if (provider === 'kilocode') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadKiloLaneAuth }) => reloadKiloLaneAuth())
+      .catch(() => {})
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
