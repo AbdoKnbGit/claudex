@@ -339,6 +339,11 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       .then(() => {
         // Activating OAuth deactivates API key for this provider.
         deleteProviderKey(provider)
+        if (provider === 'cline') {
+          void import('../services/api/providers/providerShim.js')
+            .then(({ reloadClineLaneAuth }) => reloadClineLaneAuth())
+            .catch(() => {})
+        }
         setState({ step: 'success' })
         setTimeout(() => onDone(true), 1000)
       })

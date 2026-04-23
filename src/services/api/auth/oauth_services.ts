@@ -162,6 +162,11 @@ async function _reloadCursorLaneAuth(): Promise<void> {
   await reloadCursorLaneAuth()
 }
 
+async function _reloadClineLaneAuth(): Promise<void> {
+  const { reloadClineLaneAuth } = await import('../providers/providerShim.js')
+  await reloadClineLaneAuth()
+}
+
 /** Bind a local http server on the first available port, capture callback params. */
 function _startCallbackServer(
   preferredPort: number,
@@ -400,6 +405,7 @@ export async function startClineOAuth(): Promise<{
     expiresIn,
     meta: { email },
   })
+  await _reloadClineLaneAuth()
   return { accessToken, refreshToken }
 }
 
@@ -410,8 +416,14 @@ export function getClineOAuthToken(): string | null {
 export async function refreshClineOAuth(refreshToken: string): Promise<string> {
   const res = await fetch(`${CLINE_API_BASE}/api/v1/auth/refresh`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refreshToken }),
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      refreshToken,
+      grantType: 'refresh_token',
+    }),
   })
   if (!res.ok) throw new Error(`Cline refresh failed: ${await res.text()}`)
   const data = await res.json() as {
@@ -433,6 +445,7 @@ export async function refreshClineOAuth(refreshToken: string): Promise<string> {
     refreshToken: newRefresh,
     expiresIn,
   })
+  await _reloadClineLaneAuth()
   return accessToken
 }
 

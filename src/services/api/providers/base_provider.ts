@@ -98,6 +98,7 @@ export interface ModelInfo {
   name: string
   contextWindow?: number
   supportsToolCalling?: boolean
+  tags?: readonly string[]
 }
 
 export abstract class BaseProvider {

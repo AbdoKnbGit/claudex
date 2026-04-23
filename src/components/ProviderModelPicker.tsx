@@ -43,6 +43,8 @@ const TAG_STYLE: Record<ModelTag, { label: string; color: string }> = {
   'no-tools':{ label: 'no tools',  color: 'yellow' },
   thinking:  { label: 'thinking',  color: 'blue' },
   reasoning: { label: 'reasoning', color: 'blue' },
+  recommended: { label: 'RECOMMENDED', color: 'green' },
+  free:      { label: 'FREE',      color: 'green' },
   fast:      { label: 'fast',      color: 'cyan' },
   pulled:    { label: 'ready',     color: 'green' },
   missing:   { label: 'pull',      color: 'yellow' },
@@ -66,10 +68,10 @@ function filterSections(
       ...section,
       models: section.models.filter(model => {
         const variantHaystack = model.variants
-          ?.map(variant => `${variant.id} ${variant.name ?? ''} ${variant.label}`)
+          ?.map(variant => `${variant.id} ${variant.name ?? ''} ${variant.label} ${variant.tags?.join(' ') ?? ''}`)
           .join(' ')
           ?? ''
-        const haystack = `${model.id} ${model.name ?? ''} ${variantHaystack}`.toLowerCase()
+        const haystack = `${model.id} ${model.name ?? ''} ${model.tags?.join(' ') ?? ''} ${variantHaystack}`.toLowerCase()
         return haystack.includes(normalized)
       }),
     }))

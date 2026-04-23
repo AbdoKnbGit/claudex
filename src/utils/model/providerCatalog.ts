@@ -88,9 +88,10 @@ export async function loadProviderModels(
   await resolveProviderAuth(provider)
 
   const models = await getProvider(provider).listModels()
-  if (provider === 'cursor') {
+  if (provider === 'cursor' || provider === 'cline') {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
+    // Cline also returns a curated, provider-owned order.
     return models
   }
   return sortProviderModels(models)
@@ -134,6 +135,8 @@ export type ModelTag =
   | 'no-tools'
   | 'thinking'
   | 'reasoning'
+  | 'recommended'
+  | 'free'
   | 'fast'
   | 'pulled'
   | 'missing'
@@ -164,7 +167,10 @@ export async function loadProviderModelSections(
     const codex: SectionedModelInfo[] = []
     const other: SectionedModelInfo[] = []
     for (const m of models) {
-      const tags: ModelTag[] = modelSupportsReasoning(m.id) ? ['reasoning'] : []
+      const tags = mergeModelTags(
+        pickKnownModelTags(m),
+        modelSupportsReasoning(m.id) ? ['reasoning'] : undefined,
+      )
       const entry: SectionedModelInfo = { ...m, tags: tags.length > 0 ? tags : undefined }
       if (modelSupportsReasoning(m.id)) {
         codex.push(entry)
@@ -186,7 +192,7 @@ export async function loadProviderModelSections(
     {
       id: 'all',
       title: `${getProviderBrowseLabel(provider)} models`,
-      models: models.map(m => ({ ...m })),
+      models: models.map(toProviderSectionedModel),
     },
   ]
 }
@@ -319,7 +325,8 @@ export function filterProviderModels(
   }
 
   return models.filter(model => {
-    const haystack = `${model.id} ${model.name ?? ''}`.toLowerCase()
+    const tags = model.tags?.join(' ') ?? ''
+    const haystack = `${model.id} ${model.name ?? ''} ${tags}`.toLowerCase()
     return haystack.includes(normalized)
   })
 }
@@ -339,4 +346,52 @@ function sortProviderModels(models: readonly ModelInfo[]): ModelInfo[] {
 
     return left.id.localeCompare(right.id)
   })
+}
+
+const KNOWN_MODEL_TAGS = new Set<ModelTag>([
+  'cloud',
+  'local',
+  'tools',
+  'no-tools',
+  'thinking',
+  'reasoning',
+  'recommended',
+  'free',
+  'fast',
+  'pulled',
+  'missing',
+])
+
+function isModelTag(tag: string): tag is ModelTag {
+  return KNOWN_MODEL_TAGS.has(tag as ModelTag)
+}
+
+function pickKnownModelTags(model: Pick<ModelInfo, 'tags'>): ModelTag[] | undefined {
+  if (!model.tags || model.tags.length === 0) {
+    return undefined
+  }
+
+  const tags = Array.from(new Set(model.tags.filter(isModelTag)))
+  return tags.length > 0 ? tags : undefined
+}
+
+function mergeModelTags(
+  ...tagGroups: Array<readonly ModelTag[] | undefined>
+): ModelTag[] {
+  const merged = new Set<ModelTag>()
+  for (const group of tagGroups) {
+    if (!group) continue
+    for (const tag of group) {
+      merged.add(tag)
+    }
+  }
+  return Array.from(merged)
+}
+
+function toProviderSectionedModel(model: ModelInfo): SectionedModelInfo {
+  const tags = pickKnownModelTags(model)
+  return {
+    ...model,
+    ...(tags ? { tags } : {}),
+  }
 }

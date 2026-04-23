@@ -227,6 +227,10 @@ export function deleteAllProviderCredentials(provider: string): void {
     void import('../providers/providerShim.js')
       .then(({ reloadCopilotLaneAuth }) => reloadCopilotLaneAuth())
       .catch(() => {})
+  } else if (provider === 'cline') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadClineLaneAuth }) => reloadClineLaneAuth())
+      .catch(() => {})
   } else if (provider === 'kiro') {
     void import('../providers/providerShim.js')
       .then(({ reloadKiroLaneAuth }) => reloadKiroLaneAuth())

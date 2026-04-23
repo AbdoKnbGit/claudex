@@ -20,6 +20,22 @@ import {
 } from '../../utils/model/providerCatalog.js'
 import { getProviderModelDisplayName } from '../../utils/model/display.js'
 
+function renderSearchBadges(tags?: readonly string[]): string {
+  if (!tags || tags.length === 0) {
+    return ''
+  }
+
+  const badges: string[] = []
+  if (tags.includes('recommended')) {
+    badges.push(chalk.green('[RECOMMENDED]'))
+  }
+  if (tags.includes('free')) {
+    badges.push(chalk.green('[FREE]'))
+  }
+
+  return badges.length > 0 ? ` ${badges.join(' ')}` : ''
+}
+
 function ModelsPickerWrapper({
   onDone,
   lockedProvider,
@@ -105,7 +121,7 @@ async function showSearchResults(
     '',
     ...results.slice(0, 20).map(
       model =>
-        `  ${chalk.cyan(model.id)}${model.name && model.name !== model.id ? ` - ${model.name}` : ''}`,
+        `  ${chalk.cyan(model.id)}${model.name && model.name !== model.id ? ` - ${model.name}` : ''}${renderSearchBadges(model.tags)}`,
     ),
   ]
 

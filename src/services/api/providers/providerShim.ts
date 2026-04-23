@@ -72,7 +72,6 @@ function _ensureLanesInitialized(): void {
     // Phase 4 OAuth providers — the stored OAuth token IS the lane's
     // bearer credential (iFlow is the odd one: chat uses a derived apiKey
     // pulled from the userinfo endpoint during OAuth, stashed at meta.apiKey).
-    const clineToken = getClineOAuthToken() ?? undefined
     const iflowChatKey = getIFlowApiKey() ?? getIFlowOAuthToken() ?? undefined
     const kilocodeToken = getKiloCodeOAuthToken() ?? undefined
     // Copilot's stored token IS the internal Copilot API token (not the GH
@@ -103,7 +102,6 @@ function _ensureLanesInitialized(): void {
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? getProviderBaseUrl('ollama'),
       openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
-      clineApiKey: clineToken,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
       copilotApiKey: copilotToken,
@@ -138,11 +136,13 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'nim':
     case 'ollama':
     case 'openrouter':
+      return 'openai-compat'
+    case 'cline':
+      return 'cline'
     // Phase 4 / Phase 5 OAuth-backed OpenAI-compat providers — share
     // the lane; each gets its own model catalog + base URL branch.
     // Copilot is OAI-compat at the wire level (just needs special headers
     // + the internal token from the github→copilot exchange).
-    case 'cline':
     case 'iflow':
     case 'kilocode':
     case 'copilot':
@@ -264,6 +264,9 @@ function createProvider(provider: APIProvider): BaseProvider {
     // (missing creds or the register step failed) — surface a useful
     // message instead of "Unknown provider".
     case 'cline':
+      throw new Error(
+        'Cline chat requires the cline lane to be healthy. Run `/login cline` to complete the browser login.',
+      )
     case 'iflow':
     case 'kilocode':
     case 'copilot':
@@ -608,6 +611,18 @@ export async function reloadCursorLaneAuth(): Promise<void> {
   const machineId = getCursorMachineId() ?? undefined
   const { cursorLane } = await import('../../../lanes/cursor/index.js')
   cursorLane.configure({ accessToken, machineId })
+}
+
+/**
+ * Refresh the Cline lane's in-memory auth hints and model cache from disk.
+ * The lane also re-reads provider keys dynamically at request time, so this
+ * is mainly about immediate health flips after login/logout.
+ */
+export async function reloadClineLaneAuth(): Promise<void> {
+  const accessToken = getClineOAuthToken() ?? undefined
+  const { clineLane } = await import('../../../lanes/cline/index.js')
+  clineLane.configure({ oauthToken: accessToken })
+  clineLane.invalidateModelCache()
 }
 
 /**

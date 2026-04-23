@@ -279,6 +279,11 @@ export function clearProviderOAuth(provider: APIProvider): void {
   if (provider === 'antigravity') {
     deleteProviderKey('gemini_oauth_antigravity')
   }
+  if (provider === 'cline') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadClineLaneAuth }) => reloadClineLaneAuth())
+      .catch(() => {})
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────

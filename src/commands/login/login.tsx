@@ -174,12 +174,14 @@ function ProviderPickerLogin({
           const isSelected = i === selectedIndex
           const name = PROVIDER_DISPLAY_NAMES[p]
           const isOAuth = p === 'openai' || p === 'gemini'
+          const isOAuthOnly = p === 'cline'
           const isFirstParty = p === 'firstParty'
           const isAntigravity = p === 'antigravity'
           const authType = isFirstParty ? 'OAuth'
             : isAntigravity ? 'Google login'
             : p === 'cursor' ? 'Browser login'
             : p === 'gemini' ? 'Google / API Key'
+            : isOAuthOnly ? 'OAuth'
             : isOAuth ? 'OAuth / API Key'
             : 'API Key'
           const configured = isFirstParty || hasStoredKey(p) || hasStoredKey(`${p}_oauth`)

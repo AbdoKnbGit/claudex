@@ -39,6 +39,7 @@ import { initQwenLane } from './qwen/index.js'
 import { initClaudeLane } from './claude/index.js'
 import { initKiroLane } from './kiro/index.js'
 import { initCursorLane } from './cursor/index.js'
+import { initClineLane } from './cline/index.js'
 
 /**
  * Initialize all lanes with available auth credentials.
@@ -76,10 +77,8 @@ export function initLanes(opts?: {
   openrouterApiKey?: string
   // Qwen (DashScope)
   qwenApiKey?: string
-  // Phase 4 — OAuth-backed compat providers. `apiKey` here is the OAuth
-  // access token (iFlow is special: chat uses a derived apiKey pulled
-  // from the userinfo endpoint, see oauth_services.ts::getIFlowApiKey).
-  clineApiKey?: string
+  // OAuth-backed providers on the shared compat transport. iFlow uses a
+  // derived apiKey pulled from the userinfo endpoint during OAuth.
   iflowApiKey?: string
   kilocodeApiKey?: string
   /** GitHub Copilot internal token (NOT the GH OAuth access token — see
@@ -142,8 +141,11 @@ export function initLanes(opts?: {
     machineId: opts?.cursorMachineId,
   })
 
+  // ── Cline lane (native Cline gateway via OAuth) ──
+  initClineLane()
+
   // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama,
-  //    OpenRouter, Cline, iFlow, KiloCode) ──
+  //    OpenRouter, iFlow, KiloCode, Copilot) ──
   initOpenAICompatLane({
     deepseek: opts?.deepseekApiKey ? { apiKey: opts.deepseekApiKey } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
@@ -151,7 +153,6 @@ export function initLanes(opts?: {
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,
     ollama: opts?.ollamaBaseUrl ? { baseUrl: opts.ollamaBaseUrl } : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
-    cline: opts?.clineApiKey ? { apiKey: opts.clineApiKey } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
     copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,

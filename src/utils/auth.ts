@@ -1912,7 +1912,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'antigravity': return 'https://cloudcode-pa.googleapis.com/v1internal'
     case 'deepseek':    return process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
     case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
-    case 'cline':       return 'https://api.cline.bot/v1'
+    case 'cline':       return process.env.CLINE_BASE_URL ?? 'https://api.cline.bot/v1'
     case 'copilot':     return 'https://api.githubcopilot.com'
     case 'cursor':      return 'https://api2.cursor.sh'
     case 'iflow':       return 'https://apis.iflow.cn/v1'
