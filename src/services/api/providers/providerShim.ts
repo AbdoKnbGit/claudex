@@ -647,6 +647,39 @@ export async function reloadKiloLaneAuth(): Promise<void> {
 }
 
 /**
+ * Reconfigure an API-key-backed provider inside the shared openai-compat
+ * lane. Called after /login writes a new key so DeepSeek/NIM/OpenRouter
+ * become usable immediately in the current process.
+ */
+export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Promise<void> {
+  switch (provider) {
+    case 'deepseek':
+    case 'nim':
+    case 'openrouter':
+    case 'ollama':
+      break
+    default:
+      return
+  }
+
+  const { openaiCompatLane } = await import('../../../lanes/openai-compat/index.js')
+  if (provider === 'ollama') {
+    openaiCompatLane.registerProvider('ollama', '', getProviderBaseUrl('ollama'))
+    openaiCompatLane.setHealthy(true)
+    return
+  }
+
+  const apiKey = getProviderApiKey(provider)
+  if (!apiKey) {
+    openaiCompatLane.unregisterProvider(provider)
+    return
+  }
+
+  openaiCompatLane.registerProvider(provider, apiKey, getProviderBaseUrl(provider))
+  openaiCompatLane.setHealthy(true)
+}
+
+/**
  * Reconfigure the Gemini lane's in-memory API client from whatever is
  * currently on disk. Called by the /login command right after it writes
  * new tokens, so the session picks them up without a restart.

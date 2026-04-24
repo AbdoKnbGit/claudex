@@ -188,6 +188,28 @@ async function _testApiKey(
   }
 }
 
+function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
+  if (provider === 'gemini') {
+    void import('../services/api/providers/providerShim.js')
+      .then(({ reloadGeminiLaneAuth }) => reloadGeminiLaneAuth())
+      .catch(() => {})
+    return
+  }
+
+  if (
+    provider === 'deepseek' ||
+    provider === 'nim' ||
+    provider === 'openrouter' ||
+    provider === 'ollama'
+  ) {
+    void import('../services/api/providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth(provider),
+      )
+      .catch(() => {})
+  }
+}
+
 type Props = {
   provider: APIProvider
   onDone: (success: boolean) => void
@@ -440,6 +462,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       }
       const envVar = meta?.envVar
       if (envVar) process.env[envVar] = key
+      reloadSavedApiKeyInRuntime(provider)
       if (warnings.length > 0) {
         setState({
           step: 'error',
