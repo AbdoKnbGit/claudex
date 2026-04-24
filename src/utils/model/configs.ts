@@ -76,8 +76,8 @@ function isValidTier(t: string): t is ProviderTier {
 //
 // OpenAI (April 2026):
 //   free  → gpt-5.4-mini (cheapest 5.x, tool calling, 128k context)
-//   pro   → gpt-5.4 (flagship March 2026, strong coding + reasoning)
-//   plus  → gpt-5.4-pro (higher compute, hardest problems)
+//   pro   → gpt-5.5 (frontier coding/research model from Codex catalog)
+//   plus  → gpt-5.5 (frontier coding/research model from Codex catalog)
 //   Haiku → gpt-5.4-nano (smallest/fastest/cheapest)
 //
 // Gemini (April 2026):
@@ -119,13 +119,13 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         haiku:  'gpt-5.4-mini',
       },
       pro: {
-        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.4',
-        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.4',
+        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.5',
+        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.5',
         haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-mini',
       },
       plus: {
-        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.4',
-        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.4',
+        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.5',
+        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.5',
         haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-mini',
       },
     },

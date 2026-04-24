@@ -53,6 +53,10 @@ import {
   type CodexReasoningConfig,
   type CodexResponsesRequest,
 } from './api.js'
+import {
+  getOpenAIReasoningLevel,
+  isReasoningLevelExplicit,
+} from '../../utils/model/openaiReasoning.js'
 
 // ─── Lane Implementation ─────────────────────────────────────────
 
@@ -549,8 +553,13 @@ export class CodexLane implements Lane {
 
   async listModels(): Promise<ModelInfo[]> {
     return [
-      { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000, supportsToolCalling: true },
-      { id: 'gpt-5-codex', name: 'GPT-5 Codex', contextWindow: 200000, supportsToolCalling: true },
+      { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 272000, supportsToolCalling: true, tags: ['recommended', 'reasoning'] },
+      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 272000, supportsToolCalling: true, tags: ['fast', 'reasoning'] },
+      { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
+      { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
+      { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000, supportsToolCalling: true, tags: ['reasoning'] },
+      { id: 'gpt-5-codex', name: 'GPT-5 Codex', contextWindow: 200000, supportsToolCalling: true, tags: ['reasoning'] },
       { id: 'o3', name: 'o3', contextWindow: 200000, supportsToolCalling: true },
       { id: 'o4-mini', name: 'o4-mini', contextWindow: 200000, supportsToolCalling: true },
     ]
@@ -561,9 +570,8 @@ export class CodexLane implements Lane {
   }
 
   smallFastModel(): string {
-    // gpt-4o-mini is the cheapest Responses-API-compatible OpenAI
-    // model; used for session titles, tool-use summaries, etc.
-    return 'gpt-4o-mini'
+    // Matches codex-main's current small GPT-5 family model.
+    return 'gpt-5.4-mini'
   }
 
   isHealthy(): boolean {
@@ -581,12 +589,10 @@ export class CodexLane implements Lane {
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-function resolveReasoning(
+export function resolveReasoning(
   thinking: LaneProviderCallParams['thinking'] | undefined,
   model: string,
 ): CodexReasoningConfig | undefined {
-  if (!thinking || thinking.type === 'disabled') return undefined
-
   // Reasoning-capable families. GPT-5 and o-series accept reasoning; most
   // classic gpt-4.x variants don't. Default to 'medium' when we're sure,
   // otherwise omit (some endpoints 400 on unknown reasoning fields).
@@ -594,6 +600,12 @@ function resolveReasoning(
   const reasoningCapable =
     m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-')
   if (!reasoningCapable) return undefined
+
+  if (isReasoningLevelExplicit()) {
+    return { effort: getOpenAIReasoningLevel(), summary: 'auto' }
+  }
+
+  if (!thinking || thinking.type === 'disabled') return undefined
 
   if (thinking.type === 'adaptive') return { effort: 'medium', summary: 'auto' }
   const budget = (thinking as any).budget_tokens as number | undefined
