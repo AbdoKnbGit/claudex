@@ -59,6 +59,12 @@ export type UsageMetric = {
   resetsAt?: string | null
 }
 
+export type UsageLink = {
+  label: string
+  url: string
+  note?: string
+}
+
 export type ProviderUsageReport = {
   provider: ProviderUsageId
   name: string
@@ -69,6 +75,7 @@ export type ProviderUsageReport = {
   detail?: string
   metrics?: UsageMetric[]
   docsUrl?: string
+  links?: UsageLink[]
 }
 
 export type ProviderUsageSnapshot = {
@@ -99,19 +106,13 @@ const REPORTERS: Reporter[] = [
   reportGemini,
   reportAntigravity,
   reportOpenRouter,
-  reportGroq,
-  reportNim,
   reportDeepSeek,
   reportOllama,
   reportCline,
   reportCopilot,
   reportCursor,
-  reportIflow,
   reportKiloCode,
   reportKiro,
-  reportBedrock,
-  reportVertex,
-  reportFoundry,
 ]
 
 async function runReporter(reporter: Reporter): Promise<ProviderUsageReport> {
@@ -330,7 +331,7 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
       'Google Code Assist',
       'Fetched model quota remaining from Antigravity.',
     ),
-    detail: `Account: ${account.email}`,
+    detail: `Account: ${account.email}. Usage is calculated per model from quotaInfo.remainingFraction.`,
     metrics,
   }
 }
@@ -385,32 +386,6 @@ async function reportOpenRouter(): Promise<ProviderUsageReport> {
     }],
     docsUrl: DOCS.openrouter,
   }
-}
-
-async function reportGroq(): Promise<ProviderUsageReport> {
-  const apiKey = getProviderApiKey('groq')
-  return {
-    ...baseReport(
-      'groq',
-      apiKey ? 'unsupported' : 'not_configured',
-      apiKey ? 'api_key' : 'none',
-      'Groq Console',
-      apiKey
-        ? 'Groq exposes spend limits in the Console, but no stable public usage endpoint is wired here.'
-        : 'No Groq API key is configured.',
-    ),
-    detail: apiKey ? 'This row is intentionally not estimated from local tokens.' : undefined,
-  }
-}
-
-async function reportNim(): Promise<ProviderUsageReport> {
-  return baseReport(
-    'nim',
-    'unsupported',
-    getProviderApiKey('nim') ? 'api_key' : 'none',
-    'Not queried',
-    'NVIDIA NIM billing is not queried by design.',
-  )
 }
 
 async function reportDeepSeek(): Promise<ProviderUsageReport> {
@@ -487,15 +462,21 @@ async function reportOllama(): Promise<ProviderUsageReport> {
 
 async function reportCline(): Promise<ProviderUsageReport> {
   const token = getClineOAuthToken()
-  return baseReport(
-    'cline',
-    token ? 'unsupported' : 'not_configured',
-    token ? 'oauth' : 'none',
-    'Cline account',
-    token
-      ? 'Cline OAuth is connected, but no stable official balance endpoint is wired here.'
-      : 'No Cline OAuth token is configured.',
-  )
+  return {
+    ...baseReport(
+      'cline',
+      token ? 'unsupported' : 'not_configured',
+      token ? 'oauth' : 'none',
+      'Cline account',
+      token
+        ? 'Cline OAuth is connected; usage is available in the Cline dashboard.'
+        : 'No Cline OAuth token is configured.',
+    ),
+    links: [{
+      label: 'Cline dashboard',
+      url: 'https://app.cline.bot/dashboard',
+    }],
+  }
 }
 
 async function reportCopilot(): Promise<ProviderUsageReport> {
@@ -524,6 +505,11 @@ async function reportCopilot(): Promise<ProviderUsageReport> {
         : 'For official org metrics, set GITHUB_TOKEN and GITHUB_COPILOT_ORG.',
       metrics,
       docsUrl: DOCS.copilot,
+      links: [{
+        label: 'Premium requests usage',
+        url: 'https://docs.github.com/copilot/managing-copilot/monitoring-usage-and-entitlements/about-premium-requests',
+        note: 'Premium users can see usage and entitlements here.',
+      }],
     }
   }
 
@@ -539,6 +525,11 @@ async function reportCopilot(): Promise<ProviderUsageReport> {
     ),
     detail: 'Set GITHUB_TOKEN and GITHUB_COPILOT_ORG to fetch official Copilot metrics.',
     docsUrl: DOCS.copilot,
+    links: [{
+      label: 'Premium requests usage',
+      url: 'https://docs.github.com/copilot/managing-copilot/monitoring-usage-and-entitlements/about-premium-requests',
+      note: 'Premium users can see usage and entitlements here.',
+    }],
   }
 }
 
@@ -559,6 +550,10 @@ async function reportCursor(): Promise<ProviderUsageReport> {
       ),
       detail: 'Cursor Admin API keys are created by team admins in the Cursor dashboard.',
       docsUrl: DOCS.cursor,
+      links: [{
+        label: 'Cursor usage dashboard',
+        url: 'https://cursor.com/dashboard/usage',
+      }],
     }
   }
 
@@ -586,33 +581,30 @@ async function reportCursor(): Promise<ProviderUsageReport> {
     ),
     metrics: spend.metric ? [spend.metric] : undefined,
     docsUrl: DOCS.cursor,
+    links: [{
+      label: 'Cursor usage dashboard',
+      url: 'https://cursor.com/dashboard/usage',
+    }],
   }
-}
-
-async function reportIflow(): Promise<ProviderUsageReport> {
-  const token = getProviderOAuthToken('iflow')
-  return baseReport(
-    'iflow',
-    token ? 'unsupported' : 'not_configured',
-    token ? 'oauth' : 'none',
-    'iFlow account',
-    token
-      ? 'iFlow is connected, but no official usage endpoint is wired here.'
-      : 'No iFlow OAuth token is configured.',
-  )
 }
 
 async function reportKiloCode(): Promise<ProviderUsageReport> {
   const token = getKiloCodeOAuthToken()
-  return baseReport(
-    'kilocode',
-    token ? 'unsupported' : 'not_configured',
-    token ? 'oauth' : 'none',
-    'KiloCode account',
-    token
-      ? 'KiloCode is connected, but no official usage endpoint is wired here.'
-      : 'No KiloCode OAuth token is configured.',
-  )
+  return {
+    ...baseReport(
+      'kilocode',
+      token ? 'unsupported' : 'not_configured',
+      token ? 'oauth' : 'none',
+      'KiloCode account',
+      token
+        ? 'KiloCode is connected; usage is available in the Kilo dashboard.'
+        : 'No KiloCode OAuth token is configured.',
+    ),
+    links: [{
+      label: 'Kilo usage dashboard',
+      url: 'https://app.kilo.ai/usage',
+    }],
+  }
 }
 
 async function reportKiro(): Promise<ProviderUsageReport> {
@@ -649,36 +641,6 @@ async function reportKiro(): Promise<ProviderUsageReport> {
     ),
     metrics,
   }
-}
-
-async function reportBedrock(): Promise<ProviderUsageReport> {
-  return baseReport(
-    'bedrock',
-    'unsupported',
-    'none',
-    'AWS billing',
-    'Bedrock usage is reported through AWS Billing/Cost Explorer, not Claudex provider credentials.',
-  )
-}
-
-async function reportVertex(): Promise<ProviderUsageReport> {
-  return baseReport(
-    'vertex',
-    'unsupported',
-    'none',
-    'Google Cloud Billing',
-    'Vertex usage is reported through Google Cloud Billing, not Claudex provider credentials.',
-  )
-}
-
-async function reportFoundry(): Promise<ProviderUsageReport> {
-  return baseReport(
-    'foundry',
-    'unsupported',
-    'none',
-    'Azure Cost Management',
-    'Foundry usage is reported through Azure Cost Management, not Claudex provider credentials.',
-  )
 }
 
 function baseReport(
@@ -844,34 +806,25 @@ function parseAntigravityUsage(data: unknown): UsageMetric[] {
   const models = asRecord(root?.models)
   if (!models) return []
 
-  const wanted = new Set([
-    'claude-opus-4-6-thinking',
-    'claude-sonnet-4-6',
-    'gemini-3.1-pro-high',
-    'gemini-3.1-pro-low',
-    'gemini-3-flash',
-    'gpt-oss-120b-medium',
-  ])
-
   return Object.entries(models)
     .map(([modelKey, value]) => {
       const info = asRecord(value)
       if (!info || info.isInternal === true) return null
-      if (!wanted.has(modelKey)) return null
       const quota = asRecord(info.quotaInfo)
       if (!quota) return null
       const remaining = readNumber(quota.remainingFraction)
-      if (remaining === null) return null
+      if (remaining === null || remaining < 0 || remaining > 1) return null
       const display = readString(info.displayName) ?? modelKey
+      const reset = validFutureIso(readString(quota.resetTime))
       return {
         label: display,
         usedPercent: clampPercent((1 - remaining) * 100),
         summary: `${Math.round(clampPercent(remaining * 100))}% remaining`,
-        resetsAt: readString(quota.resetTime) ?? epochSecondsToIso(quota.resetAt),
+        resetsAt: reset ?? epochSecondsToIso(quota.resetAt),
       } satisfies UsageMetric
     })
     .filter((metric): metric is UsageMetric => metric !== null)
-    .slice(0, 6)
+    .sort((a, b) => a.label.localeCompare(b.label))
 }
 
 function parseOpenRouterCredits(data: unknown): { total: number; used: number; remaining: number } | null {
@@ -1204,6 +1157,13 @@ function epochSecondsToIso(value: unknown): string | null {
   if (seconds === null || seconds <= 0) return null
   const ms = seconds > 10_000_000_000 ? seconds : seconds * 1000
   return new Date(ms).toISOString()
+}
+
+function validFutureIso(value: string | null): string | null {
+  if (!value) return null
+  const time = new Date(value).getTime()
+  if (!Number.isFinite(time) || time <= Date.now()) return null
+  return new Date(time).toISOString()
 }
 
 function epochMsToIso(value: unknown): string | null {

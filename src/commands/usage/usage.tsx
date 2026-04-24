@@ -5,7 +5,7 @@ import { Byline } from '../../components/design-system/Byline.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { ProgressBar } from '../../components/design-system/ProgressBar.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
-import { Box, Text, useInput } from '../../ink.js'
+import { Box, Link, Text, useInput } from '../../ink.js'
 import {
   fetchAllProviderUsage,
   type ProviderUsageReport,
@@ -121,6 +121,12 @@ function UsageReportRow({
             metric={metric}
             barWidth={barWidth}
           />
+        ))}
+        {report.links?.map((link) => (
+          <Text key={link.url} dimColor>
+            {link.label}: <Link url={link.url}>{link.url}</Link>
+            {link.note ? ` - ${link.note}` : ''}
+          </Text>
         ))}
       </Box>
     </Box>
