@@ -19,7 +19,6 @@ import {
 import {
   getClaudeAIOAuthTokens,
   getProviderApiKey,
-  getProviderOAuthToken,
   getSubscriptionType,
 } from '../../utils/auth.js'
 import {
@@ -113,7 +112,6 @@ export async function fetchAllProviderUsage(): Promise<ProviderUsageSnapshot> {
 const REPORTERS: Reporter[] = [
   reportAnthropic,
   reportOpenAI,
-  reportGemini,
   reportAntigravity,
   reportOpenRouter,
   reportDeepSeek,
@@ -275,23 +273,6 @@ async function reportOpenAI(): Promise<ProviderUsageReport> {
     detail: details.join(' '),
     metrics,
     docsUrl: DOCS.openai,
-  }
-}
-
-async function reportGemini(): Promise<ProviderUsageReport> {
-  const oauth = getProviderOAuthToken('gemini')
-  const apiKey = getProviderApiKey('gemini')
-  return {
-    ...baseReport(
-      'gemini',
-      oauth || apiKey ? 'connected' : 'not_configured',
-      oauth ? 'oauth' : apiKey ? 'api_key' : 'none',
-      'Google Cloud billing',
-      oauth || apiKey
-        ? 'Gemini is connected; Google exposes billing and quota through Cloud Console APIs, not this model API key.'
-        : 'Connect Gemini first.',
-    ),
-    detail: 'No fake percentage is shown because the configured Gemini credential does not expose account spend directly.',
   }
 }
 

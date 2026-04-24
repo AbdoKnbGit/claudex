@@ -249,8 +249,6 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       : isKiro
         ? [
             { method: 'oauth_kiro_builder', label: 'AWS Builder ID' },
-            { method: 'oauth_kiro_google', label: 'Google OAuth' },
-            { method: 'oauth_kiro_github', label: 'GitHub OAuth' },
           ]
       : oauthOnly
         ? [{ method: 'oauth', label: isCursor ? 'Cursor browser login' : 'OAuth (Browser Login)' }]
