@@ -1,6 +1,7 @@
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import { resolveProviderAuth } from '../../services/api/auth/provider_auth.js'
 import { getProvider } from '../../services/api/providers/providerShim.js'
+import type { EffortLevel } from '../effort.js'
 import { validateProviderAuth } from '../auth.js'
 import {
   getOllamaCatalog,
@@ -20,28 +21,42 @@ import {
   type CursorVariantTag,
 } from '../../lanes/cursor/catalog.js'
 
-export type BrowsableModelProvider = Exclude<APIProvider, 'firstParty'>
+export type BrowsableModelProvider = APIProvider
 
 export const BROWSABLE_MODEL_PROVIDERS: readonly BrowsableModelProvider[] =
-  SELECTABLE_PROVIDERS.filter(
-    (provider): provider is BrowsableModelProvider =>
-      provider !== 'firstParty',
-  )
+  SELECTABLE_PROVIDERS
 
 export function getDefaultBrowsableProvider(
   preferredProvider: APIProvider,
 ): BrowsableModelProvider {
-  if (
-    preferredProvider !== 'firstParty' &&
-    BROWSABLE_MODEL_PROVIDERS.includes(preferredProvider)
-  ) {
+  if (BROWSABLE_MODEL_PROVIDERS.includes(preferredProvider)) {
     return preferredProvider
   }
 
   return (
     BROWSABLE_MODEL_PROVIDERS.find(provider =>
       validateProviderAuth(provider).valid,
-    ) ?? 'openai'
+    ) ?? 'firstParty'
+  )
+}
+
+function normalizeProviderQueryToken(
+  token: string,
+): BrowsableModelProvider | null {
+  const normalized = token.trim().toLowerCase()
+  const alias: Record<string, BrowsableModelProvider> = {
+    anthropic: 'firstParty',
+    claude: 'firstParty',
+    firstparty: 'firstParty',
+    'first-party': 'firstParty',
+  }
+  if (alias[normalized]) {
+    return alias[normalized]
+  }
+  return (
+    BROWSABLE_MODEL_PROVIDERS.find(
+      provider => provider.toLowerCase() === normalized,
+    ) ?? null
   )
 }
 
@@ -56,11 +71,10 @@ export function parseProviderModelQuery(
 
   const colonIndex = args.indexOf(':')
   if (colonIndex > 0) {
-    const providerCandidate = args
-      .slice(0, colonIndex)
-      .trim()
-      .toLowerCase() as BrowsableModelProvider
-    if (BROWSABLE_MODEL_PROVIDERS.includes(providerCandidate)) {
+    const providerCandidate = normalizeProviderQueryToken(
+      args.slice(0, colonIndex),
+    )
+    if (providerCandidate) {
       return {
         provider: providerCandidate,
         query: args.slice(colonIndex + 1).trim(),
@@ -69,10 +83,10 @@ export function parseProviderModelQuery(
   }
 
   const [firstToken, ...rest] = args.split(/\s+/)
-  const providerCandidate = firstToken?.toLowerCase() as
-    | BrowsableModelProvider
-    | undefined
-  if (providerCandidate && BROWSABLE_MODEL_PROVIDERS.includes(providerCandidate)) {
+  const providerCandidate = firstToken
+    ? normalizeProviderQueryToken(firstToken)
+    : null
+  if (providerCandidate) {
     return {
       provider: providerCandidate,
       query: rest.join(' ').trim(),
@@ -85,6 +99,14 @@ export function parseProviderModelQuery(
 export async function loadProviderModels(
   provider: BrowsableModelProvider,
 ): Promise<ModelInfo[]> {
+  if (provider === 'firstParty') {
+    return ANTHROPIC_MODELS.map(model => ({
+      id: model.id,
+      name: model.name,
+      tags: model.tags,
+    }))
+  }
+
   await resolveProviderAuth(provider)
 
   const models = await getProvider(provider).listModels()
@@ -141,6 +163,94 @@ export type ModelTag =
   | 'pulled'
   | 'missing'
 
+type AnthropicModelInfo = {
+  id: string
+  name: string
+  tags: readonly ModelTag[]
+  effortLevels?: readonly EffortLevel[]
+  defaultEffort?: EffortLevel
+}
+
+const ANTHROPIC_EFFORT_SEPARATOR = '::effort='
+const ANTHROPIC_STANDARD_EFFORTS = [
+  'low',
+  'medium',
+  'high',
+  'max',
+] as const satisfies readonly EffortLevel[]
+const ANTHROPIC_OPUS_EFFORTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const satisfies readonly EffortLevel[]
+
+const ANTHROPIC_MODELS: readonly AnthropicModelInfo[] = [
+  {
+    id: 'claude-opus-4-7',
+    name: 'Claude Opus 4.7',
+    tags: ['recommended', 'reasoning'],
+    effortLevels: ANTHROPIC_OPUS_EFFORTS,
+    defaultEffort: 'medium',
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6',
+    tags: ['reasoning'],
+    effortLevels: ANTHROPIC_STANDARD_EFFORTS,
+    defaultEffort: 'high',
+  },
+  {
+    id: 'claude-haiku-4-5',
+    name: 'Claude Haiku 4.5',
+    tags: ['fast'],
+  },
+]
+
+export type ProviderModelSelection = {
+  modelId: string
+  effort?: EffortLevel
+}
+
+function encodeAnthropicEffortVariant(
+  modelId: string,
+  effort: EffortLevel,
+): string {
+  return `${modelId}${ANTHROPIC_EFFORT_SEPARATOR}${effort}`
+}
+
+function isAnthropicEffortLevel(value: string): value is EffortLevel {
+  return (ANTHROPIC_OPUS_EFFORTS as readonly string[]).includes(value)
+}
+
+export function resolveProviderModelSelection(
+  provider: BrowsableModelProvider,
+  selectedModelId: string,
+): ProviderModelSelection {
+  if (provider !== 'firstParty') {
+    return { modelId: selectedModelId }
+  }
+
+  const markerIndex = selectedModelId.lastIndexOf(ANTHROPIC_EFFORT_SEPARATOR)
+  if (markerIndex < 0) {
+    return { modelId: selectedModelId }
+  }
+
+  const modelId = selectedModelId.slice(0, markerIndex)
+  const effort = selectedModelId.slice(
+    markerIndex + ANTHROPIC_EFFORT_SEPARATOR.length,
+  )
+  if (!modelId || !isAnthropicEffortLevel(effort)) {
+    return { modelId: selectedModelId }
+  }
+  const model = ANTHROPIC_MODELS.find(candidate => candidate.id === modelId)
+  if (!model?.effortLevels?.includes(effort)) {
+    return { modelId }
+  }
+  return { modelId, effort }
+}
+
 /**
  * Load a provider's models split into sections. For Ollama this means
  * {Cloud, Local, No-tool-support}. For every other provider it's a single
@@ -150,6 +260,10 @@ export type ModelTag =
 export async function loadProviderModelSections(
   provider: BrowsableModelProvider,
 ): Promise<ProviderModelSection[]> {
+  if (provider === 'firstParty') {
+    return buildAnthropicSections()
+  }
+
   if (provider === 'ollama') {
     const catalog = await getOllamaCatalog()
     return buildOllamaSections(catalog)
@@ -211,6 +325,42 @@ const CURSOR_SECTION_TITLES: Record<CursorModelSection, string> = {
   anthropic: 'Claude',
   openai: 'OpenAI / Codex',
   other: 'Others',
+}
+
+function buildAnthropicSections(): ProviderModelSection[] {
+  return [
+    {
+      id: 'claude',
+      title: 'Claude models  <- -> effort',
+      models: ANTHROPIC_MODELS.map(toAnthropicSectionedModel),
+    },
+  ]
+}
+
+function toAnthropicSectionedModel(model: AnthropicModelInfo): SectionedModelInfo {
+  const base: SectionedModelInfo = {
+    id: model.id,
+    name: model.name,
+    tags: model.tags,
+  }
+
+  if (!model.effortLevels || !model.defaultEffort) {
+    return base
+  }
+
+  return {
+    ...base,
+    defaultVariantId: encodeAnthropicEffortVariant(
+      model.id,
+      model.defaultEffort,
+    ),
+    variants: model.effortLevels.map(effort => ({
+      id: encodeAnthropicEffortVariant(model.id, effort),
+      name: `${model.name} (${effort} effort)`,
+      label: `${effort} effort`,
+      tags: ['reasoning'] as const,
+    })),
+  }
 }
 
 function buildCursorSections(): ProviderModelSection[] {

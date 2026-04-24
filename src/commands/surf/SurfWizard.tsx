@@ -28,7 +28,10 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type APIProvider,
 } from '../../utils/model/providers.js'
-import { modelSupportsEffort } from '../../utils/effort.js'
+import {
+  modelSupportsEffort,
+  modelSupportsXHighEffort,
+} from '../../utils/effort.js'
 import {
   modelSupportsReasoning,
   type OpenAIReasoningLevel,
@@ -65,7 +68,14 @@ const PHASE_DESCRIPTION: Record<SurfPhase, string> = {
 
 /** Ordered effort levels for each effort-aware provider family.
  *  null sentinel = "skip / use model default". */
-const ANTHROPIC_EFFORTS = ['low', 'medium', 'high', 'max'] as const
+const ANTHROPIC_STANDARD_EFFORTS = ['low', 'medium', 'high', 'max'] as const
+const ANTHROPIC_OPUS_EFFORTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
 const OPENAI_REASONING_EFFORTS: readonly OpenAIReasoningLevel[] = [
   'low',
   'medium',
@@ -96,7 +106,9 @@ function effortOptionsFor(
   // Anthropic low/medium/high/max — modelSupportsEffort already gates on
   // provider + model combo, so we reuse it here.
   if (provider === 'firstParty' && modelSupportsEffort(model)) {
-    return ANTHROPIC_EFFORTS
+    return modelSupportsXHighEffort(model)
+      ? ANTHROPIC_OPUS_EFFORTS
+      : ANTHROPIC_STANDARD_EFFORTS
   }
   // Other providers (Ollama, Gemini, Qwen, Codex-via-OpenAI-without-reasoning)
   // — no user-selectable effort in the surf wizard. Model default is used.

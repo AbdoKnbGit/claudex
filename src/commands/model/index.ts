@@ -6,6 +6,9 @@ import { isSurfEnabled } from '../../utils/surf/state.js'
 export default {
   type: 'local-jsx',
   name: 'model',
+  // Hidden from the slash-menu — /models is the user-facing command.
+  // /model stays wired up so existing "/model <name>" invocations still work.
+  isHidden: true,
   get description() {
     if (isSurfEnabled()) {
       return 'Disabled while /surf is on — router picks the model per phase'

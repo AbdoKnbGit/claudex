@@ -218,7 +218,7 @@ function SetModelAndClose({
 
       if (model && isOpus1mUnavailable(model)) {
         onDone(
-          'Opus 4.6 with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m',
+          'Opus 4.7 with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m',
           {
             display: 'system',
           },
@@ -336,7 +336,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
 
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone(
-      'Run /model to open the model selection menu, or /model [modelName] to set the model. On third-party providers, /model uses the current provider catalog.',
+      'Run /models to open the provider-aware model selection menu.',
       {
         display: 'system',
       },

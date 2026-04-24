@@ -299,7 +299,7 @@ export function logAPIPrefix(systemPrompt: SystemPrompt): void {
  *
  * Behavior depends on feature flags and options:
  *
- * 1. MCP tools present (skipGlobalCacheForSystemPrompt=true):
+ * 1. Rendered tools present (skipGlobalCacheForSystemPrompt=true):
  *    Returns up to 3 blocks with org-level caching (no global cache on system prompt):
  *    - Attribution header (cacheScope=null)
  *    - System prompt prefix (cacheScope='org')

@@ -16,9 +16,8 @@
  *   - OAuth flow is one step: browser opens, user picks account, done.
  *   - API Key flow: prompt → paste → validate → done.
  *
- * This command does NOT flip the "active provider" for routing — that's
- * owned by /model and surf. /provider is purely about which credentials
- * are connected.
+ * This command generally manages credentials. The Anthropic login path also
+ * switches routing to firstParty after a successful login.
  */
 
 import * as React from 'react'
@@ -29,6 +28,7 @@ import type { CommandResultDisplay } from '../../commands.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import {
   PROVIDER_DISPLAY_NAMES,
+  setActiveProvider,
   type APIProvider,
 } from '../../utils/model/providers.js'
 import {
@@ -39,14 +39,22 @@ import {
   saveProviderKey,
 } from '../../services/api/auth/api_key_manager.js'
 import TextInput from '../../components/TextInput.js'
+import {
+  getClaudeAIOAuthTokens,
+  hasAnthropicApiKeyAuth,
+} from '../../utils/auth.js'
+import { performLogout } from '../logout/logout.js'
+import { Login as AnthropicLogin } from '../login/login.js'
 
 // ─── Config ──────────────────────────────────────────────────────
 
 /**
  * Providers the user can connect via /provider.
  *
+ * Anthropic (firstParty) delegates to /login so the OAuth choices stay
+ * Claude Code-compatible.
+ *
  * Excluded on purpose:
- *   - firstParty (Anthropic)  → handled by /login
  *   - bedrock/vertex/foundry  → env/IAM-based, no credentials to manage here
  *
  * Ollama is a special case: no OAuth, no API key — the "credential" is
@@ -57,11 +65,15 @@ import TextInput from '../../components/TextInput.js'
  * OpenAI OAuth — not listed as separate rows.
  */
 // `groq` is intentionally hidden — the free / on-demand TPM budget is
-// too tight for claudex's tool suite. Restoring it = add `'groq'` back
-// here + in SELECTABLE_PROVIDERS + flip GROQ_ENABLED in
-// src/lanes/openai-compat/index.ts. No code was removed; the transformer,
-// auth flow, and env detection (CLAUDE_CODE_USE_GROQ) stay wired.
+// too tight for claudex's tool suite. `iflow` is hidden from user-facing
+// provider management after the iFlow CLI shutdown announcement on
+// April 17, 2026. No provider code was removed; auth and routing stay wired.
 const MANAGEABLE_PROVIDERS = [
+  // Anthropic surfaces here alongside the third-party providers. The
+  // configure view hands Anthropic off to the shared /login OAuth flow
+  // (subscription / console / 3rd-party platform) instead of a deactivate
+  // prompt, so the credentials path stays Claude Code-compatible.
+  'firstParty',
   'openai',
   'gemini',
   'antigravity',
@@ -72,7 +84,6 @@ const MANAGEABLE_PROVIDERS = [
   // Phase 4 (v0.4.0) — 3 full-chat + 3 login-only stubs.
   'kilocode',
   'cline',
-  'iflow',
   'copilot',
   'kiro',
   'cursor',
@@ -84,11 +95,21 @@ type ManageableProvider = (typeof MANAGEABLE_PROVIDERS)[number]
 const OLLAMA_BASE_URL_KEY = 'ollama_base_url'
 const OLLAMA_DEFAULT_BASE = 'http://localhost:11434'
 
-type KeyedProvider = Exclude<ManageableProvider, 'ollama'>
+type KeyedProvider = Exclude<ManageableProvider, 'ollama' | 'firstParty'>
 
 // ─── Auth state helpers ──────────────────────────────────────────
 
 type AuthState = 'oauth' | 'api_key' | 'inactive'
+
+function getFirstPartyAuthState(): AuthState {
+  if (getClaudeAIOAuthTokens()?.accessToken) return 'oauth'
+  if (hasAnthropicApiKeyAuth()) return 'api_key'
+  return 'inactive'
+}
+
+function hasFirstPartyAuth(): boolean {
+  return getFirstPartyAuthState() !== 'inactive'
+}
 
 function getAuthState(provider: KeyedProvider): AuthState {
   // Gemini row = CLI-tier OAuth (free flash/lite) or AI Studio API key.
@@ -185,6 +206,7 @@ type View =
       kind: 'ollama_url_input'
       error?: string
     }
+  | { kind: 'anthropic_login' }
   | {
       kind: 'result'
       provider: ManageableProvider
@@ -193,6 +215,7 @@ type View =
     }
 
 type ConfigureOption =
+  | { kind: 'login' }
   | { kind: 'deactivate' }
   | { kind: 'set_ollama_url' }
   | { kind: 'reset_ollama_url' }
@@ -213,6 +236,17 @@ function buildConfigureOptions(
     }
     options.push({ kind: 'back' })
     void ollamaStatus
+    return options
+  }
+
+  // Anthropic (firstParty): hand off to the shared /login OAuth flow.
+  if (provider === 'firstParty') {
+    const options: ConfigureOption[] = []
+    options.push({ kind: 'login' })
+    if (hasFirstPartyAuth()) {
+      options.push({ kind: 'deactivate' })
+    }
+    options.push({ kind: 'back' })
     return options
   }
 
@@ -237,9 +271,13 @@ function buildConfigureOptions(
 
 function labelConfigureOption(
   option: ConfigureOption,
-  _provider: ManageableProvider,
+  provider: ManageableProvider,
 ): string {
   switch (option.kind) {
+    case 'login':
+      return provider === 'firstParty'
+        ? 'Log in with Anthropic (subscription / Console API / platform)'
+        : 'Log in'
     case 'deactivate':
       return 'Deactivate (clear all credentials)'
     case 'set_ollama_url':
@@ -323,6 +361,36 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
       provider,
       tone: 'success',
       message: `${PROVIDER_DISPLAY_NAMES[provider]} disconnected.`,
+    })
+  }
+
+  // ─── Anthropic (firstParty) handlers ──────────────────────────
+
+  function handleAnthropicLoginDone(success: boolean) {
+    if (success) {
+      setActiveProvider('firstParty')
+      refresh()
+      setView({
+        kind: 'result',
+        provider: 'firstParty',
+        tone: 'success',
+        message: `${PROVIDER_DISPLAY_NAMES.firstParty} connected.`,
+      })
+      return
+    }
+    // Cancelled: return to the Anthropic configure screen.
+    setView({ kind: 'configure', provider: 'firstParty', selectedIndex: 0 })
+  }
+
+  function handleAnthropicDeactivate() {
+    void performLogout({ provider: 'firstParty' }).finally(() => {
+      refresh()
+      setView({
+        kind: 'result',
+        provider: 'firstParty',
+        tone: 'success',
+        message: `${PROVIDER_DISPLAY_NAMES.firstParty} disconnected.`,
+      })
     })
   }
 
@@ -469,7 +537,17 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
         const chosen = options[view.selectedIndex]
         if (!chosen) return
         switch (chosen.kind) {
+          case 'login':
+            // Only firstParty uses this option today.
+            if (view.provider === 'firstParty') {
+              setView({ kind: 'anthropic_login' })
+            }
+            return
           case 'deactivate':
+            if (view.provider === 'firstParty') {
+              handleAnthropicDeactivate()
+              return
+            }
             if (view.provider !== 'ollama') handleDeactivate(view.provider)
             return
           case 'set_ollama_url':
@@ -526,7 +604,9 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
                 ? formatOllamaBadge(ollamaStatus)
                 : provider === 'gemini'
                   ? formatGeminiBadge()
-                  : formatBadge(getAuthState(provider))
+                  : provider === 'firstParty'
+                    ? formatBadge(getFirstPartyAuthState())
+                    : formatBadge(getAuthState(provider))
             return (
               <Box key={provider}>
                 <Text
@@ -559,7 +639,9 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
         ? formatOllamaBadge(ollamaStatus)
         : provider === 'gemini'
           ? formatGeminiBadge()
-          : formatBadge(getAuthState(provider))
+          : provider === 'firstParty'
+            ? formatBadge(getFirstPartyAuthState())
+            : formatBadge(getAuthState(provider))
     const currentUrl = provider === 'ollama' ? getOllamaBaseUrl() : null
     return (
       <Box flexDirection="column" paddingLeft={1}>
@@ -632,6 +714,10 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
         </Box>
       </Box>
     )
+  }
+
+  if (view.kind === 'anthropic_login') {
+    return <AnthropicLogin onDone={handleAnthropicLoginDone} />
   }
 
   if (view.kind === 'result') {

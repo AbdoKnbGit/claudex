@@ -1,7 +1,11 @@
 import * as React from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
-import { validateProviderAuth } from '../utils/auth.js'
+import {
+  getClaudeAIOAuthTokens,
+  hasAnthropicApiKeyAuth,
+  validateProviderAuth,
+} from '../utils/auth.js'
 import {
   BROWSABLE_MODEL_PROVIDERS,
   getProviderBrowseLabel,
@@ -54,6 +58,18 @@ const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string
   cloud: 'magenta',
   local: 'cyan',
   toolless: 'yellow',
+}
+
+function getProviderStatusLabel(provider: BrowsableModelProvider): string {
+  if (provider === 'firstParty') {
+    return getClaudeAIOAuthTokens()?.accessToken || hasAnthropicApiKeyAuth()
+      ? 'configured'
+      : 'optional login'
+  }
+
+  const authStatus = validateProviderAuth(provider)
+  if (authStatus.valid) return 'configured'
+  return provider === 'ollama' ? 'local' : 'login required'
 }
 
 function filterSections(
@@ -402,19 +418,14 @@ export function ProviderModelPicker({
         </Box>
 
         <Text dimColor>
-          Pick a provider first. The browser will fetch that provider's live
-          model list.
+          Pick a provider first. The browser will load that provider's model
+          list.
         </Text>
 
         <Box marginTop={1} flexDirection="column">
           {BROWSABLE_MODEL_PROVIDERS.map((provider, index) => {
             const isSelected = index === selectedProviderIndex
-            const authStatus = validateProviderAuth(provider)
-            const status = authStatus.valid
-              ? 'configured'
-              : provider === 'ollama'
-                ? 'local'
-                : 'login required'
+            const status = getProviderStatusLabel(provider)
 
             return (
               <Box key={provider}>
@@ -479,7 +490,7 @@ export function ProviderModelPicker({
         <Box marginTop={1} flexDirection="column">
           <Text color="error">{loadError}</Text>
           <Text dimColor>
-            Run /login if this provider is not configured yet, then try again.
+            Run /provider if this provider is not configured yet, or /login for Anthropic.
           </Text>
         </Box>
       )}

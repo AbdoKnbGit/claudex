@@ -315,7 +315,7 @@ export class ClineLane implements Lane {
     return uniqueModels
       .slice(0, CLINE_MODEL_LIST_LIMIT)
       .map((model) => {
-        const tags = getClineModelTags(model.id, normalizedRecommended, normalizedFree)
+        const tags = getClineModelTags(model.id, normalizedFree)
         return tags ? { ...model, tags } : model
       })
   }
@@ -721,27 +721,20 @@ function scoreClineModel(
 
 function getClineModelTags(
   modelId: string,
-  recommendedIds: Set<string>,
   freeIds: Set<string>,
 ): string[] | undefined {
   const normalizedId = normalizeClineModelId(modelId)
-  const tags: string[] = []
-
   if (
-    recommendedIds.has(normalizedId)
-    || CLINE_FALLBACK_RECOMMENDED_MODEL_IDS.has(normalizedId)
+    normalizedId === normalizeClineModelId('moonshotai/kimi-k2.6')
+    && (
+      freeIds.has(normalizedId)
+      || CLINE_FALLBACK_FREE_MODEL_IDS.has(normalizedId)
+    )
   ) {
-    tags.push('recommended')
+    return ['free']
   }
 
-  if (
-    freeIds.has(normalizedId)
-    || CLINE_FALLBACK_FREE_MODEL_IDS.has(normalizedId)
-  ) {
-    tags.push('free')
-  }
-
-  return tags.length > 0 ? tags : undefined
+  return undefined
 }
 
 function clineModelSupportsReasoning(model: string): boolean {

@@ -1208,11 +1208,12 @@ async function* queryModel(
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
     useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
-  // MCP tools are per-user → dynamic tool section → can't globally cache.
-  // Only gate when an MCP tool will actually render (not defer_loading).
+  // Tool definitions render before system blocks. If any tool is emitted, a
+  // globally scoped system block is no longer a true prefix and the Anthropic
+  // API rejects it unless every preceding tool block is also global-scoped.
   const needsToolBasedCacheMarker =
     useGlobalCacheFeature &&
-    filteredTools.some(t => t.isMcp === true && !willDefer(t))
+    filteredTools.some(t => !willDefer(t))
 
   // Ensure prompt_caching_scope beta header is present when global cache is enabled.
   if (

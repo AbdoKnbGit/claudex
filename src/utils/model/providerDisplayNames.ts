@@ -6,8 +6,27 @@ export function getProviderModelDisplayName(
   modelId: string,
 ): string | null {
   switch (provider) {
+    case 'firstParty':
+      return getAnthropicModelDisplayName(modelId)
     case 'cursor':
       return getCursorModelDisplayName(modelId)
+    default:
+      return null
+  }
+}
+
+function getAnthropicModelDisplayName(modelId: string): string | null {
+  const baseModelId = modelId.split('::effort=')[0]?.toLowerCase()
+  switch (baseModelId) {
+    case 'claude-opus-4-7':
+      return 'Claude Opus 4.7'
+    case 'claude-opus-4-6':
+      return 'Claude Opus 4.6'
+    case 'claude-sonnet-4-6':
+      return 'Claude Sonnet 4.6'
+    case 'claude-haiku-4-5':
+    case 'claude-haiku-4-5-20251001':
+      return 'Claude Haiku 4.5'
     default:
       return null
   }

@@ -93,6 +93,10 @@ function getCustomSonnetOption(): ModelOption | undefined {
 
 // @[MODEL LAUNCH]: Update or add model option functions (getSonnetXXOption, getOpusXXOption, etc.)
 // with the new model's label and description. These appear in the /model picker.
+function getOpusMarketingName(): string {
+  return getAPIProvider() === 'firstParty' ? 'Opus 4.7' : 'Opus 4.6'
+}
+
 function getSonnet46Option(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
@@ -132,11 +136,12 @@ function getOpus41Option(): ModelOption {
 
 function getOpus46Option(fastMode = false): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
+  const opusName = getOpusMarketingName()
   return {
     value: is3P ? getModelStrings().opus46 : 'opus',
     label: 'Opus',
-    description: `Opus 4.6 · Most capable for complex work${getOpus46PricingSuffix(fastMode)}`,
-    descriptionForModel: 'Opus 4.6 - most capable for complex work',
+    description: `${opusName} · Most capable for complex work${getOpus46PricingSuffix(fastMode)}`,
+    descriptionForModel: `${opusName} - most capable for complex work`,
   }
 }
 
@@ -153,12 +158,13 @@ export function getSonnet46_1MOption(): ModelOption {
 
 export function getOpus46_1MOption(fastMode = false): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
+  const opusName = getOpusMarketingName()
   return {
     value: is3P ? getModelStrings().opus46 + '[1m]' : 'opus[1m]',
-    label: 'Opus (1M context)',
-    description: `Opus 4.6 for long sessions${getOpus46PricingSuffix(fastMode)}`,
+    label: is3P ? 'Opus (1M context)' : 'Opus 4.7 (1M context)',
+    description: `${opusName} for long sessions${getOpus46PricingSuffix(fastMode)}`,
     descriptionForModel:
-      'Opus 4.6 with 1M context window - for long sessions with large codebases',
+      `${opusName} with 1M context window - for long sessions with large codebases`,
   }
 }
 
@@ -209,10 +215,11 @@ function getHaikuOption(): ModelOption {
 }
 
 function getMaxOpusOption(fastMode = false): ModelOption {
+  const opusName = getOpusMarketingName()
   return {
     value: 'opus',
     label: 'Opus',
-    description: `Opus 4.6 · Most capable for complex work${fastMode ? getOpus46PricingSuffix(true) : ''}`,
+    description: `${opusName} · Most capable for complex work${fastMode ? getOpus46PricingSuffix(true) : ''}`,
   }
 }
 
@@ -228,21 +235,25 @@ export function getMaxSonnet46_1MOption(): ModelOption {
 
 export function getMaxOpus46_1MOption(fastMode = false): ModelOption {
   const billingInfo = isClaudeAISubscriber() ? ' · Billed as extra usage' : ''
+  const opusName = getOpusMarketingName()
   return {
     value: 'opus[1m]',
-    label: 'Opus (1M context)',
-    description: `Opus 4.6 with 1M context${billingInfo}${getOpus46PricingSuffix(fastMode)}`,
+    label: getAPIProvider() === 'firstParty'
+      ? 'Opus 4.7 (1M context)'
+      : 'Opus (1M context)',
+    description: `${opusName} with 1M context${billingInfo}${getOpus46PricingSuffix(fastMode)}`,
   }
 }
 
 function getMergedOpus1MOption(fastMode = false): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
+  const opusName = getOpusMarketingName()
   return {
     value: is3P ? getModelStrings().opus46 + '[1m]' : 'opus[1m]',
-    label: 'Opus (1M context)',
-    description: `Opus 4.6 with 1M context · Most capable for complex work${!is3P && fastMode ? getOpus46PricingSuffix(fastMode) : ''}`,
+    label: is3P ? 'Opus (1M context)' : 'Opus 4.7 (1M context)',
+    description: `${opusName} with 1M context · Most capable for complex work${!is3P && fastMode ? getOpus46PricingSuffix(fastMode) : ''}`,
     descriptionForModel:
-      'Opus 4.6 with 1M context - most capable for complex work',
+      `${opusName} with 1M context - most capable for complex work`,
   }
 }
 
@@ -262,7 +273,7 @@ function getOpusPlanOption(): ModelOption {
   return {
     value: 'opusplan',
     label: 'Opus Plan Mode',
-    description: 'Use Opus 4.6 in plan mode, Sonnet 4.6 otherwise',
+    description: `Use ${getOpusMarketingName()} in plan mode, Sonnet 4.6 otherwise`,
   }
 }
 

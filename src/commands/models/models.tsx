@@ -16,6 +16,7 @@ import {
   getProviderBrowseLabel,
   loadProviderModels,
   parseProviderModelQuery,
+  resolveProviderModelSelection,
   type BrowsableModelProvider,
 } from '../../utils/model/providerCatalog.js'
 import { getProviderModelDisplayName } from '../../utils/model/display.js'
@@ -48,14 +49,21 @@ function ModelsPickerWrapper({
   const initialProvider = lockedProvider ?? getDefaultBrowsableProvider(currentProvider)
 
   function handleSelect(provider: BrowsableModelProvider, modelId: string) {
+    const selection = resolveProviderModelSelection(provider, modelId)
+
     if (currentProvider !== provider) {
       setActiveProvider(provider)
     }
 
     setAppState(prev => ({
       ...prev,
-      mainLoopModel: modelId,
+      mainLoopModel: selection.modelId,
       mainLoopModelForSession: null,
+      ...(provider === 'firstParty'
+        ? { effortValue: selection.effort }
+        : selection.effort
+          ? { effortValue: selection.effort }
+          : {}),
     }))
 
     const providerNote = currentProvider !== provider
@@ -63,9 +71,13 @@ function ModelsPickerWrapper({
       : ''
 
     const displayModel =
-      getProviderModelDisplayName(provider, modelId) ?? modelId
+      getProviderModelDisplayName(provider, selection.modelId)
+      ?? selection.modelId
+    const effortNote = selection.effort
+      ? ` with ${chalk.bold(selection.effort)} effort`
+      : ''
 
-    onDone(`Set model to ${chalk.bold(displayModel)}${providerNote}`)
+    onDone(`Set model to ${chalk.bold(displayModel)}${effortNote}${providerNote}`)
   }
 
   function handleCancel() {
@@ -132,11 +144,7 @@ async function showSearchResults(
   }
 
   lines.push('')
-  lines.push(
-    chalk.dim(
-      'Use /model <id> to set a model directly, or /models to open the provider-aware picker.',
-    ),
-  )
+  lines.push(chalk.dim('Use /models to open the provider-aware picker.'))
 
   onDone(lines.join('\n'), { display: 'system' })
 }
@@ -152,12 +160,11 @@ function showHelp(
     `${chalk.bold('/models')} - provider-aware model browser`,
     '',
     chalk.bold('Usage:'),
-    `  ${chalk.cyan('/models')}                    Pick a provider, then browse its live models`,
+    `  ${chalk.cyan('/models')}                    Pick a provider, then browse its models`,
     `  ${chalk.cyan('/models <query>')}            Search the active provider's models`,
     `  ${chalk.cyan('/models <provider>:<query>')} Search a specific provider`,
     `  ${chalk.cyan('/models cursor')}             Browse Cursor models and variants`,
     `  ${chalk.cyan('/models <provider>')}         List models from one provider`,
-    `  ${chalk.cyan('/model <model-id>')}          Set a specific model directly`,
     '',
     chalk.bold('Browsable Providers:'),
     providerList,
@@ -167,10 +174,9 @@ function showHelp(
     `  ${chalk.cyan('/models qwen')}                 Search the active provider`,
     `  ${chalk.cyan('/models openrouter:qwen')}      Search OpenRouter models`,
     `  ${chalk.cyan('/models groq')}                 Show Groq models`,
-    `  ${chalk.cyan('/model deepseek-reasoner')}     Set model directly`,
     '',
-    chalk.dim('The browser fetches live models from the selected provider.'),
-    chalk.dim('If a provider is not configured yet, run /login first.'),
+    chalk.dim('The browser fetches live models when the selected provider supports it.'),
+    chalk.dim('If a provider is not configured yet, run /provider or /login for Anthropic.'),
   ]
 
   onDone(lines.join('\n'), { display: 'system' })

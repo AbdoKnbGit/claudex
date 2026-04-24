@@ -1744,6 +1744,7 @@ export type ProviderAuthMethod = 'api_key' | 'oauth' | 'none'
 
 /** Supported auth methods per provider */
 export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
+  firstParty:  ['api_key', 'oauth'],
   openai:      ['api_key', 'oauth'],
   gemini:      ['api_key', 'oauth'],
   antigravity: ['oauth'],
@@ -1768,6 +1769,12 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
  * free-tier access with strict rate limits.
  */
 export function getProviderAuthMethod(provider: APIProvider): ProviderAuthMethod {
+  if (provider === 'firstParty') {
+    if (getClaudeAIOAuthTokens()?.accessToken) return 'oauth'
+    if (hasAnthropicApiKeyAuth()) return 'api_key'
+    return 'none'
+  }
+
   // Check OAuth first for providers that support it
   // OAuth = user's paid subscription; API key = often free tier
   const supported = PROVIDER_AUTH_SUPPORT[provider]

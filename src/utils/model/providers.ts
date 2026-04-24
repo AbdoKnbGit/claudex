@@ -111,13 +111,13 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 /** Providers available for user selection in /provider and /login */
 // `groq` is intentionally hidden from the selection UI: the free / on-demand
 // TPM budget (6k–12k tokens/min) is too tight for claudex's tool suite to
-// be useful without heavy trimming. The APIProvider union, env detection
-// (CLAUDE_CODE_USE_GROQ), auth flow, transformer, and routing are all kept
-// intact — re-adding `'groq'` to this list and to MANAGEABLE_PROVIDERS
-// (+ flipping GROQ_ENABLED in src/lanes/openai-compat/index.ts) restores it.
+// be useful without heavy trimming. `iflow` is also hidden from the user-facing
+// pickers after the iFlow CLI shutdown announcement on April 17, 2026. The
+// APIProvider union, env detection, auth flow, transformer, and routing are
+// all kept intact.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'nim', 'deepseek', 'ollama',
-  'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
+  'cline', 'copilot', 'cursor', 'kilocode', 'kiro',
 ]
 
 /** Providers that use OpenAI-compatible chat completions API */
