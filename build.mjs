@@ -216,6 +216,14 @@ const result = await build({
     '.ts': 'ts',
     '.tsx': 'tsx',
   },
+  // ESM output doesn't have `require` in scope, so esbuild replaces any
+  // `require(x)` calls in source with a throwing stub. Inject a real
+  // `require` built from `createRequire(import.meta.url)` at the top of
+  // the bundle so all the lazy-loaded modules (semver, PowerShellTool,
+  // etc.) work at runtime.
+  banner: {
+    js: `import { createRequire as __createRequireForESM } from 'node:module';\nconst require = __createRequireForESM(import.meta.url);`,
+  },
   define: {
     // Build-time MACRO constants
     'MACRO.VERSION': JSON.stringify(pkg.version),
@@ -249,8 +257,12 @@ const code = readFileSync(outPath, 'utf8')
 if (!code.startsWith('#!')) {
   let patched = code
 
-  // Disable the config-reading guard — external builds don't need it
-  patched = patched.replace(/!configReadingAllowed && true/g, 'false')
+  // Disable the config-reading guard — external builds don't need it.
+  // Bun's output had `!configReadingAllowed && true`; esbuild's output
+  // is `!configReadingAllowed && process.env.NODE_ENV !== "test"`. Match
+  // the `!configReadingAllowed &&` prefix regardless of what follows so
+  // the `&& …` chain short-circuits to false either way.
+  patched = patched.replace(/!configReadingAllowed\s*&&\s*/g, 'false && ')
 
   // Disable remote version check — Claudex has its own versioning
   patched = patched.replace(
