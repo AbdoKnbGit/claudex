@@ -75,12 +75,19 @@ function ModelsPickerWrapper({
           : {}),
     }))
 
-    // Thinking-block signatures are model- (and provider-) bound. Replaying a
-    // thinking block produced by model A to model B 400s with
-    // "Invalid signature in thinking block". Strip them on any real switch
-    // so the next turn goes out clean. Same rationale as the model-fallback
-    // path in query.ts and the /login path in login.tsx.
-    if (providerChanged || modelChanged) {
+    // Thinking-block signatures are only cryptographically verified by
+    // Anthropic (firstParty) — their API rejects mismatched ones with 400.
+    // Strip ONLY when the target provider is firstParty:
+    //   - firstParty → firstParty (different model or effort): strip, because
+    //     Anthropic will verify and reject.
+    //   - anyProvider → firstParty: strip, same reason.
+    //   - firstParty → other: no strip — other providers' adapters drop or
+    //     transform these fields, so stripping would just waste cache hits.
+    //   - other → other: no strip — no verification happens, signatures (if
+    //     any) are provider round-trip metadata the adapter handles.
+    // Scoping to firstParty preserves cache and tool_use integrity on every
+    // non-Anthropic switch while still fixing the Anthropic 400.
+    if ((providerChanged || modelChanged) && provider === 'firstParty') {
       setMessages(stripSignatureBlocks)
     }
 

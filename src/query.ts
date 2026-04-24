@@ -54,6 +54,7 @@ import {
   createMicrocompactBoundaryMessage,
   stripSignatureBlocks,
 } from './utils/messages.js'
+import { getAPIProvider } from './utils/model/providers.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
 import { prependUserContext, appendSystemContext } from './utils/api.js'
 import {
@@ -924,12 +925,19 @@ async function* queryLoop(
             // Thinking signatures are model-bound: replaying a protected-thinking
             // block (e.g. capybara) to an unprotected fallback (e.g. opus) 400s.
             // Strip before retry so the fallback model gets clean history.
-            // Unconditional for claudex — users switch models across and within
-            // providers all the time (/models, /provider, Opus↔Sonnet, effort
-            // changes), and the gated-on-ant behavior inherited from upstream
-            // left external users hitting `Invalid signature in thinking block`
-            // after every switch.
-            messagesForQuery = stripSignatureBlocks(messagesForQuery)
+            //
+            // Scoped to firstParty only: Anthropic is the only provider that
+            // cryptographically verifies `thinking.signature` server-side and
+            // rejects mismatched ones with 400. Non-Anthropic providers go
+            // through the adapter layer, which transforms/drops these blocks
+            // anyway — stripping there would just invalidate the prompt cache
+            // without fixing anything. Upstream's original gate was
+            // `USER_TYPE === 'ant'` (always false for claudex), leaving
+            // external users crashing on every fallback; provider-scoped is
+            // the right guard.
+            if (getAPIProvider() === 'firstParty') {
+              messagesForQuery = stripSignatureBlocks(messagesForQuery)
+            }
 
             // Log the fallback event
             logEvent('tengu_model_fallback_triggered', {

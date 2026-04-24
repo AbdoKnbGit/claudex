@@ -71,12 +71,16 @@ function commitModelSelection(args: {
     mainLoopModelForSession: null,
   }))
 
-  // Thinking-block signatures are model-bound. If the selected model
-  // differs from the prior one, any thinking blocks already in history
-  // would 400 on the next turn with "Invalid signature in thinking block".
-  // Strip them so the next request goes out clean. No-op when the user
-  // reselects the same model or only tweaks fast-mode.
-  if (setMessages && model !== previousModel) {
+  // Thinking-block signatures are only cryptographically verified by
+  // Anthropic. Strip ONLY when the active provider is firstParty and the
+  // model actually changed — other providers go through adapters that
+  // transform/drop these fields, so stripping would waste cache hits
+  // without fixing anything.
+  if (
+    setMessages
+    && model !== previousModel
+    && getAPIProvider() === 'firstParty'
+  ) {
     setMessages(stripSignatureBlocks)
   }
 
