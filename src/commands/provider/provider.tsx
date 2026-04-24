@@ -25,7 +25,11 @@ import { useEffect, useState } from 'react'
 import chalk from 'chalk'
 import { Box, Text, useInput } from '../../ink.js'
 import type { CommandResultDisplay } from '../../commands.js'
-import type { LocalJSXCommandCall } from '../../types/command.js'
+import type {
+  LocalJSXCommandCall,
+  LocalJSXCommandContext,
+} from '../../types/command.js'
+import { stripSignatureBlocks } from '../../utils/messages.js'
 import {
   PROVIDER_DISPLAY_NAMES,
   setActiveProvider,
@@ -298,7 +302,13 @@ type OnDone = (
   options?: { display?: CommandResultDisplay },
 ) => void
 
-function ProviderManager({ onDone }: { onDone: OnDone }) {
+function ProviderManager({
+  onDone,
+  setMessages,
+}: {
+  onDone: OnDone
+  setMessages: LocalJSXCommandContext['setMessages']
+}) {
   const [view, setView] = useState<View>({ kind: 'list', selectedIndex: 0 })
   // Refresh tick forces re-read of auth state after saves/deletes.
   const [refreshTick, setRefreshTick] = useState(0)
@@ -369,6 +379,9 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
   function handleAnthropicLoginDone(success: boolean) {
     if (success) {
       setActiveProvider('firstParty')
+      // Strip any thinking-block signatures bound to the previously-active
+      // provider so the next turn doesn't 400 with "Invalid signature".
+      setMessages(stripSignatureBlocks)
       refresh()
       setView({
         kind: 'result',
@@ -740,6 +753,6 @@ function ProviderManager({ onDone }: { onDone: OnDone }) {
 
 // ─── Entry point ────────────────────────────────────────────────
 
-export const call: LocalJSXCommandCall = async onDone => (
-  <ProviderManager onDone={onDone} />
+export const call: LocalJSXCommandCall = async (onDone, context) => (
+  <ProviderManager onDone={onDone} setMessages={context.setMessages} />
 )

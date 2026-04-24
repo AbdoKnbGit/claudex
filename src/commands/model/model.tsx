@@ -9,8 +9,12 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
-import type { LocalJSXCommandCall } from '../../types/command.js'
+import type {
+  LocalJSXCommandCall,
+  LocalJSXCommandContext,
+} from '../../types/command.js'
 import type { EffortLevel } from '../../utils/effort.js'
+import { stripSignatureBlocks } from '../../utils/messages.js'
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js'
 import {
   clearFastModeCooldown,
@@ -42,19 +46,39 @@ function commitModelSelection(args: {
   effort: EffortLevel | undefined
   isFastMode: boolean
   setAppState: ReturnType<typeof useSetAppState>
+  setMessages?: LocalJSXCommandContext['setMessages']
+  previousModel: string | null
   onDone: (
     result?: string,
     options?: { display?: CommandResultDisplay },
   ) => void
   providerLabel?: string
 }): void {
-  const { model, effort, isFastMode, setAppState, onDone, providerLabel } = args
+  const {
+    model,
+    effort,
+    isFastMode,
+    setAppState,
+    setMessages,
+    previousModel,
+    onDone,
+    providerLabel,
+  } = args
 
   setAppState(prev => ({
     ...prev,
     mainLoopModel: model,
     mainLoopModelForSession: null,
   }))
+
+  // Thinking-block signatures are model-bound. If the selected model
+  // differs from the prior one, any thinking blocks already in history
+  // would 400 on the next turn with "Invalid signature in thinking block".
+  // Strip them so the next request goes out clean. No-op when the user
+  // reselects the same model or only tweaks fast-mode.
+  if (setMessages && model !== previousModel) {
+    setMessages(stripSignatureBlocks)
+  }
 
   let message = `Set model to ${chalk.bold(renderModelLabel(model))}`
   if (providerLabel) {
@@ -91,11 +115,13 @@ function commitModelSelection(args: {
 
 function ModelPickerWrapper({
   onDone,
+  setMessages,
 }: {
   onDone: (
     result?: string,
     options?: { display?: CommandResultDisplay },
   ) => void
+  setMessages: LocalJSXCommandContext['setMessages']
 }): React.ReactNode {
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
@@ -135,6 +161,8 @@ function ModelPickerWrapper({
       effort,
       isFastMode,
       setAppState,
+      setMessages,
+      previousModel: mainLoopModel,
       onDone,
     })
   }
@@ -156,6 +184,8 @@ function ModelPickerWrapper({
       effort: undefined,
       isFastMode,
       setAppState,
+      setMessages,
+      previousModel: mainLoopModel,
       onDone,
       providerLabel: getProviderBrowseLabel(provider),
     })
@@ -193,15 +223,18 @@ function ModelPickerWrapper({
 function SetModelAndClose({
   args,
   onDone,
+  setMessages,
 }: {
   args: string
   onDone: (
     result?: string,
     options?: { display?: CommandResultDisplay },
   ) => void
+  setMessages: LocalJSXCommandContext['setMessages']
 }): React.ReactNode {
   const isFastMode = useAppState(s => s.fastMode)
   const setAppState = useSetAppState()
+  const previousModel = useAppState(s => s.mainLoopModel)
   const model = args === 'default' ? null : args
 
   React.useEffect(() => {
@@ -267,12 +300,14 @@ function SetModelAndClose({
         effort: undefined,
         isFastMode,
         setAppState,
+        setMessages,
+        previousModel,
         onDone,
       })
     }
 
     void handleModelChange()
-  }, [isFastMode, model, onDone, setAppState])
+  }, [isFastMode, model, onDone, setAppState, setMessages, previousModel])
 
   return null
 }
@@ -324,7 +359,7 @@ function ShowModelAndClose({
   return null
 }
 
-export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   args = args?.trim() || ''
 
   if (COMMON_INFO_ARGS.includes(args)) {
@@ -359,10 +394,16 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     logEvent('tengu_model_command_inline', {
       args: args as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    return <SetModelAndClose args={args} onDone={onDone} />
+    return (
+      <SetModelAndClose
+        args={args}
+        onDone={onDone}
+        setMessages={context.setMessages}
+      />
+    )
   }
 
-  return <ModelPickerWrapper onDone={onDone} />
+  return <ModelPickerWrapper onDone={onDone} setMessages={context.setMessages} />
 }
 
 function renderModelLabel(model: string | null): string {

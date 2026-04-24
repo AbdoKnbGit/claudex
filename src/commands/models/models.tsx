@@ -2,8 +2,12 @@ import chalk from 'chalk'
 import * as React from 'react'
 import { ProviderModelPicker } from '../../components/ProviderModelPicker.js'
 import type { CommandResultDisplay } from '../../commands.js'
-import { useSetAppState } from '../../state/AppState.js'
-import type { LocalJSXCommandCall } from '../../types/command.js'
+import { useAppState, useSetAppState } from '../../state/AppState.js'
+import type {
+  LocalJSXCommandCall,
+  LocalJSXCommandContext,
+} from '../../types/command.js'
+import { stripSignatureBlocks } from '../../utils/messages.js'
 import {
   getAPIProvider,
   PROVIDER_DISPLAY_NAMES,
@@ -40,18 +44,23 @@ function renderSearchBadges(tags?: readonly string[]): string {
 function ModelsPickerWrapper({
   onDone,
   lockedProvider,
+  setMessages,
 }: {
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
   lockedProvider?: BrowsableModelProvider
+  setMessages: LocalJSXCommandContext['setMessages']
 }) {
   const setAppState = useSetAppState()
   const currentProvider = getAPIProvider()
+  const currentModel = useAppState(s => s.mainLoopModel)
   const initialProvider = lockedProvider ?? getDefaultBrowsableProvider(currentProvider)
 
   function handleSelect(provider: BrowsableModelProvider, modelId: string) {
     const selection = resolveProviderModelSelection(provider, modelId)
 
-    if (currentProvider !== provider) {
+    const providerChanged = currentProvider !== provider
+    const modelChanged = currentModel !== selection.modelId
+    if (providerChanged) {
       setActiveProvider(provider)
     }
 
@@ -65,6 +74,15 @@ function ModelsPickerWrapper({
           ? { effortValue: selection.effort }
           : {}),
     }))
+
+    // Thinking-block signatures are model- (and provider-) bound. Replaying a
+    // thinking block produced by model A to model B 400s with
+    // "Invalid signature in thinking block". Strip them on any real switch
+    // so the next turn goes out clean. Same rationale as the model-fallback
+    // path in query.ts and the /login path in login.tsx.
+    if (providerChanged || modelChanged) {
+      setMessages(stripSignatureBlocks)
+    }
 
     const providerNote = currentProvider !== provider
       ? ` (switched to ${chalk.bold(PROVIDER_DISPLAY_NAMES[provider])})`
@@ -182,7 +200,7 @@ function showHelp(
   onDone(lines.join('\n'), { display: 'system' })
 }
 
-export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const trimmedArgs = args?.trim() || ''
 
   if (['help', '-h', '--help', '?'].includes(trimmedArgs.toLowerCase())) {
@@ -192,11 +210,17 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
 
   if (trimmedArgs) {
     if (isCursorProviderOnlyArgs(trimmedArgs)) {
-      return <ModelsPickerWrapper onDone={onDone} lockedProvider="cursor" />
+      return (
+        <ModelsPickerWrapper
+          onDone={onDone}
+          lockedProvider="cursor"
+          setMessages={context.setMessages}
+        />
+      )
     }
     await showSearchResults(trimmedArgs, onDone)
     return
   }
 
-  return <ModelsPickerWrapper onDone={onDone} />
+  return <ModelsPickerWrapper onDone={onDone} setMessages={context.setMessages} />
 }

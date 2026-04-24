@@ -924,9 +924,12 @@ async function* queryLoop(
             // Thinking signatures are model-bound: replaying a protected-thinking
             // block (e.g. capybara) to an unprotected fallback (e.g. opus) 400s.
             // Strip before retry so the fallback model gets clean history.
-            if (process.env.USER_TYPE === 'ant') {
-              messagesForQuery = stripSignatureBlocks(messagesForQuery)
-            }
+            // Unconditional for claudex — users switch models across and within
+            // providers all the time (/models, /provider, Opus↔Sonnet, effort
+            // changes), and the gated-on-ant behavior inherited from upstream
+            // left external users hitting `Invalid signature in thinking block`
+            // after every switch.
+            messagesForQuery = stripSignatureBlocks(messagesForQuery)
 
             // Log the fallback event
             logEvent('tengu_model_fallback_triggered', {
