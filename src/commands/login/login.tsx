@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import * as React from 'react'
+import { useState } from 'react'
 import { resetCostState } from '../../bootstrap/state.js'
 import {
   clearTrustedDeviceToken,
@@ -8,14 +9,25 @@ import {
 import type { LocalJSXCommandContext } from '../../commands.js'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 import { ConsoleOAuthFlow } from '../../components/ConsoleOAuthFlow.js'
+import { ProviderLoginFlow } from '../../components/ProviderLoginFlow.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
-import { Text } from '../../ink.js'
+import { Box, Text, useInput } from '../../ink.js'
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js'
 import { refreshPolicyLimits } from '../../services/policyLimits/index.js'
 import { refreshRemoteManagedSettings } from '../../services/remoteManagedSettings/index.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
+import {
+  getProviderAuthMethod,
+  PROVIDER_AUTH_SUPPORT,
+} from '../../utils/auth.js'
 import { stripSignatureBlocks } from '../../utils/messages.js'
-import { setActiveProvider } from '../../utils/model/providers.js'
+import {
+  getAPIProvider,
+  PROVIDER_DISPLAY_NAMES,
+  SELECTABLE_PROVIDERS,
+  setActiveProvider,
+  type APIProvider,
+} from '../../utils/model/providers.js'
 import {
   checkAndDisableAutoModeIfNeeded,
   checkAndDisableBypassPermissionsIfNeeded,
@@ -56,23 +68,21 @@ function runPostLoginRefresh(context: LocalJSXCommandContext) {
 
 // ─── Main login entry point ──────────────────────────────────────
 //
-// /login matches original Claude Code: jump straight into the Anthropic
-// OAuth flow, which itself offers the three standard options — Claude
-// subscription (Pro/Max/Team/Enterprise), Anthropic Console (API usage
-// billing), and 3rd-party platform (Bedrock / Foundry / Vertex).
-//
-// Third-party providers (OpenAI, Gemini, etc.) are managed via /provider.
+// /login is the general provider login entry point. Selecting Anthropic from
+// here opens the native Claude Code OAuth flow (subscription / Console API /
+// platform). /provider reuses the exported Login component for the same
+// Anthropic-only screen.
 
 export async function call(
   onDone: LocalJSXCommandOnDone,
   context: LocalJSXCommandContext,
 ): Promise<React.ReactNode> {
+  const currentProvider = getAPIProvider()
   return (
-    <Login
+    <ProviderPickerLogin
+      initialProvider={currentProvider}
       onDone={(success) => {
         if (success) {
-          // Switch routing to Anthropic when the user successfully logs in.
-          setActiveProvider('firstParty')
           context.onChangeAPIKey()
           context.setMessages(stripSignatureBlocks)
           runPostLoginRefresh(context)
@@ -80,6 +90,139 @@ export async function call(
         onDone(success ? 'Login successful' : 'Login interrupted')
       }}
     />
+  )
+}
+
+const LOGIN_PROVIDERS = SELECTABLE_PROVIDERS.filter(
+  provider => provider !== 'ollama',
+)
+
+function getProviderAuthTypeLabel(provider: APIProvider): string {
+  if (provider === 'firstParty') {
+    return 'Claude subscription / Console API / platform'
+  }
+  if (provider === 'antigravity') return 'Google login'
+  if (provider === 'gemini') return 'Google / API key'
+  if (provider === 'cursor') return 'Browser login'
+
+  const supported = PROVIDER_AUTH_SUPPORT[provider] ?? ['api_key']
+  const supportsOAuth = supported.includes('oauth')
+  const supportsApiKey = supported.includes('api_key')
+
+  if (supportsOAuth && supportsApiKey) return 'OAuth / API key'
+  if (supportsOAuth) return 'OAuth'
+  return 'API key'
+}
+
+function getProviderConfiguredLabel(provider: APIProvider): string {
+  const method = getProviderAuthMethod(provider)
+  if (method === 'oauth') return ' [OAuth connected]'
+  if (method === 'api_key') return ' [API key saved]'
+  return ''
+}
+
+function ProviderPickerLogin({
+  initialProvider,
+  onDone,
+}: {
+  initialProvider: APIProvider
+  onDone: (success: boolean) => void
+}) {
+  const [selectedProvider, setSelectedProvider] = useState<APIProvider | null>(null)
+  const initialIndex = Math.max(0, LOGIN_PROVIDERS.indexOf(initialProvider))
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex)
+
+  useInput((_input: string, key: { return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }) => {
+    if (selectedProvider) return
+
+    if (key.escape) {
+      onDone(false)
+      return
+    }
+    if (key.upArrow) {
+      setSelectedIndex((i) => (i > 0 ? i - 1 : LOGIN_PROVIDERS.length - 1))
+      return
+    }
+    if (key.downArrow) {
+      setSelectedIndex((i) => (i < LOGIN_PROVIDERS.length - 1 ? i + 1 : 0))
+      return
+    }
+    if (key.return) {
+      const provider = LOGIN_PROVIDERS[selectedIndex]
+      if (provider) setSelectedProvider(provider)
+    }
+  })
+
+  if (selectedProvider) {
+    const providerForLogin = selectedProvider
+    const handleProviderDone = (success: boolean) => {
+      if (success) {
+        setActiveProvider(providerForLogin)
+        onDone(true)
+        return
+      }
+      setSelectedProvider(null)
+    }
+
+    if (providerForLogin === 'firstParty') {
+      return <Login onDone={handleProviderDone} />
+    }
+    return (
+      <ThirdPartyLogin
+        provider={providerForLogin}
+        onDone={handleProviderDone}
+      />
+    )
+  }
+
+  return (
+    <Dialog
+      title="Login - Choose Provider"
+      onCancel={() => onDone(false)}
+      color="permission"
+      inputGuide={(exitState: { pending: boolean; keyName: string }) =>
+        exitState.pending ? (
+          <Text>Press {exitState.keyName} again to exit</Text>
+        ) : (
+          <ConfigurableShortcutHint
+            action="confirm:no"
+            context="Confirmation"
+            fallback="Esc"
+            description="cancel"
+          />
+        )
+      }
+    >
+      <Box flexDirection="column" paddingLeft={1}>
+        <Box marginBottom={1}>
+          <Text bold color="claude">
+            Select a provider to sign in with:
+          </Text>
+        </Box>
+        {LOGIN_PROVIDERS.map((provider, index) => {
+          const isSelected = index === selectedIndex
+          return (
+            <Box key={provider}>
+              <Text
+                bold={isSelected}
+                color={isSelected ? 'claude' : undefined}
+                dimColor={!isSelected}
+              >
+                {isSelected ? '> ' : '  '}
+                {PROVIDER_DISPLAY_NAMES[provider]}
+              </Text>
+              <Text dimColor>
+                {' '}({getProviderAuthTypeLabel(provider)})
+                {getProviderConfiguredLabel(provider)}
+              </Text>
+            </Box>
+          )
+        })}
+        <Box marginTop={1}>
+          <Text dimColor>Use arrow keys, Enter to select, Esc to cancel</Text>
+        </Box>
+      </Box>
+    </Dialog>
   )
 }
 
@@ -114,6 +257,38 @@ export function Login({
         onDone={() => onDone(true)}
         startingMessage={startingMessage}
       />
+    </Dialog>
+  )
+}
+
+function ThirdPartyLogin({
+  provider,
+  onDone,
+}: {
+  provider: APIProvider
+  onDone: (success: boolean) => void
+}) {
+  const name = PROVIDER_DISPLAY_NAMES[provider]
+
+  return (
+    <Dialog
+      title={`Login - ${name}`}
+      onCancel={() => onDone(false)}
+      color="permission"
+      inputGuide={(exitState: { pending: boolean; keyName: string }) =>
+        exitState.pending ? (
+          <Text>Press {exitState.keyName} again to exit</Text>
+        ) : (
+          <ConfigurableShortcutHint
+            action="confirm:no"
+            context="Confirmation"
+            fallback="Esc"
+            description="cancel"
+          />
+        )
+      }
+    >
+      <ProviderLoginFlow provider={provider} onDone={onDone} />
     </Dialog>
   )
 }
