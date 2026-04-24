@@ -48,6 +48,7 @@ import type {
 import {
   anthropicMessagesToOpenAI,
   anthropicToolsToOpenAI,
+  type OpenAIContentPart,
   type OpenAIMessage,
   type OpenAITool,
 } from '../../services/api/adapters/anthropic_to_openai.js'
@@ -257,6 +258,16 @@ export class KiloLane implements Lane {
       system,
       { preserveCacheControl },
     )
+    // The shared adapter flattens tool_result content + plain user text to
+    // strings, which silently drops any cache_control markers claude.ts
+    // placed there. Re-inject the breakpoints the native Kilo CLI relies
+    // on (system-end + last TWO non-system user/tool messages) so second+
+    // turns hit the Anthropic prompt cache via OpenRouter passthrough.
+    // Idempotent: existing markers (from SystemBlock[] with cache_control
+    // already set) are left untouched.
+    if (preserveCacheControl) {
+      this._applyCacheBreakpoints(messages)
+    }
     const tools = this._buildTools(params.tools)
     const body = this._buildRequestBody({
       model: params.model,
@@ -350,6 +361,11 @@ export class KiloLane implements Lane {
       messages: opts.messages,
       stream: true,
       stream_options: { include_usage: true },
+      // OpenRouter-native detailed usage block — Kilo CLI sets this via
+      // providerOptions.openrouter.usage.include. Surfaces cost plus
+      // cache_discount and per-breakpoint hit counts in the final chunk
+      // so billing reconciliation matches Kilo CLI's view.
+      usage: { include: true },
       max_tokens: capped,
       ...(opts.tools.length > 0 && {
         tools: opts.tools,
@@ -364,6 +380,78 @@ export class KiloLane implements Lane {
     }
 
     return body
+  }
+
+  /**
+   * Re-add the Anthropic cache breakpoints native Kilo CLI relies on
+   * (via OpenRouter passthrough). Caller has already ensured the model
+   * supports prompt caching.
+   *
+   *   1. Last content part of the system message. Caches the whole
+   *      system-prompt-plus-tools prefix.
+   *   2 & 3. Last TWO non-system user/tool messages. Matches the
+   *      `slice(-2)` rolling strategy in Kilo CLI's applyCaching.
+   *      The SECOND breakpoint is what makes multi-turn billing match
+   *      Kilo CLI: without it, each new turn's lookup can only match
+   *      the previous turn's single trailing write at an older position,
+   *      and Anthropic ends up re-writing the entire accumulated history
+   *      at full input price. With two rolling breakpoints, the prior
+   *      turn's trailing breakpoint anchors a deep cache read covering
+   *      almost the whole conversation tail — ~10× cheaper on the
+   *      cached portion.
+   *
+   * Messages with `content: string` get promoted to a single-element
+   * parts array so the cache_control marker has a place to land. This
+   * is wire-compatible — OpenRouter accepts structured content on every
+   * role including `tool`.
+   *
+   * Idempotent: markers already present (e.g. preserved by the shared
+   * adapter from a SystemBlock's cache_control) are left alone.
+   */
+  private _applyCacheBreakpoints(messages: OpenAIMessage[]): void {
+    const stamp = (parts: OpenAIContentPart[]): void => {
+      if (parts.length === 0) return
+      const last = parts[parts.length - 1]
+      if (last && last.type === 'text' && !last.cache_control) {
+        last.cache_control = { type: 'ephemeral' }
+      }
+    }
+
+    const stampTrailing = (m: OpenAIMessage): void => {
+      if (typeof m.content === 'string') {
+        const text = m.content
+        // Empty tool results should still create a breakpoint — fall back
+        // to a single space so the part is well-formed without altering
+        // visible prompt content.
+        m.content = [
+          { type: 'text', text: text.length > 0 ? text : ' ', cache_control: { type: 'ephemeral' } },
+        ]
+      } else if (Array.isArray(m.content) && m.content.length > 0) {
+        stamp(m.content)
+      }
+    }
+
+    // 1. System breakpoint.
+    const sys = messages.find((m) => m.role === 'system')
+    if (sys) {
+      if (typeof sys.content === 'string') {
+        const text = sys.content
+        if (text.length > 0) {
+          sys.content = [{ type: 'text', text, cache_control: { type: 'ephemeral' } }]
+        }
+      } else if (Array.isArray(sys.content)) {
+        stamp(sys.content)
+      }
+    }
+
+    // 2 & 3. Last TWO non-system user/tool breakpoints — rolling cache.
+    let stamped = 0
+    for (let i = messages.length - 1; i >= 0 && stamped < 2; i--) {
+      const m = messages[i]!
+      if (m.role !== 'user' && m.role !== 'tool') continue
+      stampTrailing(m)
+      stamped++
+    }
   }
 
   private _prependToolUsageRules(
@@ -427,6 +515,11 @@ export class KiloLane implements Lane {
       normalized.startsWith('anthropic/')
       || normalized.startsWith('openai/')
       || normalized.startsWith('google/')
+      // kilo-auto/* routes internally (kilo-auto/balanced → Claude
+      // Sonnet, coder → Claude Opus, etc.). Missing this prefix meant
+      // the default subscription model got no cache markers — the
+      // exact billing-parity gap we care about here.
+      || normalized.startsWith('kilo-auto/')
       || normalized.includes('claude-')
       || normalized.includes('gemini-')
       || normalized.includes('gpt-5')
