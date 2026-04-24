@@ -28,6 +28,14 @@ import {
 } from '../../utils/model/providers.js'
 
 const TIMEOUT_MS = 8_000
+const ANTIGRAVITY_USAGE_MODEL_KEYS = [
+  'claude-opus-4-6-thinking',
+  'claude-sonnet-4-6',
+  'gemini-3-flash',
+  'gemini-3.1-pro-high',
+  'gemini-3.1-pro-low',
+  'gpt-oss-120b-medium',
+] as const
 const DOCS = {
   anthropic: 'https://platform.claude.com/docs/en/build-with-claude/usage-cost-api',
   openai: 'https://platform.openai.com/docs/api-reference/usage/costs',
@@ -822,8 +830,9 @@ function parseAntigravityUsage(data: unknown): UsageMetric[] {
   const models = extractAntigravityModels(data)
   if (!models) return []
 
-  return Object.entries(models)
-    .map(([modelKey, value]) => {
+  return ANTIGRAVITY_USAGE_MODEL_KEYS
+    .map((modelKey) => {
+      const value = models[modelKey]
       const info = asRecord(value)
       if (!info || info.isInternal === true || info.disabled === true) return null
       const quota = asRecord(info.quotaInfo)
