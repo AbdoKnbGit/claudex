@@ -173,6 +173,7 @@ function MetricLine({
 function statusLabel(status: ProviderUsageStatus): string {
   switch (status) {
     case 'ok': return 'ok'
+    case 'connected': return 'connected'
     case 'not_configured': return 'not configured'
     case 'unsupported': return 'not available'
     case 'error': return 'error'
@@ -182,6 +183,7 @@ function statusLabel(status: ProviderUsageStatus): string {
 function statusColor(status: ProviderUsageStatus): 'success' | 'warning' | 'error' | undefined {
   switch (status) {
     case 'ok': return 'success'
+    case 'connected': return 'success'
     case 'not_configured': return undefined
     case 'unsupported': return 'warning'
     case 'error': return 'error'

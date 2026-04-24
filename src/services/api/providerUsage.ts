@@ -6,6 +6,7 @@ import {
   getValidCursorOAuthToken,
   getValidKiroOAuthToken,
 } from './auth/oauth_services.js'
+import { getGeminiOAuthToken } from './auth/google_oauth.js'
 import { loadProviderKey } from './auth/api_key_manager.js'
 import { CODE_ASSIST_BASE, antigravityApiHeaders, ensureCodeAssistReady } from './providers/gemini_code_assist.js'
 import { fetchUtilization, type Utilization } from './usage.js'
@@ -38,6 +39,7 @@ const DOCS = {
 
 export type ProviderUsageStatus =
   | 'ok'
+  | 'connected'
   | 'not_configured'
   | 'unsupported'
   | 'error'
@@ -183,7 +185,7 @@ async function reportAnthropic(): Promise<ProviderUsageReport> {
     return {
       ...baseReport(
         'firstParty',
-        tokens ? 'unsupported' : 'not_configured',
+        tokens ? 'connected' : 'not_configured',
         tokens ? 'oauth' : 'none',
         'Claude OAuth / Admin API',
         tokens
@@ -242,7 +244,7 @@ async function reportOpenAI(): Promise<ProviderUsageReport> {
     return {
       ...baseReport(
         'openai',
-        configuredApiKey || sessionToken ? 'unsupported' : 'not_configured',
+        configuredApiKey || sessionToken ? 'connected' : 'not_configured',
         sessionToken ? 'oauth' : configuredApiKey ? 'api_key' : 'none',
         'ChatGPT usage / OpenAI org costs',
         configuredApiKey || sessionToken
@@ -274,7 +276,7 @@ async function reportGemini(): Promise<ProviderUsageReport> {
   return {
     ...baseReport(
       'gemini',
-      oauth || apiKey ? 'unsupported' : 'not_configured',
+      oauth || apiKey ? 'connected' : 'not_configured',
       oauth ? 'oauth' : apiKey ? 'api_key' : 'none',
       'Google Cloud billing',
       oauth || apiKey
@@ -287,7 +289,10 @@ async function reportGemini(): Promise<ProviderUsageReport> {
 
 async function reportAntigravity(): Promise<ProviderUsageReport> {
   const account = await getAntigravityAccount()
-  if (!account) {
+  const oauthToken = account ? null : await getGeminiOAuthToken('antigravity')
+  const accessToken = account?.accessToken ?? oauthToken
+
+  if (!accessToken) {
     return baseReport(
       'antigravity',
       'not_configured',
@@ -297,29 +302,35 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
     )
   }
 
-  const project = account.projectId || await ensureCodeAssistReady(account.accessToken, 'antigravity')
-  const data = await fetchJson(`${CODE_ASSIST_BASE}:fetchAvailableModels`, {
-    method: 'POST',
-    headers: {
-      ...antigravityApiHeaders(account.accessToken),
-      'X-Client-Name': 'antigravity',
-      'X-Client-Version': '1.107.0',
-      'x-request-source': 'local',
-    },
-    body: JSON.stringify(project ? { project } : {}),
-  })
+  const project = account?.projectId ?? await ensureAntigravityProject(accessToken)
+  let data: unknown
+  try {
+    data = await fetchAntigravityAvailableModels(accessToken, project)
+  } catch (error) {
+    return {
+      ...baseReport(
+        'antigravity',
+        'connected',
+        'oauth',
+        'Google Code Assist',
+        'Antigravity is connected, but the quota request failed.',
+      ),
+      detail: messageFromError(error),
+    }
+  }
   const metrics = parseAntigravityUsage(data)
+  const accountLabel = account?.email ?? 'Antigravity OAuth'
 
   if (metrics.length === 0) {
     return {
       ...baseReport(
         'antigravity',
-        'unsupported',
+        'connected',
         'oauth',
         'Google Code Assist',
         'Antigravity is connected, but the quota response did not include model usage.',
       ),
-      detail: `Account: ${account.email}`,
+      detail: `Account: ${accountLabel}`,
     }
   }
 
@@ -331,7 +342,7 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
       'Google Code Assist',
       'Fetched model quota remaining from Antigravity.',
     ),
-    detail: `Account: ${account.email}. Usage is calculated per model from quotaInfo.remainingFraction.`,
+    detail: `Account: ${accountLabel}. Usage is calculated per model from quotaInfo.remainingFraction.`,
     metrics,
   }
 }
@@ -451,13 +462,19 @@ async function reportDeepSeek(): Promise<ProviderUsageReport> {
 }
 
 async function reportOllama(): Promise<ProviderUsageReport> {
-  return baseReport(
-    'ollama',
-    'ok',
-    'local',
-    'Local runtime',
-    'Ollama runs locally and has no remote billing API.',
-  )
+  return {
+    ...baseReport(
+      'ollama',
+      'ok',
+      'local',
+      'Local runtime',
+      'Ollama runs locally and has no remote billing API.',
+    ),
+    links: [{
+      label: 'Ollama settings',
+      url: 'https://ollama.com/settings',
+    }],
+  }
 }
 
 async function reportCline(): Promise<ProviderUsageReport> {
@@ -465,7 +482,7 @@ async function reportCline(): Promise<ProviderUsageReport> {
   return {
     ...baseReport(
       'cline',
-      token ? 'unsupported' : 'not_configured',
+      token ? 'connected' : 'not_configured',
       token ? 'oauth' : 'none',
       'Cline account',
       token
@@ -516,7 +533,7 @@ async function reportCopilot(): Promise<ProviderUsageReport> {
   return {
     ...baseReport(
       'copilot',
-      token ? 'unsupported' : 'not_configured',
+      token ? 'connected' : 'not_configured',
       token ? 'oauth' : 'none',
       'GitHub Copilot metrics API',
       token
@@ -541,7 +558,7 @@ async function reportCursor(): Promise<ProviderUsageReport> {
     return {
       ...baseReport(
         'cursor',
-        oauth ? 'unsupported' : 'not_configured',
+        oauth ? 'connected' : 'not_configured',
         oauth ? 'oauth' : 'none',
         'Cursor Admin API',
         oauth
@@ -593,7 +610,7 @@ async function reportKiloCode(): Promise<ProviderUsageReport> {
   return {
     ...baseReport(
       'kilocode',
-      token ? 'unsupported' : 'not_configured',
+      token ? 'connected' : 'not_configured',
       token ? 'oauth' : 'none',
       'KiloCode account',
       token
@@ -624,7 +641,7 @@ async function reportKiro(): Promise<ProviderUsageReport> {
   if (metrics.length === 0) {
     return baseReport(
       'kiro',
-      'unsupported',
+      'connected',
       'oauth',
       'AWS CodeWhisperer usage limits',
       'Kiro usage endpoint responded without quota details.',
@@ -802,14 +819,13 @@ function parseCodexUsage(data: unknown): UsageMetric[] {
 }
 
 function parseAntigravityUsage(data: unknown): UsageMetric[] {
-  const root = asRecord(data)
-  const models = asRecord(root?.models)
+  const models = extractAntigravityModels(data)
   if (!models) return []
 
   return Object.entries(models)
     .map(([modelKey, value]) => {
       const info = asRecord(value)
-      if (!info || info.isInternal === true) return null
+      if (!info || info.isInternal === true || info.disabled === true) return null
       const quota = asRecord(info.quotaInfo)
       if (!quota) return null
       const remaining = readNumber(quota.remainingFraction)
@@ -825,6 +841,15 @@ function parseAntigravityUsage(data: unknown): UsageMetric[] {
     })
     .filter((metric): metric is UsageMetric => metric !== null)
     .sort((a, b) => a.label.localeCompare(b.label))
+}
+
+function extractAntigravityModels(data: unknown): Record<string, unknown> | null {
+  const root = asRecord(data)
+  const response = asRecord(root?.response)
+  const wrappedData = asRecord(root?.data)
+  return asRecord(root?.models)
+    ?? asRecord(response?.models)
+    ?? asRecord(wrappedData?.models)
 }
 
 function parseOpenRouterCredits(data: unknown): { total: number; used: number; remaining: number } | null {
@@ -1090,6 +1115,53 @@ async function getAntigravityAccount(): Promise<AntigravityAccount | null> {
   } catch {
     return active
   }
+}
+
+async function ensureAntigravityProject(accessToken: string): Promise<string | null> {
+  try {
+    return await ensureCodeAssistReady(accessToken, 'antigravity')
+  } catch {
+    return null
+  }
+}
+
+async function fetchAntigravityAvailableModels(
+  accessToken: string,
+  projectId: string | null,
+): Promise<unknown> {
+  const bases = [
+    CODE_ASSIST_BASE,
+    'https://daily-cloudcode-pa.googleapis.com',
+  ]
+  const payloads = projectId ? [{ project: projectId }, {}] : [{}]
+  const headers = {
+    ...antigravityApiHeaders(accessToken),
+    Accept: 'application/json',
+    'X-Client-Name': 'antigravity',
+    'X-Client-Version': '1.107.0',
+    'x-request-source': 'local',
+  }
+  let bestData: unknown = null
+  const errors: string[] = []
+
+  for (const base of bases) {
+    for (const payload of payloads) {
+      try {
+        const data = await fetchJson(`${base}/v1internal:fetchAvailableModels`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        })
+        if (extractAntigravityModels(data)) return data
+        bestData = data
+      } catch (error) {
+        errors.push(`${base}: ${messageFromError(error)}`)
+      }
+    }
+  }
+
+  if (bestData !== null) return bestData
+  throw new Error(errors.join('; ') || 'no Antigravity quota response')
 }
 
 async function fetchJson(url: string, init: RequestInit = {}): Promise<unknown> {
