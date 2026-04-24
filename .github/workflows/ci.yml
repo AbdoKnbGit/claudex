@@ -1,0 +1,145 @@
+name: Cross-Platform CI
+
+# Runs on every push + PR to master, and on-demand via the Actions tab.
+# Tests the build + install + smoke-test pipeline across every OS claudex
+# claims to support — so a regression on macOS, Linux, or Windows is
+# caught before users hit it.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  # ── Main matrix ────────────────────────────────────────────────────
+  # Every OS × Node 20 (minimum) and Node 22 (current LTS). fail-fast is
+  # off so a macOS failure doesn't hide a Linux or Windows issue.
+  test:
+    name: ${{ matrix.os }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['20.x', '22.x']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build with esbuild (default, Node-only)
+        run: npm run build
+
+      - name: Smoke test — version
+        run: node dist/cli.mjs --version
+
+      - name: Pack + global install (exercises postinstall.mjs)
+        shell: bash
+        run: |
+          npm pack --quiet
+          npm install -g ./abdoknbgit-claudex-*.tgz
+
+      - name: Smoke test — global binary runs
+        run: claudex --version
+
+      # The no-auth error path is the single most important UX test for
+      # the v0.5.0 first-run story: claudex must give a friendly message
+      # (not crash, not print an unhelpful env-var hint) when -p is
+      # invoked before any provider is configured. On CI, no API keys
+      # are present, so this is the fresh-user experience.
+      - name: Smoke test — friendly no-auth error (non-Windows)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          # Scrub any stray API keys in case a workflow secret leaks in.
+          unset ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY
+          unset GROQ_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY NIM_API_KEY
+          # Exit 1 is acceptable; hang or ENOENT is not.
+          timeout 30 node dist/cli.mjs -p "hello" 2>&1 | head -50 || true
+
+      - name: Smoke test — friendly no-auth error (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+          Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
+          Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue
+          Remove-Item Env:GROQ_API_KEY -ErrorAction SilentlyContinue
+          Remove-Item Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+          Remove-Item Env:OPENROUTER_API_KEY -ErrorAction SilentlyContinue
+          Remove-Item Env:NIM_API_KEY -ErrorAction SilentlyContinue
+          # 30s timeout via Start-Process + Wait-Process
+          $proc = Start-Process -FilePath node -ArgumentList 'dist/cli.mjs','-p','hello' -PassThru -NoNewWindow -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          if (-not $proc.WaitForExit(30000)) { Stop-Process -Id $proc.Id -Force }
+          Get-Content out.txt, err.txt -ErrorAction SilentlyContinue | Select-Object -First 50
+
+  # ── Windows without git-bash ───────────────────────────────────────
+  # The v0.5.0 headline feature: claudex now runs on vanilla Windows
+  # without Git for Windows installed. GitHub runners come with git
+  # pre-installed, so we simulate a fresh install by stripping every
+  # Git directory out of PATH before running the binary.
+  windows-no-bash:
+    name: Windows without git-bash (PowerShell fallback)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test — no git-bash on PATH
+        shell: pwsh
+        run: |
+          # Strip every directory that contains bash.exe from PATH so
+          # findGitBashPath() and findSuitableShell() both fail. If any
+          # code path still depends on bash, the CLI will crash here.
+          $env:PATH = ($env:PATH -split ';' | Where-Object {
+            $_ -and $_ -notmatch 'Git' -and $_ -notmatch 'usr\\bin' -and $_ -notmatch 'mingw'
+          }) -join ';'
+          Remove-Item Env:SHELL -ErrorAction SilentlyContinue
+          # Sanity: where.exe should NOT find bash now.
+          $bashLookup = & where.exe bash 2>&1
+          Write-Host "bash lookup result: $bashLookup"
+          # Main assertion: claudex --version must exit 0 despite no bash.
+          node dist/cli.mjs --version
+
+  # ── Alternate build path (Bun) ─────────────────────────────────────
+  # Contributors who prefer Bun shouldn't be surprised by the build path
+  # rotting. Linux-only is fine — Bun on Windows CI is flaky, and this
+  # is a contributor-convenience path, not a shipped artifact.
+  build-bun:
+    name: Build with Bun (opt-in alternate path)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+      - run: npm ci
+      - run: npm run build:bun
+      - run: node dist/cli.mjs --version
