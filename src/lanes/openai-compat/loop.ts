@@ -88,6 +88,7 @@ function isLocalBaseUrl(baseUrl: string): boolean {
 interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content?: string | null | Array<{ type: string; text?: string; image_url?: unknown }>
+  reasoning_content?: string
   tool_calls?: Array<{
     id: string
     type: 'function'
@@ -261,7 +262,7 @@ export class OpenAICompatLane implements Lane {
       : rawSystemText
 
     // History conversion → OpenAI Chat Completions messages.
-    const chatMessages = convertHistoryToOpenAI(messages, systemText)
+    const chatMessages = convertHistoryToOpenAI(messages, systemText, provider, model)
 
     // Build request body with per-provider quirks applied.
     const body = applyProviderRequestQuirks(
@@ -1249,6 +1250,18 @@ function sanitizeToolSchema(schema: Record<string, unknown>, provider: ProviderT
 function convertHistoryToOpenAI(
   messages: ProviderMessage[],
   systemText: string,
+  provider: ProviderType = 'generic',
+  model = '',
+): OpenAIChatMessage[] {
+  if (provider === 'deepseek' && model.toLowerCase() !== 'deepseek-reasoner') {
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+  }
+  return convertHistoryToOpenAIDefault(messages, systemText)
+}
+
+function convertHistoryToOpenAIDefault(
+  messages: ProviderMessage[],
+  systemText: string,
 ): OpenAIChatMessage[] {
   const out: OpenAIChatMessage[] = []
   if (systemText) out.push({ role: 'system', content: systemText })
@@ -1311,6 +1324,129 @@ function convertHistoryToOpenAI(
   }
 
   return out
+}
+
+function convertHistoryToOpenAIForDeepSeek(
+  messages: ProviderMessage[],
+  systemText: string,
+): OpenAIChatMessage[] {
+  const out: OpenAIChatMessage[] = []
+  if (systemText) out.push({ role: 'system', content: systemText })
+
+  let pendingReasoning: string | null = null
+  let pendingAssistantTexts: string[] = []
+
+  const clearPendingAssistant = () => {
+    pendingReasoning = null
+    pendingAssistantTexts = []
+  }
+
+  const flushPendingAssistantText = () => {
+    if (pendingAssistantTexts.length > 0) {
+      out.push({ role: 'assistant', content: pendingAssistantTexts.join('\n') })
+    }
+    clearPendingAssistant()
+  }
+
+  const appendPendingReasoning = (thinking: string) => {
+    pendingReasoning = pendingReasoning
+      ? `${pendingReasoning}\n${thinking}`
+      : thinking
+  }
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      flushPendingAssistantText()
+      out.push({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: msg.content,
+      })
+      continue
+    }
+
+    const texts: string[] = []
+    const toolCalls: NonNullable<OpenAIChatMessage['tool_calls']> = []
+    const toolResults: OpenAIChatMessage[] = []
+    const thinkingBlocks: string[] = []
+
+    for (const block of msg.content) {
+      switch (block.type) {
+        case 'text':
+          if (block.text) texts.push(block.text)
+          break
+        case 'tool_use':
+          if (block.id && block.name) {
+            toolCalls.push({
+              id: block.id,
+              type: 'function',
+              function: {
+                name: block.name,
+                arguments: JSON.stringify(block.input ?? {}),
+              },
+            })
+          }
+          break
+        case 'tool_result':
+          if (block.tool_use_id) {
+            toolResults.push({
+              role: 'tool',
+              tool_call_id: block.tool_use_id,
+              content: typeof block.content === 'string'
+                ? block.content
+                : stringifyToolContent(block.content),
+            })
+          }
+          break
+        case 'thinking':
+          if (block.thinking) thinkingBlocks.push(block.thinking)
+          break
+      }
+    }
+
+    if (msg.role === 'assistant') {
+      for (const thinking of thinkingBlocks) appendPendingReasoning(thinking)
+
+      if (toolCalls.length > 0) {
+        const contentParts = [...pendingAssistantTexts, ...texts]
+        out.push({
+          role: 'assistant',
+          content: contentParts.length > 0 ? contentParts.join('\n') : null,
+          // DeepSeek thinking mode requires this field on every replayed
+          // assistant tool-call message. Old cross-provider history may not
+          // have a thinking block, so preserve protocol shape with "".
+          reasoning_content: pendingReasoning ?? '',
+          tool_calls: toolCalls,
+        })
+        clearPendingAssistant()
+      } else if (texts.length > 0) {
+        pendingAssistantTexts.push(...texts)
+      }
+
+      if (toolResults.length > 0) {
+        flushPendingAssistantText()
+        out.push(...toolResults)
+      }
+      continue
+    }
+
+    flushPendingAssistantText()
+    if (texts.length > 0) {
+      out.push({ role: 'user', content: texts.join('\n') })
+    }
+    out.push(...toolResults)
+  }
+
+  flushPendingAssistantText()
+  return out
+}
+
+export function _convertHistoryToOpenAIForTest(
+  messages: ProviderMessage[],
+  systemText: string,
+  provider: ProviderType,
+  model: string,
+): OpenAIChatMessage[] {
+  return convertHistoryToOpenAI(messages, systemText, provider, model)
 }
 
 function stringifyToolContent(content: unknown): string {

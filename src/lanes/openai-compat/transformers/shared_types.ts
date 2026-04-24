@@ -7,6 +7,7 @@
 export interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content?: string | null | Array<{ type: string; text?: string; image_url?: unknown }>
+  reasoning_content?: string
   tool_calls?: Array<{
     id: string
     type: 'function'
