@@ -5,3 +5,7 @@ debug.log
 *.log
 .env
 .env.*
+# Local-only working directories (reference source tree + scratch space) —
+# never committed to the repo.
+reference/
+tmp/

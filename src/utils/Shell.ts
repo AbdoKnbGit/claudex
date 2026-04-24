@@ -40,7 +40,7 @@ import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { createPowerShellProvider } from './shell/powershellProvider.js'
 import type { ShellProvider, ShellType } from './shell/shellProvider.js'
 import { subprocessEnv } from './subprocessEnv.js'
-import { posixPathToWindowsPath } from './windowsPaths.js'
+import { findGitBashPath, posixPathToWindowsPath } from './windowsPaths.js'
 
 const DEFAULT_TIMEOUT = 30 * 60 * 1000 // 30 minutes
 
@@ -70,8 +70,13 @@ function isExecutable(shellPath: string): boolean {
 
 /**
  * Determines the best available shell to use.
+ *
+ * Returns null when no POSIX shell is available — on Windows this is the
+ * common case for fresh installs without git-bash. Callers must handle
+ * null and fall back to PowerShell. Throws only on non-Windows platforms
+ * where a missing shell is a genuine environment problem.
  */
-export async function findSuitableShell(): Promise<string> {
+export async function findSuitableShell(): Promise<string | null> {
   // Check for explicit shell override first
   const shellOverride = process.env.CLAUDE_CODE_SHELL
   if (shellOverride) {
@@ -123,10 +128,28 @@ export async function findSuitableShell(): Promise<string> {
     supportedShells.unshift(env_shell)
   }
 
+  // On Windows, also consider git-bash (findGitBashPath probes common
+  // install locations and where.exe). which() above doesn't check these
+  // because they aren't in the default Windows PATH.
+  if (getPlatform() === 'windows') {
+    const gitBash = findGitBashPath()
+    if (gitBash) {
+      supportedShells.unshift(gitBash)
+    }
+  }
+
   const shellPath = supportedShells.find(shell => shell && isExecutable(shell))
 
-  // If no valid shell found, throw a helpful error
   if (!shellPath) {
+    // On Windows, missing bash is expected on vanilla installs — the shell
+    // layer routes to PowerShell. On POSIX platforms, a missing shell means
+    // something is very wrong with the environment.
+    if (getPlatform() === 'windows') {
+      logForDebugging(
+        'No bash/zsh found on Windows — bash commands will route to PowerShell',
+      )
+      return null
+    }
     const errorMsg =
       'No suitable shell found. Claude CLI requires a Posix shell environment. ' +
       'Please ensure you have a valid shell installed and the SHELL environment variable set.'
@@ -137,8 +160,9 @@ export async function findSuitableShell(): Promise<string> {
   return shellPath
 }
 
-async function getShellConfigImpl(): Promise<ShellConfig> {
+async function getShellConfigImpl(): Promise<ShellConfig | null> {
   const binShell = await findSuitableShell()
+  if (!binShell) return null
   const provider = await createBashShellProvider(binShell)
   return { provider }
 }
@@ -154,8 +178,29 @@ export const getPsProvider = memoize(async (): Promise<ShellProvider> => {
   return createPowerShellProvider(psPath)
 })
 
+/**
+ * Resolves the active shell provider for a requested shell type.
+ * If bash is requested but unavailable (typical on Windows without
+ * git-bash), transparently falls back to PowerShell so the CLI stays
+ * functional on vanilla Windows installs.
+ */
 const resolveProvider: Record<ShellType, () => Promise<ShellProvider>> = {
-  bash: async () => (await getShellConfig()).provider,
+  bash: async () => {
+    const config = await getShellConfig()
+    if (config) return config.provider
+    // No bash/zsh available — try PowerShell as fallback (Windows case)
+    const psPath = await getCachedPowerShellPath()
+    if (psPath) {
+      logForDebugging(
+        'Bash requested but unavailable — using PowerShell as fallback',
+      )
+      return getPsProvider()
+    }
+    throw new Error(
+      'No shell is available. Install Git Bash (Windows) or PowerShell 7+ ' +
+        '(https://aka.ms/powershell-release-stable).',
+    )
+  },
   powershell: getPsProvider,
 }
 

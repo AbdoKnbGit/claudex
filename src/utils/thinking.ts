@@ -153,14 +153,12 @@ export function shouldEnableThinkingByDefault(): boolean {
   }
 
   const { settings } = getSettingsWithErrors()
-  if (settings.alwaysThinkingEnabled === false) {
-    return false
+  // Respect explicit settings.alwaysThinkingEnabled in both directions.
+  // Claudex default is OFF: thinking is an opt-in feature via `/thinking on`
+  // or settings, so we don't silently spend extra latency/tokens for users
+  // who haven't asked for it.
+  if (settings.alwaysThinkingEnabled === true) {
+    return true
   }
-
-  // IMPORTANT: Do not change default thinking enabled value without notifying
-  // the model launch DRI and research. This can greatly affect model quality and
-  // bashing.
-
-  // Enable thinking by default unless explicitly disabled.
-  return true
+  return false
 }

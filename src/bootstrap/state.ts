@@ -42,6 +42,16 @@ export type AttributedCounter = {
   add(value: number, additionalAttributes?: Attributes): void
 }
 
+/**
+ * Stub for upstream's REPL bridge (inter-Claude messaging). Claudex does
+ * not implement this feature — always returns false so callers fall
+ * back to the non-bridged code path. Kept so strict-ESM bundlers
+ * (esbuild) resolve the import at build time.
+ */
+export function isReplBridgeActive(): boolean {
+  return false
+}
+
 type State = {
   originalCwd: string
   // Stable project root - set once at startup (including by --worktree flag),

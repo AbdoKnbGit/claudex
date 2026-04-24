@@ -19,16 +19,16 @@ npm install -g @abdoknbgit/claudex
 ```bash
 git clone https://github.com/AbdoKnbGit/claudex.git
 cd claudex
-bun install
-bun run build
+npm install
+npm run build
 npm link
 ```
 
 ### Requirements
 
 - **Node.js** >= 20.0.0
-- **Git** (with git-bash on Windows)
-- **Bun** >= 1.1.0 (building from source only)
+- **Git** (optional on Windows — claudex auto-falls-back to PowerShell if git-bash is absent)
+- **Bun** (optional — `npm run build` uses esbuild; `npm run build:bun` uses Bun)
 
 ---
 
@@ -127,7 +127,7 @@ Controls whether the model reasons step-by-step before answering. Works safely a
 - **Retry-After respect** — honors provider rate-limit headers
 - **Context overflow recovery** — auto-reduces max_tokens when hitting context limits
 - **Streaming fallback** — NIM and Ollama fall back to non-streaming when needed
-- **Cross-platform** — Windows (git-bash), macOS, Linux
+- **Cross-platform, shell-agnostic** — `npm install -g` works on Windows, macOS, Linux, WSL with no extra setup. On Windows, claudex uses git-bash if present and auto-falls-back to PowerShell otherwise. No environment variables required — provider credentials are stored via a guided first-run wizard.
 
 ---
 

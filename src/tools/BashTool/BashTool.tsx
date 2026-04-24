@@ -41,6 +41,8 @@ import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, get
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
+import { getPlatform } from '../../utils/platform.js';
+import { findGitBashPath } from '../../utils/windowsPaths.js';
 import { interpretCommandResult } from './commandSemantics.js';
 import { getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
 import { checkReadOnlyConstraints } from './readOnlyValidation.js';
@@ -423,6 +425,16 @@ export const BashTool = buildTool({
   // 30K chars - tool result persistence threshold
   maxResultSizeChars: 30_000,
   strict: true,
+  // Hide BashTool on Windows when neither git-bash nor any other bash is
+  // available. The shell layer would route bash commands to PowerShell,
+  // but the model's bash syntax (globs, pipes, heredocs) wouldn't parse —
+  // better to offer only PowerShellTool so syntax and tool agree.
+  isEnabled() {
+    if (getPlatform() === 'windows' && !findGitBashPath() && !process.env.SHELL) {
+      return false;
+    }
+    return true;
+  },
   async description({
     description
   }) {

@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/claudex",
-  "version": "0.4.8",
+  "version": "0.5.0",
   "description": "Claudex — multi-provider AI coding CLI. Drop-in replacement for Claude Code with OpenAI, Gemini, Groq, DeepSeek, Ollama and more.",
   "author": "AbdoKnbGit",
   "repository": {
@@ -24,9 +24,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun run build.ts",
+    "build": "node build.mjs",
+    "build:bun": "bun run build.ts",
     "postinstall": "node scripts/postinstall.mjs",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "node build.mjs"
   },
   "keywords": [
     "claudex",
@@ -120,6 +121,7 @@
     "@types/bun": "^1.2.10",
     "@types/node": "^22.14.0",
     "@types/react": "^19.1.0",
+    "esbuild": "^0.24.2",
     "typescript": "^5.7.3"
   }
 }

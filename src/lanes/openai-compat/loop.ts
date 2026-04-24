@@ -227,7 +227,7 @@ export class OpenAICompatLane implements Lane {
 
     const cfg = this.getConfigForModel(model, providerHint)
     if (!cfg) {
-      throw new Error(`openai-compat lane: no provider configured for model "${model}". Call registerProvider() or set an env var (e.g. DEEPSEEK_API_KEY).`)
+      throw new Error(`No provider configured for model "${model}". Run /provider to connect a provider, or /models to pick a different model.`)
     }
 
     const provider = cfg.provider

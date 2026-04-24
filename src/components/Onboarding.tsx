@@ -12,11 +12,12 @@ import { isRunningOnHomespace } from '../utils/envUtils.js';
 import type { ThemeSetting } from '../utils/theme.js';
 import { ApproveApiKey } from './ApproveApiKey.js';
 import { Select } from './CustomSelect/select.js';
+import { FirstRunProviderSetup, hasAnyAuthConfigured } from './FirstRunProviderSetup.js';
 import { WelcomeV2 } from './LogoV2/WelcomeV2.js';
 import { PressEnterToContinue } from './PressEnterToContinue.js';
 import { ThemePicker } from './ThemePicker.js';
 import { OrderedList } from './ui/OrderedList.js';
-type StepId = 'theme' | 'api-key' | 'security' | 'terminal-setup';
+type StepId = 'theme' | 'provider-setup' | 'api-key' | 'security' | 'terminal-setup';
 interface OnboardingStep {
   id: StepId;
   component: React.ReactNode;
@@ -110,6 +111,17 @@ export function Onboarding({
     id: 'theme',
     component: themeStep
   });
+  // First-run provider setup: only inserted when the user has no auth at
+  // all (no Anthropic OAuth/key, no third-party provider key). Reads state
+  // once at render time since onboarding runs before any /login or
+  // /provider interaction in the same session.
+  const needsProviderSetup = useMemo(() => !hasAnyAuthConfigured(), []);
+  if (needsProviderSetup) {
+    steps.push({
+      id: 'provider-setup',
+      component: <FirstRunProviderSetup onDone={goToNextStep} />
+    });
+  }
   if (apiKeyNeedingApproval) {
     steps.push({
       id: 'api-key',

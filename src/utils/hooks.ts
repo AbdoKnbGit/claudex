@@ -948,20 +948,26 @@ async function execCommandHook(
   //   skips user profile scripts (faster, deterministic).
   //   -NonInteractive fails fast instead of prompting.
   //
-  // The Git Bash hard-exit in findGitBashPath() is still in place for
-  // bash hooks. PowerShell hooks never call it, so a Windows user with
-  // only pwsh and shell: 'powershell' on every hook could in theory run
-  // without Git Bash — but init.ts still calls setShellIfWindows() on
-  // startup, which will exit first. Relaxing that is phase 1 of the
-  // design's implementation order (separate PR).
+  // On Windows without git-bash, a bash-typed hook auto-falls-back to
+  // PowerShell so the CLI stays usable on vanilla Windows installs.
   let child: ChildProcessWithoutNullStreams
-  if (shellType === 'powershell') {
+  let effectiveShellType: 'bash' | 'powershell' = shellType
+  if (shellType === 'bash' && isWindows && !findGitBashPath()) {
+    const pwshPath = await getCachedPowerShellPath()
+    if (pwshPath) {
+      logForDebugging(
+        `Hooks: bash hook "${hook.command}" on Windows without git-bash, routing to PowerShell`,
+        { level: 'warn' },
+      )
+      effectiveShellType = 'powershell'
+    }
+  }
+  if (effectiveShellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
       throw new Error(
-        `Hook "${hook.command}" has shell: 'powershell' but no PowerShell ` +
-          `executable (pwsh or powershell) was found on PATH. Install ` +
-          `PowerShell, or remove "shell": "powershell" to use bash.`,
+        `Hook "${hook.command}" needs a shell, but neither bash nor PowerShell ` +
+          `is available on this system. Install Git Bash (Windows) or PowerShell 7+.`,
       )
     }
     child = spawn(pwshPath, buildPowerShellArgs(finalCommand), {
@@ -973,7 +979,7 @@ async function execCommandHook(
   } else {
     // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
     // On other platforms, shell: true uses /bin/sh.
-    const shell = isWindows ? findGitBashPath() : true
+    const shell = isWindows ? (findGitBashPath() ?? true) : true
     child = spawn(finalCommand, [], {
       env: envVars,
       cwd: safeCwd,

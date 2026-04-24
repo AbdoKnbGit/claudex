@@ -1,14 +1,25 @@
+import { getPlatform } from '../platform.js'
 import { getInitialSettings } from '../settings/settings.js'
+import { findGitBashPath } from '../windowsPaths.js'
 
 /**
- * Resolve the default shell for input-box `!` commands.
+ * Resolve the default shell for input-box `!` commands and the agent
+ * shell tool on Windows.
  *
- * Resolution order (docs/design/ps-shell-selection.md §4.2):
- *   settings.defaultShell → 'bash'
+ * Resolution order:
+ *   1. Explicit settings.defaultShell → honor it (user knows best).
+ *   2. Windows without git-bash → 'powershell' (only shell available).
+ *   3. Everywhere else → 'bash'.
  *
- * Platform default is 'bash' everywhere — we do NOT auto-flip Windows to
- * PowerShell (would break existing Windows users with bash hooks).
+ * This keeps existing bash-on-Windows users unchanged while letting
+ * vanilla Windows installs work out of the box on PowerShell.
  */
 export function resolveDefaultShell(): 'bash' | 'powershell' {
-  return getInitialSettings().defaultShell ?? 'bash'
+  const explicit = getInitialSettings().defaultShell
+  if (explicit) return explicit
+
+  if (getPlatform() === 'windows' && !findGitBashPath()) {
+    return 'powershell'
+  }
+  return 'bash'
 }

@@ -9,7 +9,9 @@ export default {
       ? 'Smart phase router — on (toggle, status, config)'
       : 'Smart phase router — auto-switch models per phase'
   },
-  isEnabled: () => true,
+  // Hidden from the slash-menu — /surf is opt-in and off by default.
+  // `/surf on` etc. still work for users who want the phase router.
+  isHidden: true,
   argumentHint: '[on|off|status|config|reset|help]',
   load: () => import('./surf.js'),
 } satisfies Command

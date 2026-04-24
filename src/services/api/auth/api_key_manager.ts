@@ -125,6 +125,21 @@ export function hasStoredKey(provider: string): boolean {
 }
 
 /**
+ * Returns true if any third-party provider has a stored credential
+ * (API key or OAuth token). Used by the first-run wizard to decide
+ * whether to prompt for provider setup.
+ *
+ * Note: Anthropic-native auth lives in a separate config file and
+ * should be checked separately via hasAnthropicApiKeyAuth() or
+ * getClaudeAIOAuthTokens() — this helper covers only third-party
+ * providers stored in provider-keys.json.
+ */
+export function hasAnyThirdPartyProviderConfigured(): boolean {
+  const store = readStore()
+  return Object.keys(store.keys).length > 0
+}
+
+/**
  * Detect key format based on known provider prefixes.
  */
 function detectKeyFormat(provider: string, key: string): string {
