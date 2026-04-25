@@ -207,7 +207,7 @@ ${DESCRIPTION}`
   renderToolResultMessage,
   async call(
     { url, prompt },
-    { abortController, options: { isNonInteractiveSession } },
+    { abortController, options: { isNonInteractiveSession, mainLoopModel } },
   ) {
     const start = Date.now()
 
@@ -274,6 +274,7 @@ To complete your request, I need to fetch content from the redirected URL. Pleas
         abortController.signal,
         isNonInteractiveSession,
         isPreapproved,
+        mainLoopModel,
       )
     }
 

@@ -4,7 +4,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
-import { queryHaiku } from '../../services/api/claude.js'
+import { queryWithModel } from '../../services/api/claude.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
@@ -521,8 +521,9 @@ export async function applyPromptToMarkdown(
   signal: AbortSignal,
   isNonInteractiveSession: boolean,
   isPreapprovedDomain: boolean,
+  model: string,
 ): Promise<string> {
-  // Truncate content to avoid "Prompt is too long" errors from the secondary model
+  // Truncate content to avoid "Prompt is too long" errors from the model
   const truncatedContent =
     markdownContent.length > MAX_MARKDOWN_LENGTH
       ? markdownContent.slice(0, MAX_MARKDOWN_LENGTH) +
@@ -534,11 +535,12 @@ export async function applyPromptToMarkdown(
     prompt,
     isPreapprovedDomain,
   )
-  const assistantMessage = await queryHaiku({
+  const assistantMessage = await queryWithModel({
     systemPrompt: asSystemPrompt([]),
     userPrompt: modelPrompt,
     signal,
     options: {
+      model,
       querySource: 'web_fetch_apply',
       agents: [],
       isNonInteractiveSession,
