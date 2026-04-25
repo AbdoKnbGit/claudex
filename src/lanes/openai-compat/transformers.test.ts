@@ -12,7 +12,7 @@
  *
  * Plus a few targeted checks that guard against the specific quirks
  * each transformer is supposed to fix:
- *   - DeepSeek clamps max_tokens at 8192.
+ *   - DeepSeek clamps max_tokens at 8192 and explicitly toggles thinking.
  *   - Groq normalizes reasoning → reasoning_content on the delta.
  *   - Mistral rewrites tool_choice: "required" → "any".
  *   - NIM deletes stream_options.
@@ -27,6 +27,7 @@ import type { Transformer, TransformContext } from './transformers/base.js'
 import type { OpenAIChatRequest } from './transformers/shared_types.js'
 import { selectEditToolSet, OPENAI_COMPAT_TOOL_REGISTRY } from './tools.js'
 import { resolveEditFormat, resolveCapabilities } from './capabilities.js'
+import { setDeepSeekV4Thinking } from '../../utils/model/deepseekThinking.js'
 
 let passed = 0
 let failed = 0
@@ -98,6 +99,43 @@ function main(): void {
     const body = mkBody('deepseek-reasoner')
     TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-reasoner', true))
     assert(body.thinking?.type === 'enabled', `thinking not set; body.thinking=${JSON.stringify(body.thinking)}`)
+  })
+  test('deepseek disables V4 thinking when picker toggle is OFF', () => {
+    setDeepSeekV4Thinking(false)
+    try {
+      for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
+        const body = mkBody(model, {
+          messages: [
+            { role: 'user', content: 'hi' },
+            {
+              role: 'assistant',
+              content: 'done',
+              reasoning_content: 'old thinking that must not leak into non-thinking mode',
+            },
+          ],
+        })
+        // Even when the global thinking config asks for reasoning, the V4
+        // picker toggle is authoritative — /thinking does not drive V4.
+        TRANSFORMERS.deepseek.transformRequest(body, mkCtx(model, true))
+        assert(body.thinking?.type === 'disabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
+        assert(!('reasoning_content' in body.messages[1]!), `${model} leaked reasoning_content`)
+      }
+    } finally {
+      setDeepSeekV4Thinking(false)
+    }
+  })
+  test('deepseek enables V4 thinking when picker toggle is ON', () => {
+    setDeepSeekV4Thinking(true)
+    try {
+      for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
+        const body = mkBody(model)
+        // Toggle ON wins regardless of ctx.isReasoning.
+        TRANSFORMERS.deepseek.transformRequest(body, mkCtx(model, false))
+        assert(body.thinking?.type === 'enabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
+      }
+    } finally {
+      setDeepSeekV4Thinking(false)
+    }
   })
 
   // ── Groq quirks ─────────────────────────────────────────────────

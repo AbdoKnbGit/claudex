@@ -22,6 +22,11 @@ import {
   getReasoningLabel,
   modelSupportsReasoning,
 } from '../utils/model/openaiReasoning.js'
+import {
+  getDeepSeekV4Thinking,
+  isDeepSeekV4ThinkingModel,
+  toggleDeepSeekV4Thinking,
+} from '../utils/model/deepseekThinking.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
@@ -197,6 +202,7 @@ export function ProviderModelPicker({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
   const [reasoningLevel, setReasoningLevel] = useState(getOpenAIReasoningLevel)
+  const [deepseekV4Thinking, setDeepseekV4Thinking] = useState(getDeepSeekV4Thinking)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
 
   const selectedProvider =
@@ -389,6 +395,15 @@ export function ProviderModelPicker({
       ) {
         const newLevel = cycleOpenAIReasoningLevel(key.leftArrow ? 'left' : 'right')
         setReasoningLevel(newLevel)
+        return
+      }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'deepseek'
+        && isDeepSeekV4ThinkingModel(row.model.id)
+      ) {
+        setDeepseekV4Thinking(toggleDeepSeekV4Thinking())
       }
       return
     }
@@ -523,6 +538,7 @@ export function ProviderModelPicker({
                   ? `${model.id} - ${model.name}`
                   : model.id
               const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
+              const isDeepseekV4 = selectedProvider === 'deepseek' && isDeepSeekV4ThinkingModel(model.id)
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -550,6 +566,11 @@ export function ProviderModelPicker({
                   {isReasoning && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ {getReasoningLabel(reasoningLevel)} ▶
+                    </Text>
+                  )}
+                  {isDeepseekV4 && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ Thinking {deepseekV4Thinking ? 'ON' : 'OFF'} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (
