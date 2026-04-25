@@ -9,9 +9,9 @@
  * and first-launch code will retry any missed Ollama pulls.
  */
 
-import { existsSync, mkdirSync, createWriteStream, unlinkSync, readdirSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, createWriteStream, unlinkSync, readdirSync, renameSync, rmSync, copyFileSync } from 'fs';
 import { chmod } from 'fs/promises';
-import { resolve, dirname, join } from 'path';
+import { resolve, dirname, join, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import https from 'https';
@@ -115,48 +115,89 @@ function download(url, dest) {
   });
 }
 
-/** Extract the ripgrep binary from the archive into destDir. */
+/**
+ * Extract the ripgrep binary from the archive into destDir.
+ *
+ * Uses `tar` for both `.tar.gz` and `.zip`. On Linux/macOS that's the
+ * system tar (GNU or BSD — either handles tar.gz fine). On Windows we
+ * pin to the libarchive `bsdtar.exe` shipped at C:\Windows\System32 since
+ * Windows 10 1803 — the only tool guaranteed to be present that can read
+ * ZIPs without PowerShell. We avoid PATH on Windows because dev shells
+ * (Git Bash, WSL, MSYS2) commonly shadow it with GNU tar, which can't
+ * read ZIPs. If no usable tar is found we throw and the caller falls
+ * back to system `rg` at runtime.
+ */
 async function extract(archivePath, ext, binaryName, destDir) {
-  if (ext === 'tar.gz') {
-    // Use system tar (available on macOS, Linux, and Windows 10+)
-    const result = spawnSync(
-      'tar',
-      ['-xzf', archivePath, '--strip-components=1', '--wildcards', `*/${binaryName}`, '-C', destDir],
-      { stdio: 'pipe' }
+  const tarBin = resolveTarBin(ext);
+  if (!tarBin) {
+    throw new Error(
+      process.platform === 'win32'
+        ? 'No ZIP-capable extractor found. Need C:\\Windows\\System32\\tar.exe (ships with Windows 10 1803+).'
+        : '`tar` not found on PATH.'
     );
-    if (result.status !== 0) {
-      // Fallback: extract all and find the binary
-      spawnSync('tar', ['-xzf', archivePath, '-C', destDir], { stdio: 'pipe' });
-      // Move binary from nested dir to destDir if needed
-      moveNestedBinary(destDir, binaryName);
-    }
-  } else {
-    // ZIP — use PowerShell on Windows (built-in since Windows 5.1)
-    const result = spawnSync(
-      'powershell',
-      ['-NoProfile', '-Command',
-        `Expand-Archive -Force -Path "${archivePath}" -DestinationPath "${destDir}_tmp"; ` +
-        `$rg = Get-ChildItem -Recurse "${destDir}_tmp" -Filter "${binaryName}" | Select-Object -First 1; ` +
-        `Move-Item -Force $rg.FullName "${destDir}\\${binaryName}"; ` +
-        `Remove-Item -Recurse -Force "${destDir}_tmp"`
-      ],
-      { stdio: 'pipe' }
-    );
-    if (result.status !== 0) {
-      throw new Error(`PowerShell extraction failed: ${result.stderr?.toString()}`);
-    }
   }
+
+  // Extract into a tmp sibling, then promote the binary so the layout
+  // matches what the runtime expects regardless of how the archive nests.
+  const stagingDir = `${destDir}_tmp`;
+  rmSync(stagingDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+
+  // Copy the archive into the staging dir and run tar with that dir as
+  // cwd. bsdtar can mis-parse arguments like `C:\path` as a `host:path`
+  // SSH spec; passing only the basename + cwd keeps every tar argument
+  // colon-free and works identically on every platform.
+  const archiveBase = basename(archivePath);
+  const stagingArchive = join(stagingDir, archiveBase);
+  copyFileSync(archivePath, stagingArchive);
+
+  const args = ext === 'tar.gz' ? ['-xzf', archiveBase] : ['-xf', archiveBase];
+  const result = spawnSync(tarBin, args, { cwd: stagingDir, stdio: 'pipe' });
+  unlinkSync(stagingArchive);
+  if (result.status !== 0) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw new Error(`tar extraction failed: ${result.stderr?.toString().trim() || `exit ${result.status}`}`);
+  }
+
+  const found = findBinary(stagingDir, binaryName);
+  if (!found) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw new Error(`Binary ${binaryName} not found in archive ${archivePath}.`);
+  }
+  renameSync(found, join(destDir, binaryName));
+  rmSync(stagingDir, { recursive: true, force: true });
 }
 
-/** If tar extracted into a subdirectory, move the binary up. */
-function moveNestedBinary(destDir, binaryName) {
-  for (const entry of readdirSync(destDir)) {
-    const candidate = join(destDir, entry, binaryName);
-    if (existsSync(candidate)) {
-      renameSync(candidate, join(destDir, binaryName));
-      return;
+/**
+ * Pick the right tar binary for the archive type. Returns the path to a
+ * working extractor, or null if none is available.
+ */
+function resolveTarBin(ext) {
+  if (process.platform === 'win32' && ext === 'zip') {
+    // Pin to the absolute path so Git Bash / WSL / MSYS2 GNU tar can't
+    // shadow Windows' libarchive bsdtar (the only one that reads ZIPs).
+    const bsdtar = 'C:\\Windows\\System32\\tar.exe';
+    if (!existsSync(bsdtar)) return null;
+    const probe = spawnSync(bsdtar, ['--version'], { stdio: 'pipe' });
+    return probe.status === 0 ? bsdtar : null;
+  }
+  // Linux/macOS use tar.gz — GNU tar or bsdtar both handle it fine.
+  const probe = spawnSync('tar', ['--version'], { stdio: 'ignore' });
+  return probe.status === 0 ? 'tar' : null;
+}
+
+/** Recursively locate a file by exact name under root. */
+function findBinary(root, name) {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const full = join(root, entry.name);
+    if (entry.isDirectory()) {
+      const nested = findBinary(full, name);
+      if (nested) return nested;
+    } else if (entry.name === name) {
+      return full;
     }
   }
+  return null;
 }
 
 /**

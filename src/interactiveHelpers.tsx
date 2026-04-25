@@ -177,6 +177,25 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     });
   }
 
+  // First-launch bash setup. Runs before TrustDialog so a fresh-machine
+  // user gets bash sorted out (or explicitly declines) before any tool
+  // path that depends on it. The dialog only renders when bash is
+  // missing entirely or stuck on macOS's Apple-stock 3.2; otherwise this
+  // returns immediately. Cached in GlobalConfig so we never re-prompt.
+  // CLAUDEX_BASH_SETUP_RESET=1 forces the prompt to appear again.
+  {
+    const { shouldShowBashSetup, BashSetupDialog } = await import('./components/BashSetupDialog.js');
+    const bashStatus = shouldShowBashSetup({
+      alreadyAcknowledged: !!getGlobalConfig().bashSetupResponse,
+      resetRequested: isEnvTruthy(process.env.CLAUDEX_BASH_SETUP_RESET),
+    });
+    if (bashStatus) {
+      trace('showing BashSetupDialog');
+      await showSetupDialog(root, done => <BashSetupDialog initialStatus={bashStatus} onDone={() => done()} />);
+      trace('BashSetupDialog completed');
+    }
+  }
+
   // Always show the trust dialog in interactive sessions, regardless of permission mode.
   // The trust dialog is the workspace trust boundary — it warns about untrusted repos
   // and checks CLAUDE.md external includes. bypassPermissions mode
