@@ -1,152 +1,111 @@
 # Claudex
 
-**The multi-provider AI coding CLI.** Use Claude Code's full agentic tool loop, MCP servers, hooks, skills, and interactive TUI with every major LLM provider.
+---
 
-Claudex is not a proxy or wrapper. It is a complete reimplementation of the Claude Code runtime with a provider-agnostic core: every provider goes through native adapters that translate the Anthropic tool-use protocol into each provider's native API format, with full streaming, rate-limit handling, and retry logic built in.
+## What is Claudex?
 
-**Supported Providers:** Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, Ollama, NVIDIA NIM, OpenRouter
+Claudex is an open-source, multi-provider AI coding CLI that runs the full Claude Code agentic environment — tools, MCP servers, hooks, skills, the whole thing — with every major LLM provider, natively.
+
+Not a proxy. Not a wrapper around someone else's wrapper. Native adapters, built from scratch, for each provider. When you use Gemini through Claudex, it speaks Gemini's API directly. Same for OpenAI, DeepSeek, OpenRouter, all of them.
+
+You install it once. You type `/login`. You pick a provider. You work.
+
+That's it. No shell configuration. No export statements. No environment variable archaeology. No "works on my machine" moments. A first-run wizard handles credentials and saves them. Cross-platform — Windows, macOS, Linux. No brainrot config required.
 
 ---
 
-## Quick Install
+## Why does this exist?
+
+Because Anthropic rate limits are real, and sometimes you just want to say hi to your terminal without getting a 429 back.
+
+Claudex lets you swap providers mid-session. Anthropic giving you the cold shoulder? Switch to Kimi K2.6. Still need the agent loop, the file editing, the bash execution, the MCP servers, the hooks? You have all of it. Nothing changes except who's doing the thinking.
+
+And here's the part that actually matters: you can work with any provider — Codex CLI, Gemini CLI, Antigravity, Cline, Cursor, KiloCode, Kiro, GitHub Copilot — without any of them installed on your machine. Not downloaded, not configured, not even present. Claudex brings the runtime. You bring the API key.
+
+That's the point. Same experience. Different brain. Zero dependencies on the original tool.
+
+---
+
+## Install
 
 ```bash
 npm install -g @abdoknbgit/claudex
 ```
 
-### From source
-
-```bash
-git clone https://github.com/AbdoKnbGit/claudex.git
-cd claudex
-npm install
-npm run build
-npm link
-```
-
-### Requirements
-
-- **Node.js** >= 20.0.0
-- **Git** (optional on Windows — claudex auto-falls-back to PowerShell if git-bash is absent)
-- **Bun** (optional — `npm run build` uses esbuild; `npm run build:bun` uses Bun)
+**Requirements:** Node.js >= 20.0.0, Bash
 
 ---
 
 ## Launch
 
 ```bash
-# Interactive mode (full TUI)
 claudex
-
-# One-shot print mode
-claudex -p "explain this codebase"
-
-# Continue last conversation
-claudex -c
 ```
 
 ---
 
-## Commands
+## The Three Commands You Need to Know
 
-### `/provider` - Switch between LLM providers
+### `/login` — Start here
 
-Opens an interactive picker to switch between all 8 supported providers. Your selection is saved and persists across sessions. Each provider uses its native API format for best performance.
+Pick a provider, enter your credentials, done. Claudex saves everything so you never do this twice. No env variables. No config files to hunt down.
 
-### `/models` - Browse and pick any model
+### `/providers` — See the full picture
 
-Opens a live model browser that fetches the full model catalog from the selected provider's API. Search, filter, and set any model as your active model.
+Shows every connected provider and their current status. Configured, available, needing login — all of it at a glance.
 
-- `/models` — open interactive provider + model picker
-- `/models <query>` — search the active provider's models
-- `/models <provider>:<query>` — search a specific provider (e.g. `/models groq:llama`)
-- `/model <model-id>` — set a specific model directly (e.g. `/model deepseek-reasoner`)
+### `/models` — Pick your weapon
 
-**Example model counts per provider:**
+Live model browser. Fetches the actual catalog from your provider's API in real time. Search, filter, and set any model as your active one.
 
-| Provider     | Models Available |
-|--------------|-----------------|
-| OpenAI       | 80+             |
-| Google Gemini| 30+             |
-| OpenRouter   | 300+            |
-| Groq         | 15+             |
-| DeepSeek     | 5+              |
-| NVIDIA NIM   | 100+            |
-| Ollama       | varies (local)  |
+```
+/models                     open the full picker
+/models <query>             search active provider
+/models openrouter:kimi     search a specific provider
+/model kimi-k2-5            set a model directly
+```
 
-### `/thinking` - Toggle thinking/reasoning mode
+---
 
-Controls whether the model reasons step-by-step before answering. Works safely across all providers:
+## Supported Providers
 
-- `/thinking` — toggle on/off
-- `/thinking on` — enable thinking
-- `/thinking off` — disable thinking
-- `/thinking status` — show current state and model support
-
-**Decision matrix (zero crashes guaranteed):**
-
-| State | Model Support | Behavior |
-|-------|--------------|----------|
-| thinking=on | model supports thinking | Thinking enabled |
-| thinking=on | model lacks thinking | Request sent normally (param silently omitted) |
-| thinking=off | any model | No thinking param sent |
-
-**Models with thinking support:** Claude 4+ (Anthropic), DeepSeek Reasoner, Kimi K2 Thinking (NIM), DeepSeek R1 distill models (Groq)
+| Provider | Notes |
+|---|---|
+| Anthropic | No comment |
+| OpenAI | Best in class, but GPT-5.5 is paywalled behind Plus/Pro |
+| Google Gemini | Use your own account — some server configs block certain regions |
+| Antigravity | Saving lives from agent server overload errors |
+| OpenRouter | Would use this full-time if the bills didn't care |
+| NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
+| DeepSeek | Solid |
+| Ollama | Local and private, but you knew that already |
+| Cline | Moonshot AI's Kimi K2.6 free tier through here is the big win |
+| GitHub Copilot | For enterprise people. The free models are not coding, they're cosplaying |
+| Cursor | Peak performance on Plan mode, but auto mode fails sometimes |
+| KiloCode | Good for low-effort sidequest tasks. Cache hit rate is a server-side problem — Claudex fixes it where it can, but you may still pay full price occasionally |
+| Kiro | Kiss on the forehead |
 
 ---
 
 ## Features
 
-### Multi-Provider Engine
-- **8 providers** with native adapters (not a proxy)
-- **OAuth + API key auth** for all providers
-- **Persistent provider selection** across sessions
-- **Automatic tool schema sanitization** per provider (Gemini, OpenAI, Groq)
-- **Aggressive payload optimization** for rate-limited providers (Groq)
-- **Human-friendly error messages** for billing, quota, and auth errors
+**Multi-provider, natively**
+Twelve providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
 
-### Full Agent Tooling
-- **File editing** — Read, Edit, Write, Glob, Grep with permission controls
-- **Bash execution** — sandboxed shell commands with timeout and abort
-- **MCP servers** — full Model Context Protocol support for external tools
-- **Hooks** — PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification
-- **Skills** — /commit, /review-pr, /simplify, /loop, and more
-- **Task management** — structured task tracking within sessions
-- **Web tools** — WebSearch, WebFetch for live data retrieval
-
-### Developer Experience
-- **Interactive TUI** — Ink-based React terminal UI with streaming output
-- **Thinking mode** — toggle reasoning with `/thinking` across all providers
-- **Vim mode** — modal editing in the prompt
-- **Keyboard shortcuts** — configurable keybindings
-- **Debug mode** — `claudex --debug` for full request/response tracing
-- **VS Code extension** — companion extension with Control Center, provider switching, project-aware launch
-
-### Resilience
-- **Retry with backoff** — up to 10 retries with exponential backoff + jitter for 429/5xx errors
-- **Retry-After respect** — honors provider rate-limit headers
-- **Context overflow recovery** — auto-reduces max_tokens when hitting context limits
-- **Streaming fallback** — NIM and Ollama fall back to non-streaming when needed
-- **Cross-platform, shell-agnostic** — `npm install -g` works on Windows, macOS, Linux, WSL with no extra setup. On Windows, claudex uses git-bash if present and auto-falls-back to PowerShell otherwise. No environment variables required — provider credentials are stored via a guided first-run wizard.
+**The full agent loop**
+File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.
 
 ---
 
-## VS Code Extension
+## Coming Soon
 
-The `claudex-vscode/` directory contains a companion VS Code extension:
+**`/surf`** — Intelligent model routing. Claudex reads the task and routes to the best available model automatically. Experimental, in progress.
 
-- **Control Center** — webview panel showing provider state, project info, and launch actions
-- **Provider switching** — change providers from the VS Code command palette
-- **Project-aware launch** — starts claudex in the right directory with the right context
-- **Status bar** — shows active provider and session state
+**`/fallback`** — Automatic recovery when a model fails mid-session. Configure a fallback and never lose your work to a provider outage again.
 
-Install from the extension directory:
+**`/github-me`** — A tool that handles the full development lifecycle: review, edit, CI/CD, testing, and automation of every GitHub action you'd otherwise do manually.
 
-```bash
-cd claudex-vscode
-npx @vscode/vsce package --no-dependencies
-code --install-extension claudex-vscode-*.vsix
-```
+**`vscode-claudex`** — VS Code extension. Provider switching from the command palette, Control Center webview, and project-aware session launch. In progress.
 
 ---
 
