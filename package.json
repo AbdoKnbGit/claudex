@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/claudex",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Claudex — multi-provider AI coding CLI. Drop-in replacement for Claude Code with OpenAI, Gemini, Groq, DeepSeek, Ollama and more.",
   "author": "AbdoKnbGit",
   "repository": {

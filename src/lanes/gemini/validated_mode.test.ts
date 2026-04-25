@@ -125,13 +125,15 @@ function main(): void {
       'no-invention nudge missing')
   })
 
-  test('TOOL_USAGE_RULES under 700 bytes (cost budget)', () => {
-    // The preamble lands on every Gemini turn; keep it tight. 700 is the
-    // ceiling where the anti-empty-args payoff clearly outweighs token cost
-    // on Flash-class models. Tighten further only if Flash behaves with
-    // a smaller nudge — don't compromise clarity for a handful of bytes.
+  test('TOOL_USAGE_RULES under 1024 bytes (cost budget)', () => {
+    // The preamble lands on every Gemini turn (cached after the first), so
+    // it must stay under 1KB. Two concerns share this block:
+    //   1. Schema authority (anti-empty-args nudge for Flash-class).
+    //   2. Failure-recovery rule (don't iterate cosmetic command variants).
+    // Both are belt-and-suspenders against a model behavior that's expensive
+    // when it slips — so the byte cost is well-justified at this ceiling.
     const b = Buffer.byteLength(GEMINI_TOOL_USAGE_RULES, 'utf-8')
-    assert(b < 700, `preamble too long (${b} bytes) — eats cache budget`)
+    assert(b < 1024, `preamble too long (${b} bytes) — eats cache budget`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

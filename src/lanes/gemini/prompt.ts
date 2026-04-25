@@ -108,7 +108,9 @@ function operationalGuidelines(): string {
 - A bug fix doesn't need surrounding code cleaned up.
 - Don't add error handling for scenarios that can't happen.
 - When making changes, verify they work before reporting completion.
-- If you're unsure about something, ask the user rather than guessing.`
+- If you're unsure about something, ask the user rather than guessing.
+- When a tool call fails, diagnose the cause first — read the exit code and error text, verify what's actually installed/available and what the right path is — before retrying. Do NOT iterate on cosmetic variations of the same call (different shell wrappers, slight flag tweaks); each blind retry burns input tokens without progress. If two attempts fail for the same reason, stop and investigate.
+- For unfamiliar CLIs, libraries, or APIs, verify the exact syntax once (\`--help\`, official docs, the tool's source) instead of guessing flags and iterating.`
 }
 
 function gitRepoSection(): string {

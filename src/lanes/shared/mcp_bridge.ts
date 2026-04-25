@@ -267,6 +267,8 @@ Treat each tool's "parameters" field as authoritative:
 - Match parameter TYPES exactly (array means array, object means object, string means string).
 - Do not invent extra parameters that are not in "properties".
 The "STRICT PARAMETERS:" hint at the end of each tool description is your quick reference.
+
+When a tool call fails, diagnose the cause — read the exit code/error text, verify what actually exists (binaries, paths, shell). Don't iterate cosmetic variants of the same call; blind retries waste input tokens. After two same-cause failures, stop and investigate. For unfamiliar CLIs, run \`--help\` once before invoking.
 </TOOL_USAGE_RULES>
 `
 
@@ -281,6 +283,8 @@ Tool parameter schemas are authoritative. Never call a tool with missing require
 Each tool description ends with a "STRICT PARAMETERS:" line listing required fields first. Use it as your quick reference before you emit the call.
 
 For file edits, apply_patch is the primary edit primitive — use it for all in-place modifications. Use write_file only for brand-new files.
+
+When a shell or tool call fails, diagnose first: exit code, error text, binary/path/shell. Make ONE focused fix; don't iterate cosmetic variants (swap shells, retry same path, tweak flags). Blind retries waste input tokens — if two attempts fail the same way, stop and investigate. For unfamiliar CLIs, check \`--help\` once before invoking.
 </tool_use_rules>
 `
 
@@ -298,6 +302,8 @@ Tool schemas are authoritative. For every tool call:
 - if a tool description points to full documentation in the system prompt, read that section before calling the tool
 
 The "STRICT PARAMETERS:" line in each tool description is the quick reference.
+
+When a tool call fails, diagnose first — exit code, error text, what's actually available. Don't iterate cosmetic variants of the same call; blind retries waste input tokens. After two same-cause failures, stop and investigate. For unfamiliar CLIs, check \`--help\` before invoking.
 </tool_usage_rules>
 `
 
@@ -316,6 +322,8 @@ Rules for every tool call:
 - Do not add parameters that aren't declared in "properties".
 
 The "STRICT PARAMETERS:" line at the end of each description is the quick reference. Re-read it before each call.
+
+When a command fails, diagnose first — read the exit code (127=not found, 2=misuse) and error text, verify what exists. Don't retry the same call with cosmetic tweaks; blind retries burn input tokens. After two same-cause failures, stop and investigate. For unfamiliar CLIs, run \`--help\` once instead of guessing flags.
 </tool_usage>
 `
 
@@ -332,6 +340,8 @@ Tool parameter schemas are authoritative. Before every tool call:
 - Don't invent parameters that aren't declared.
 
 The "STRICT PARAMETERS:" line appended to each tool description summarizes required-vs-optional + types for quick reference.
+
+When a tool call fails, diagnose first (exit code, error text, what actually exists) before retrying. Don't iterate cosmetic variants of the same call; blind retries burn input tokens. After two same-cause failures, stop and investigate. For unfamiliar CLIs/APIs, check \`--help\` once before invoking — don't guess flags.
 </tool_usage_rules>
 `
 

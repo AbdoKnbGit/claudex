@@ -81,6 +81,25 @@ function main(): void {
     }
   }
 
+  // Every preamble carries the failure-recovery nudge: when a tool call
+  // fails, diagnose the cause and don't iterate cosmetic variants of the
+  // same call. Without this, non-Claude models fall into multi-turn
+  // syntax-flailing on unfamiliar CLIs/containers/etc., burning input
+  // tokens. The exact wording varies; the *intent* must be present in
+  // every lane.
+  const diagnoseNudges: Array<[RegExp, string]> = [
+    [/diagnose|exit code|error text/i, 'diagnose-the-failure nudge'],
+    [/cosmetic variants|blind retries|don'?t iterate|don'?t retry/i, 'no-blind-retry nudge'],
+    [/--help|docs|documentation/i, 'check-docs-before-guessing nudge'],
+  ]
+  for (const { lane, rules } of preambles) {
+    for (const [re, label] of diagnoseNudges) {
+      test(`${lane} preamble carries ${label}`, () => {
+        assert(re.test(rules), `missing ${label} in ${lane}:\n${rules}`)
+      })
+    }
+  }
+
   // Every preamble fits under 1KB so cache cost stays small.
   for (const { lane, rules } of preambles) {
     test(`${lane} preamble under 1024 bytes`, () => {

@@ -65,7 +65,9 @@ function operational(): string {
 - When referencing code, include file paths (and line numbers when specific).
 - Don't refactor code that wasn't part of the task.
 - Don't add comments that merely restate what the code does.
-- Don't add error handling for scenarios that can't actually occur in this codebase.`
+- Don't add error handling for scenarios that can't actually occur in this codebase.
+- When a tool call fails, diagnose the cause first — read the exit code (127 = command not found, 2 = misuse, 1 = generic failure) and the error text, then verify what actually exists (binaries, paths, shell context). Don't retry the same call with cosmetic tweaks (different shell, slightly different flags); blind retries burn input tokens without progress. If two attempts fail the same way, stop and investigate.
+- For unfamiliar CLIs or APIs, run \`--help\` once or read the docs instead of guessing flags and iterating.`
 }
 
 function git(): string {

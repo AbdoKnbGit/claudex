@@ -22,7 +22,9 @@ export function assembleOpenAICompatPrompt(
         // Shorter prompt for local models with limited context
         `You are a coding assistant. Help the user with their programming tasks.
 
-Use the provided tools to read files, edit code, search the codebase, and run commands. Be concise.`,
+Use the provided tools to read files, edit code, search the codebase, and run commands. Be concise.
+
+When a command fails, diagnose first (read the exit code and error) before retrying — don't guess at variants. For unfamiliar CLIs, check \`--help\` once instead of iterating on flags.`,
       ]
     : [
         `You are an expert software engineer helping the user with coding tasks.
@@ -41,7 +43,9 @@ You have tools for reading files, writing files, editing code, searching the cod
 - Read a file before editing it
 - Don't add comments or docstrings to unchanged code
 - Don't create abstractions for one-time operations
-- If unsure about something, ask the user`,
+- If unsure about something, ask the user
+- When a tool call fails, diagnose the cause first — read the exit code and error text, verify what actually exists (binaries, paths, env) — before retrying. Do NOT iterate on cosmetic variations of the same call (different shell wrappers, slight flag tweaks); blind retries burn input tokens without progress. If two attempts fail for the same reason, stop and investigate.
+- For unfamiliar CLIs, libraries, or APIs, check \`--help\` or the official docs once before invoking. Don't guess flags and iterate.`,
       ]
 
   if (parts.customInstructions) {

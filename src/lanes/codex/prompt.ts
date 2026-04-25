@@ -56,7 +56,9 @@ Include enough context in @@ hunks that anchor lines are unique in the file. For
 1. Read relevant code before changing it — don't guess file paths or function signatures.
 2. Make targeted, minimal changes. A bug fix doesn't need surrounding refactoring.
 3. Verify (tests, type checks, manual probes) before reporting done.
-4. Don't add abstractions for one-off operations.`,
+4. Don't add abstractions for one-off operations.
+5. When a shell or tool call fails, diagnose first — read the exit code and error text, verify the binary/path/env, then make ONE focused fix. Do not iterate on cosmetic variants of the same call (swapping shells, retrying the same path, tweaking flags); blind retries waste input tokens. If two attempts fail for the same reason, stop and investigate.
+6. For unfamiliar CLIs or APIs, check \`--help\` or the docs once before invoking — don't guess flags and iterate.`,
 
   `## Style
 

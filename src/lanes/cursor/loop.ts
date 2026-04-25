@@ -50,6 +50,7 @@ import {
   getCursorRegistrationByNativeName,
   resolveCursorToolCall,
 } from './tools.js'
+import { OPENAI_COMPAT_TOOL_USAGE_RULES } from '../shared/mcp_bridge.js'
 
 const CURSOR_ENDPOINT = 'https://api2.cursor.sh/aiserver.v1.InferenceService/Stream'
 const CURSOR_HTTP_TIMEOUT_MS = 60_000
@@ -160,9 +161,23 @@ export class CursorLane implements Lane {
       )
     }
 
-    const systemText = typeof system === 'string'
+    const rawSystemText = typeof system === 'string'
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
+
+    // Prepend OPENAI_COMPAT_TOOL_USAGE_RULES at the top of system text
+    // when tools are present. Same pattern as the cline / kilo / openai-
+    // compat lanes — Cursor proxies to Anthropic / OpenAI / Gemini upstream
+    // and the rule is already in the upstream prompt, but lifting it to
+    // the very top is the difference between "buried hint the model
+    // ignores" and "first thing it reads", which materially reduces the
+    // syntax-flailing retry loops that burn input tokens on non-Claude
+    // routes through Cursor.
+    const systemText = (tools && tools.length > 0)
+      ? (rawSystemText
+          ? `${OPENAI_COMPAT_TOOL_USAGE_RULES}\n${rawSystemText}`
+          : OPENAI_COMPAT_TOOL_USAGE_RULES)
+      : rawSystemText
 
     // Cursor only exposes UNSPECIFIED / MEDIUM / HIGH, not a continuous
     // thinking budget — bucket the caller's budget_tokens into those.
