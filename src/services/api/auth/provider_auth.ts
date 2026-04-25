@@ -42,10 +42,6 @@ import {
   startGeminiOAuth,
   refreshGeminiOAuth,
   type GeminiOAuthType,
-  // Backwards-compat wrappers (still used by some callers)
-  getGoogleOAuthToken,
-  startGoogleOAuthFlow,
-  refreshGoogleToken,
 } from './google_oauth.js'
 import { getOpenAIOAuthToken, startOpenAIOAuthFlow, refreshOpenAIToken } from './openai_oauth.js'
 import {
@@ -205,8 +201,9 @@ export async function refreshProviderOAuth(provider: APIProvider): Promise<strin
 
   switch (provider) {
     case 'gemini':
+      return refreshGeminiOAuth('cli', tokens.refreshToken)
     case 'antigravity':
-      return refreshGoogleToken(tokens.refreshToken)
+      return refreshGeminiOAuth('antigravity', tokens.refreshToken)
     case 'openai':
       return refreshOpenAIToken(tokens.refreshToken)
     case 'cline':

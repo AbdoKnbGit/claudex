@@ -171,15 +171,17 @@ class GeminiApiClient {
             accountEmail: account.email,
           }
         }
-        // All accounts disabled/cooling — fall through to single-token
-        // path or, as last resort, CLI token.
+        // All accounts disabled/cooling — fall through to the single-token
+        // Antigravity path. Do not borrow the Gemini CLI token: the CLI
+        // Google account is allowed to be a different account, and it may
+        // have no Antigravity enrollment.
       }
-      const t = this.antigravityOAuthToken ?? this.cliOAuthToken
-      return t ? { token: t, executor: this.antigravityOAuthToken ? 'antigravity' : 'cli' } : null
+      const t = this.antigravityOAuthToken
+      return t ? { token: t, executor: 'antigravity' } : null
     }
 
-    const t = this.cliOAuthToken ?? this.antigravityOAuthToken
-    return t ? { token: t, executor: this.cliOAuthToken ? 'cli' : 'antigravity' } : null
+    const t = this.cliOAuthToken
+    return t ? { token: t, executor: 'cli' } : null
   }
 
   /**

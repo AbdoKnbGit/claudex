@@ -203,10 +203,11 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
   }
   saveProviderKey(cfg.storageKey, JSON.stringify(stored))
 
-  // Tell the Gemini lane to re-read credentials so the current session
-  // uses the new token immediately — without this, users had to restart
-  // claudex after /login before the lane picked up the creds.
-  await _reloadGeminiLaneAuth()
+  // Re-read credentials in this session and clear only this Google
+  // executor's Code Assist project cache. Project ids are account-bound;
+  // keeping the previous account's cached project after login can cause
+  // a 403 until restart or request-time cache recovery.
+  await _reloadGeminiLaneAuth({ clearCodeAssistCacheFor: type })
 
   return {
     accessToken: tokens.access_token,
@@ -219,8 +220,14 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
  * doesn't hard-depend on the lane module (which in turn transitively
  * imports this file via providerShim).
  */
-async function _reloadGeminiLaneAuth(): Promise<void> {
+async function _reloadGeminiLaneAuth(opts?: {
+  clearCodeAssistCacheFor?: GeminiOAuthType
+}): Promise<void> {
   try {
+    if (opts?.clearCodeAssistCacheFor) {
+      const { clearCodeAssistCache } = await import('../providers/gemini_code_assist.js')
+      clearCodeAssistCache(opts.clearCodeAssistCacheFor)
+    }
     const { reloadGeminiLaneAuth } = await import('../providers/providerShim.js')
     await reloadGeminiLaneAuth()
   } catch {

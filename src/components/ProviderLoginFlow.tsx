@@ -215,6 +215,31 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
   }
 }
 
+async function reloadSavedGoogleOAuthInRuntime(
+  provider: APIProvider,
+  method: AuthMethod,
+): Promise<void> {
+  const isGoogleOAuth =
+    (provider === 'gemini' && method === 'oauth_cli') ||
+    (provider === 'antigravity' && method === 'oauth_antigravity')
+  if (!isGoogleOAuth) return
+
+  const executor = method === 'oauth_antigravity' || provider === 'antigravity'
+    ? 'antigravity'
+    : 'cli'
+
+  try {
+    const [{ clearCodeAssistCache }, { reloadGeminiLaneAuth }] = await Promise.all([
+      import('../services/api/providers/gemini_code_assist.js'),
+      import('../services/api/providers/providerShim.js'),
+    ])
+    clearCodeAssistCache(executor)
+    await reloadGeminiLaneAuth()
+  } catch {
+    // Tokens are saved; the next provider init will still read them from disk.
+  }
+}
+
 type Props = {
   provider: APIProvider
   onDone: (success: boolean) => void
@@ -361,9 +386,10 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
         : method === 'oauth_antigravity' ? startGeminiOAuthFlow('antigravity')
           : startProviderOAuth(provider)
     oauthPromise
-      .then(() => {
+      .then(async () => {
         // Activating OAuth deactivates API key for this provider.
         deleteProviderKey(provider)
+        await reloadSavedGoogleOAuthInRuntime(provider, method)
         if (provider === 'cline') {
           void import('../services/api/providers/providerShim.js')
             .then(({ reloadClineLaneAuth }) => reloadClineLaneAuth())

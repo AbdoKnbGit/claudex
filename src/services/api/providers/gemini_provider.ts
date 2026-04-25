@@ -442,9 +442,9 @@ export class GeminiProvider extends BaseProvider {
   private _tokenForModel(model: string): string | null {
     const executor = executorForModel(model)
     if (executor === 'antigravity') {
-      return this.antigravityOAuthToken ?? this.cliOAuthToken ?? null
+      return this.antigravityOAuthToken ?? null
     }
-    return this.cliOAuthToken ?? this.antigravityOAuthToken ?? null
+    return this.cliOAuthToken ?? null
   }
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
