@@ -24,7 +24,11 @@ export type BashStatus = {
    * Functional for spawning commands but worth offering an upgrade.
    */
   isAppleStock: boolean
+  /** True when the detected bash is too old for claudex's bash features. */
+  isOutdated: boolean
 }
+
+export const MINIMUM_BASH_MAJOR = 4
 
 const NULL_STATUS: BashStatus = {
   ok: false,
@@ -33,6 +37,7 @@ const NULL_STATUS: BashStatus = {
   versionLine: null,
   source: null,
   isAppleStock: false,
+  isOutdated: false,
 }
 
 /** Cached result — bash availability is stable for the life of a process. */
@@ -75,6 +80,7 @@ function detectUnixBash(): BashStatus {
           ...probe,
           source: isAppleStock ? 'apple-stock' : 'system',
           isAppleStock,
+          isOutdated: isBashOutdated(probe.major),
         }
       }
     }
@@ -93,9 +99,8 @@ function detectWindowsBash(): BashStatus {
     if (probe) return { ...probe, source: 'git-for-windows' }
   }
 
-  // WSL is the other common bash path on Windows. `wsl.exe bash --version`
-  // round-trips through the default distro; only treat it as a hit if the
-  // distro actually has bash configured.
+  // On Windows claudex uses Git Bash for native shell commands. WSL is only
+  // detected so the setup dialog can explain why Git Bash is still required.
   if (existsSync('C:\\Windows\\System32\\wsl.exe')) {
     const out = spawnSync(
       'C:\\Windows\\System32\\wsl.exe',
@@ -111,6 +116,7 @@ function detectWindowsBash(): BashStatus {
         versionLine,
         source: 'wsl',
         isAppleStock: false,
+        isOutdated: isBashOutdated(parseMajor(versionLine)),
       }
     }
   }
@@ -133,7 +139,12 @@ function probeBash(executable: string): BashStatus | null {
     versionLine,
     source: 'system',
     isAppleStock: false,
+    isOutdated: isBashOutdated(parseMajor(versionLine)),
   }
+}
+
+export function isBashOutdated(major: number | null): boolean {
+  return major !== null && major < MINIMUM_BASH_MAJOR
 }
 
 function parseMajor(line: string | null): number | null {

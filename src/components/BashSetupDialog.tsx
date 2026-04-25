@@ -24,14 +24,16 @@ type Decision = 'satisfied' | 'installed' | 'declined' | 'manual'
 /**
  * First-launch prompt offering to install (or upgrade) bash. Only shown
  * when:
- *   - bash is missing entirely (Windows without git-bash, exotic Linux), or
- *   - the only bash available is Apple's stock 3.2 on macOS.
+ *   - bash is missing entirely (Windows without Git Bash, exotic Linux), or
+ *   - Windows has only WSL/generic bash, which the native shell provider does not use, or
+ *   - the detected bash is too old for claudex's bash features.
  *
- * The result (approved/declined/manual) is stored in GlobalConfig so we
- * don't re-prompt on subsequent launches.
+ * The result (approved/declined/manual) is stored in GlobalConfig for
+ * diagnostics. Detection remains authoritative, so we keep prompting until
+ * a usable bash is present.
  */
 export function BashSetupDialog({ initialStatus, onDone }: Props): React.ReactNode {
-  const [plan] = useState<InstallPlan>(() => planBashInstall())
+  const [plan] = useState<InstallPlan>(() => planBashInstall(initialStatus))
   const [phase, setPhase] = useState<'ask' | 'installing' | 'done'>('ask')
   const [resultMessage, setResultMessage] = useState<string | null>(null)
   const [resultOk, setResultOk] = useState<boolean | null>(null)
@@ -137,7 +139,7 @@ export function BashSetupDialog({ initialStatus, onDone }: Props): React.ReactNo
       <Box flexDirection="column" gap={1}>
         <Text>{why}</Text>
         <Text>
-          claudex works best with bash. I can install it for you using{' '}
+          claudex requires a current bash for shell commands. I can {plan.action} it for you using{' '}
           <Text bold>{plan.canInstall ? plan.label : 'a manual download'}</Text>.
           <Newline />
           Command:{' '}
@@ -152,7 +154,9 @@ export function BashSetupDialog({ initialStatus, onDone }: Props): React.ReactNo
         defaultFocusValue="install"
         options={[
           {
-            label: plan.canInstall ? 'Yes, install bash' : 'Show me the manual steps',
+            label: plan.canInstall
+              ? `Yes, ${plan.action} bash`
+              : 'Show me the manual steps',
             value: 'install',
           },
           { label: 'No, skip and continue', value: 'skip' },
@@ -172,26 +176,39 @@ export function shouldShowBashSetup(opts: {
   alreadyAcknowledged: boolean
   resetRequested: boolean
 }): BashStatus | null {
-  if (opts.alreadyAcknowledged && !opts.resetRequested) return null
   const status = detectBash()
-  if (!status.ok) return status
-  // macOS stock bash 3.2 is functional but ancient — offer a brew upgrade.
-  if (status.isAppleStock) return status
-  return null
+  return needsBashSetup(status) ? status : null
+}
+
+function needsBashSetup(status: BashStatus): boolean {
+  if (!status.ok) return true
+  // The runtime shell provider requires Git Bash on Windows. WSL or another
+  // generic bash on PATH is not enough for native shell-command support.
+  if (process.platform === 'win32' && status.source !== 'git-for-windows') return true
+  return status.isAppleStock || status.isOutdated
 }
 
 function describeReason(status: BashStatus): string {
   if (!status.ok) {
     if (process.platform === 'win32') {
-      return 'No bash detected on this machine (no Git for Windows, no WSL).'
+      return 'No Git Bash detected on this machine.'
     }
     if (process.platform === 'linux') {
       return 'No bash detected on this Linux machine (very rare — most distros preinstall it).'
     }
     return 'No bash detected.'
   }
+  if (process.platform === 'win32' && status.source === 'wsl') {
+    return 'WSL bash was detected, but claudex on Windows needs Git Bash for native shell commands.'
+  }
+  if (process.platform === 'win32' && status.source !== 'git-for-windows') {
+    return 'No Git Bash detected on this machine.'
+  }
   if (status.isAppleStock) {
     return `macOS only ships bash ${status.versionLine ?? '3.2'} at /bin/bash. claudex still works, but a current bash via Homebrew is recommended for full feature support.`
+  }
+  if (status.isOutdated) {
+    return `Detected ${status.versionLine ?? 'an old bash'}, which is too old for claudex shell support.`
   }
   return 'bash is available, but an upgrade is recommended.'
 }

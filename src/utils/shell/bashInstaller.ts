@@ -1,7 +1,12 @@
 import { spawnSync, type SpawnSyncReturns } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 import { findGitBashPath } from '../windowsPaths.js'
-import { resetBashAvailabilityCache } from './bashAvailability.js'
+import {
+  detectBash,
+  isBashOutdated,
+  resetBashAvailabilityCache,
+  type BashStatus,
+} from './bashAvailability.js'
 
 export type InstallResult = {
   ok: boolean
@@ -15,6 +20,7 @@ export type InstallResult = {
 }
 
 export type InstallPlan = {
+  action: 'install' | 'upgrade'
   /** True if there is a sensible automatic install path on this system. */
   canInstall: boolean
   /** Short, human-readable label for the install path (e.g. "winget Git.Git"). */
@@ -34,11 +40,12 @@ type LinuxFamily = 'apt' | 'dnf' | 'pacman' | 'zypper' | 'apk' | null
  * Build an install plan for the current OS without running anything.
  * Returns the command we'd run + whether it's fully automatable.
  */
-export function planBashInstall(): InstallPlan {
-  if (process.platform === 'win32') return planWindows()
-  if (process.platform === 'darwin') return planMacOS()
-  if (process.platform === 'linux') return planLinux()
+export function planBashInstall(status: BashStatus = detectBash()): InstallPlan {
+  if (process.platform === 'win32') return planWindows(status)
+  if (process.platform === 'darwin') return planMacOS(status)
+  if (process.platform === 'linux') return planLinux(status)
   return {
+    action: 'install',
     canInstall: false,
     label: 'unsupported platform',
     command: '',
@@ -83,7 +90,23 @@ export function runBashInstall(plan: InstallPlan): InstallResult {
   ;(findGitBashPath as { cache?: { clear?: () => void } }).cache?.clear?.()
 
   if (result.status === 0) {
-    return { ok: true, message: `Installed via ${plan.label}.`, command: plan.command }
+    resetBashAvailabilityCache()
+    const status = detectBash()
+    const usable =
+      status.ok &&
+      !isBashOutdated(status.major) &&
+      !(process.platform === 'win32' && status.source !== 'git-for-windows')
+    if (usable) {
+      const verb = plan.action === 'upgrade' ? 'Updated' : 'Installed'
+      return { ok: true, message: `${verb} via ${plan.label}.`, command: plan.command }
+    }
+    return {
+      ok: false,
+      message:
+        `Command completed, but claudex still cannot find a current bash. ` +
+        `Detected: ${status.versionLine ?? 'none'}. You can run \`${plan.command}\` manually to retry.`,
+      command: plan.command,
+    }
   }
   return {
     ok: false,
@@ -94,19 +117,25 @@ export function runBashInstall(plan: InstallPlan): InstallResult {
 
 // ── Per-platform plans ──────────────────────────────────────────────
 
-function planWindows(): InstallPlan {
+function planWindows(status: BashStatus): InstallPlan {
   const winget = resolveWinget()
+  const action = status.source === 'git-for-windows' ? 'upgrade' : 'install'
   if (winget) {
     // --silent + --accept-*-agreements run unattended; --scope user avoids
     // an admin prompt and installs into %LOCALAPPDATA%, which is what we
     // want for a CLI postinstall flow. Git for Windows is the package.
     return {
+      action,
       canInstall: true,
-      label: 'winget Git.Git',
-      command: `${quote(winget)} install --id Git.Git -e --source winget --silent --scope user --accept-source-agreements --accept-package-agreements`,
+      label: `winget ${action === 'upgrade' ? 'upgrade Git.Git' : 'Git.Git'}`,
+      command:
+        action === 'upgrade'
+          ? `${quote(winget)} upgrade --id Git.Git -e --source winget --silent --accept-source-agreements --accept-package-agreements`
+          : `${quote(winget)} install --id Git.Git -e --source winget --silent --scope user --accept-source-agreements --accept-package-agreements`,
     }
   }
   return {
+    action,
     canInstall: false,
     label: 'manual',
     command: '',
@@ -116,16 +145,19 @@ function planWindows(): InstallPlan {
   }
 }
 
-function planMacOS(): InstallPlan {
+function planMacOS(status: BashStatus): InstallPlan {
   const brew = resolveBrew()
+  const action = status.ok && status.source === 'homebrew' ? 'upgrade' : 'install'
   if (brew) {
     return {
+      action,
       canInstall: true,
-      label: 'brew bash',
-      command: `${quote(brew)} install bash`,
+      label: `brew ${action} bash`,
+      command: `${quote(brew)} ${action} bash`,
     }
   }
   return {
+    action,
     canInstall: false,
     label: 'manual',
     command: '',
@@ -135,46 +167,59 @@ function planMacOS(): InstallPlan {
   }
 }
 
-function planLinux(): InstallPlan {
+function planLinux(status: BashStatus): InstallPlan {
   const family = detectLinuxFamily()
+  const action = status.ok ? 'upgrade' : 'install'
   switch (family) {
     case 'apt':
       return {
+        action,
         canInstall: true,
         linuxFamily: family,
         label: 'apt-get',
-        command: 'sudo apt-get update && sudo apt-get install -y bash',
+        command:
+          action === 'upgrade'
+            ? 'sudo apt-get update && sudo apt-get install --only-upgrade -y bash'
+            : 'sudo apt-get update && sudo apt-get install -y bash',
       }
     case 'dnf':
       return {
+        action,
         canInstall: true,
         linuxFamily: family,
         label: 'dnf',
-        command: 'sudo dnf install -y bash',
+        command: `sudo dnf ${action === 'upgrade' ? 'upgrade' : 'install'} -y bash`,
       }
     case 'pacman':
       return {
+        action,
         canInstall: true,
         linuxFamily: family,
         label: 'pacman',
-        command: 'sudo pacman -Sy --noconfirm bash',
+        command:
+          action === 'upgrade'
+            ? 'sudo pacman -Syu --noconfirm bash'
+            : 'sudo pacman -Sy --noconfirm bash',
       }
     case 'zypper':
       return {
+        action,
         canInstall: true,
         linuxFamily: family,
         label: 'zypper',
-        command: 'sudo zypper install -y bash',
+        command: `sudo zypper ${action === 'upgrade' ? 'update' : 'install'} -y bash`,
       }
     case 'apk':
       return {
+        action,
         canInstall: true,
         linuxFamily: family,
         label: 'apk',
-        command: 'sudo apk add bash',
+        command: `sudo apk add ${action === 'upgrade' ? '--upgrade ' : ''}bash`,
       }
     default:
       return {
+        action,
         canInstall: false,
         label: 'unknown distro',
         command: '',

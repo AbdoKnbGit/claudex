@@ -24,7 +24,7 @@ export function initOpenAICompatLane(providers?: {
   groq?: { apiKey: string; baseUrl?: string }
   mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
-  ollama?: { baseUrl?: string }
+  ollama?: { apiKey?: string; baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
@@ -72,7 +72,8 @@ export function initOpenAICompatLane(providers?: {
   }
 
   const ollamaUrl = p.ollama?.baseUrl ?? process.env.OLLAMA_HOST ?? 'http://localhost:11434/v1'
-  openaiCompatLane.registerProvider('ollama', '', ollamaUrl)
+  const ollamaKey = normalizeOllamaApiKey(p.ollama?.apiKey ?? process.env.OLLAMA_API_KEY)
+  openaiCompatLane.registerProvider('ollama', ollamaKey, ollamaUrl)
 
   const orKey = p.openrouter?.apiKey ?? process.env.OPENROUTER_API_KEY
   if (orKey) {
@@ -120,4 +121,9 @@ export function initOpenAICompatLane(providers?: {
   // dedicated lane's native OAuth + Qwen-specific tool registry.
 
   registerLane(openaiCompatLane)
+}
+
+function normalizeOllamaApiKey(apiKey: string | undefined): string {
+  const key = apiKey?.trim()
+  return key && key !== 'ollama' ? key : ''
 }

@@ -68,6 +68,7 @@ function getProviderStatusLabel(provider: BrowsableModelProvider): string {
   }
 
   const authStatus = validateProviderAuth(provider)
+  if (provider === 'ollama' && authStatus.method === 'none') return 'local'
   if (authStatus.valid) return 'configured'
   return provider === 'ollama' ? 'local' : 'login required'
 }

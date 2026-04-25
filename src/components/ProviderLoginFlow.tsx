@@ -28,7 +28,7 @@ import TextInput from './TextInput.js'
 
 interface ProviderMeta {
   envVar: string
-  keyPrefix: string
+  keyPrefix?: string
   getKeyUrl: string
   supportsOAuth: boolean
   oauthOnly?: boolean
@@ -76,6 +76,11 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     envVar: 'DEEPSEEK_API_KEY',
     keyPrefix: 'sk-',
     getKeyUrl: 'https://platform.deepseek.com/api_keys',
+    supportsOAuth: false,
+  },
+  ollama: {
+    envVar: 'OLLAMA_API_KEY',
+    getKeyUrl: 'https://ollama.com/settings/keys',
     supportsOAuth: false,
   },
   kilocode: {
@@ -518,9 +523,9 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
               Get your API key at: <Text color="suggestion">{meta.getKeyUrl}</Text>
             </Text>
           )}
-          {meta && (
+          {meta && (provider !== 'ollama' || meta.keyPrefix) && (
             <Text dimColor>
-              Expected format: <Text color="warning">{meta.keyPrefix}...</Text>
+              Expected format: <Text color="warning">{meta.keyPrefix ?? ''}...</Text>
             </Text>
           )}
           {'error' in state && state.error && (

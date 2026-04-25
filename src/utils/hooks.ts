@@ -948,20 +948,8 @@ async function execCommandHook(
   //   skips user profile scripts (faster, deterministic).
   //   -NonInteractive fails fast instead of prompting.
   //
-  // On Windows without git-bash, a bash-typed hook auto-falls-back to
-  // PowerShell so the CLI stays usable on vanilla Windows installs.
   let child: ChildProcessWithoutNullStreams
-  let effectiveShellType: 'bash' | 'powershell' = shellType
-  if (shellType === 'bash' && isWindows && !findGitBashPath()) {
-    const pwshPath = await getCachedPowerShellPath()
-    if (pwshPath) {
-      logForDebugging(
-        `Hooks: bash hook "${hook.command}" on Windows without git-bash, routing to PowerShell`,
-        { level: 'warn' },
-      )
-      effectiveShellType = 'powershell'
-    }
-  }
+  const effectiveShellType: 'bash' | 'powershell' = shellType
   if (effectiveShellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
@@ -979,7 +967,13 @@ async function execCommandHook(
   } else {
     // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
     // On other platforms, shell: true uses /bin/sh.
-    const shell = isWindows ? (findGitBashPath() ?? true) : true
+    const gitBashPath = isWindows ? findGitBashPath() : null
+    if (isWindows && !gitBashPath) {
+      throw new Error(
+        `Hook "${hook.command}" needs Git Bash. Install Git for Windows and restart claudex.`,
+      )
+    }
+    const shell = isWindows ? gitBashPath! : true
     child = spawn(finalCommand, [], {
       env: envVars,
       cwd: safeCwd,

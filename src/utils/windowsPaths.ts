@@ -84,8 +84,8 @@ function findExecutable(executable: string): string | null {
  * This is used by BashTool and Shell.ts for user shell commands.
  * COMSPEC is left unchanged for system process execution.
  *
- * Best-effort: if git-bash is not installed, SHELL is left unset and the
- * shell layer will route bash commands to PowerShell instead of crashing.
+ * Best-effort: if git-bash is not installed, SHELL is left unset. The
+ * first-run setup flow is responsible for installing Git Bash.
  */
 export function setShellIfWindows(): void {
   if (getPlatform() === 'windows') {
@@ -94,15 +94,14 @@ export function setShellIfWindows(): void {
       process.env.SHELL = gitBashPath
       logForDebugging(`Using bash path: "${gitBashPath}"`)
     } else {
-      logForDebugging('No git-bash found on Windows — bash commands will route to PowerShell')
+      logForDebugging('No git-bash found on Windows')
     }
   }
 }
 
 /**
  * Find the path where `bash.exe` included with git-bash exists.
- * Returns null if git-bash is not installed — callers must handle this
- * case and fall back to PowerShell on Windows.
+ * Returns null if git-bash is not installed.
  */
 export const findGitBashPath = memoize((): string | null => {
   if (process.env.CLAUDE_CODE_GIT_BASH_PATH) {

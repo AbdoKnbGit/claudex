@@ -60,6 +60,12 @@ import { LaneBackedProvider } from '../../../lanes/provider-bridge.js'
 // (the ones /login writes to provider-keys.json) so users who authenticated
 // interactively get lane-routing without having to export env vars.
 let _lanesInitialized = false
+
+function normalizeOllamaApiKey(apiKey: string | null | undefined): string | null {
+  const key = apiKey?.trim()
+  return key && key !== 'ollama' ? key : null
+}
+
 function _ensureLanesInitialized(): void {
   if (_lanesInitialized) return
   _lanesInitialized = true
@@ -90,6 +96,7 @@ function _ensureLanesInitialized(): void {
     // token when absent.
     const cursorToken = getValidCursorOAuthToken() ?? undefined
     const cursorMachineId = getCursorMachineId() ?? undefined
+    const ollamaApiKey = normalizeOllamaApiKey(getProviderApiKey('ollama'))
     initLanes({
       geminiApiKey: getProviderApiKey('gemini') ?? undefined,
       geminiCliOAuthToken: cliOAuthToken,
@@ -100,6 +107,7 @@ function _ensureLanesInitialized(): void {
       groqApiKey: getProviderApiKey('groq') ?? undefined,
       mistralApiKey: process.env.MISTRAL_API_KEY,
       nimApiKey: getProviderApiKey('nim') ?? undefined,
+      ollamaApiKey: ollamaApiKey ?? undefined,
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? getProviderBaseUrl('ollama'),
       openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
@@ -664,7 +672,11 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
 
   const { openaiCompatLane } = await import('../../../lanes/openai-compat/index.js')
   if (provider === 'ollama') {
-    openaiCompatLane.registerProvider('ollama', '', getProviderBaseUrl('ollama'))
+    openaiCompatLane.registerProvider(
+      'ollama',
+      normalizeOllamaApiKey(getProviderApiKey('ollama')) ?? '',
+      getProviderBaseUrl('ollama'),
+    )
     openaiCompatLane.setHealthy(true)
     return
   }

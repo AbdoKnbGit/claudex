@@ -73,6 +73,7 @@ export function initLanes(opts?: {
   // NVIDIA NIM
   nimApiKey?: string
   // Ollama
+  ollamaApiKey?: string
   ollamaBaseUrl?: string
   // OpenRouter
   openrouterApiKey?: string
@@ -167,7 +168,9 @@ export function initLanes(opts?: {
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
     mistral: opts?.mistralApiKey ? { apiKey: opts.mistralApiKey } : undefined,
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,
-    ollama: opts?.ollamaBaseUrl ? { baseUrl: opts.ollamaBaseUrl } : undefined,
+    ollama: opts?.ollamaApiKey || opts?.ollamaBaseUrl
+      ? { apiKey: opts?.ollamaApiKey ?? '', baseUrl: opts?.ollamaBaseUrl }
+      : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,

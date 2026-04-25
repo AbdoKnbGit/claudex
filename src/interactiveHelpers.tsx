@@ -181,8 +181,9 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   // user gets bash sorted out (or explicitly declines) before any tool
   // path that depends on it. The dialog only renders when bash is
   // missing entirely or stuck on macOS's Apple-stock 3.2; otherwise this
-  // returns immediately. Cached in GlobalConfig so we never re-prompt.
-  // CLAUDEX_BASH_SETUP_RESET=1 forces the prompt to appear again.
+  // returns immediately. If bash is still missing or too old, we keep
+  // prompting on launch because claudex no longer falls back to PowerShell.
+  // CLAUDEX_BASH_SETUP_RESET=1 is accepted for compatibility.
   {
     const { shouldShowBashSetup, BashSetupDialog } = await import('./components/BashSetupDialog.js');
     const bashStatus = shouldShowBashSetup({

@@ -1752,6 +1752,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   groq:        ['api_key'],
   nim:         ['api_key'],
   deepseek:    ['api_key'],
+  ollama:      ['api_key'],
   cline:       ['oauth'],
   copilot:     ['oauth'],
   cursor:      ['oauth'],
@@ -1780,6 +1781,12 @@ export function getProviderAuthMethod(provider: APIProvider): ProviderAuthMethod
   const supported = PROVIDER_AUTH_SUPPORT[provider]
   if (supported?.includes('oauth')) {
     if (_hasStoredOAuthCredential(provider)) return 'oauth'
+  }
+
+  if (provider === 'ollama') {
+    return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama')
+      ? 'api_key'
+      : 'none'
   }
 
   // Fall back to API key
@@ -1963,6 +1970,10 @@ export function validateProviderAuth(provider: APIProvider): { valid: boolean; m
   }
 
   // No auth found — build helpful error message
+  if (provider === 'ollama') {
+    return { valid: true, method: 'none' }
+  }
+
   const envVar = _getApiKeyEnvName(provider)
   const supported = PROVIDER_AUTH_SUPPORT[provider] ?? ['api_key']
   const methods = supported.join(' or ')

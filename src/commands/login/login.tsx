@@ -93,9 +93,7 @@ export async function call(
   )
 }
 
-const LOGIN_PROVIDERS = SELECTABLE_PROVIDERS.filter(
-  provider => provider !== 'ollama',
-)
+const LOGIN_PROVIDERS = SELECTABLE_PROVIDERS
 
 function getProviderAuthTypeLabel(provider: APIProvider): string {
   if (provider === 'firstParty') {

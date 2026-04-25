@@ -262,5 +262,11 @@ export function deleteAllProviderCredentials(provider: string): void {
     void import('../providers/providerShim.js')
       .then(({ reloadGeminiLaneAuth }) => reloadGeminiLaneAuth())
       .catch(() => {})
+  } else if (provider === 'ollama') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth('ollama'),
+      )
+      .catch(() => {})
   }
 }

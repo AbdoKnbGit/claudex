@@ -71,10 +71,9 @@ function isExecutable(shellPath: string): boolean {
 /**
  * Determines the best available shell to use.
  *
- * Returns null when no POSIX shell is available — on Windows this is the
- * common case for fresh installs without git-bash. Callers must handle
- * null and fall back to PowerShell. Throws only on non-Windows platforms
- * where a missing shell is a genuine environment problem.
+ * Returns null when no POSIX shell is available. The first-run bash setup
+ * flow is responsible for installing Git Bash on Windows; command execution
+ * must not silently fall back to PowerShell because Bash syntax is different.
  */
 export async function findSuitableShell(): Promise<string | null> {
   // Check for explicit shell override first
@@ -92,6 +91,19 @@ export async function findSuitableShell(): Promise<string | null> {
         `CLAUDE_CODE_SHELL="${shellOverride}" is not a valid bash/zsh path, falling back to detection`,
       )
     }
+  }
+
+  // On Windows, only Git Bash is supported for bash-typed commands. Other
+  // `bash.exe` binaries on PATH may be WSL/MSYS/Cygwin and do not provide the
+  // native command behavior claudex expects.
+  if (getPlatform() === 'windows') {
+    const gitBash = findGitBashPath()
+    if (gitBash) {
+      logForDebugging(`Using git-bash path: "${gitBash}"`)
+      return gitBash
+    }
+    logForDebugging('No git-bash found on Windows')
+    return null
   }
 
   // Check user's preferred shell from environment
@@ -128,25 +140,12 @@ export async function findSuitableShell(): Promise<string | null> {
     supportedShells.unshift(env_shell)
   }
 
-  // On Windows, also consider git-bash (findGitBashPath probes common
-  // install locations and where.exe). which() above doesn't check these
-  // because they aren't in the default Windows PATH.
-  if (getPlatform() === 'windows') {
-    const gitBash = findGitBashPath()
-    if (gitBash) {
-      supportedShells.unshift(gitBash)
-    }
-  }
-
   const shellPath = supportedShells.find(shell => shell && isExecutable(shell))
 
   if (!shellPath) {
-    // On Windows, missing bash is expected on vanilla installs — the shell
-    // layer routes to PowerShell. On POSIX platforms, a missing shell means
-    // something is very wrong with the environment.
     if (getPlatform() === 'windows') {
       logForDebugging(
-        'No bash/zsh found on Windows — bash commands will route to PowerShell',
+        'No bash/zsh found on Windows',
       )
       return null
     }
@@ -180,25 +179,18 @@ export const getPsProvider = memoize(async (): Promise<ShellProvider> => {
 
 /**
  * Resolves the active shell provider for a requested shell type.
- * If bash is requested but unavailable (typical on Windows without
- * git-bash), transparently falls back to PowerShell so the CLI stays
- * functional on vanilla Windows installs.
+ * If bash is requested but unavailable, fail with a setup-oriented error.
+ * The first-run setup prompt handles install/upgrade; this layer should
+ * never reinterpret Bash commands as PowerShell commands.
  */
 const resolveProvider: Record<ShellType, () => Promise<ShellProvider>> = {
   bash: async () => {
     const config = await getShellConfig()
     if (config) return config.provider
-    // No bash/zsh available — try PowerShell as fallback (Windows case)
-    const psPath = await getCachedPowerShellPath()
-    if (psPath) {
-      logForDebugging(
-        'Bash requested but unavailable — using PowerShell as fallback',
-      )
-      return getPsProvider()
-    }
     throw new Error(
-      'No shell is available. Install Git Bash (Windows) or PowerShell 7+ ' +
-        '(https://aka.ms/powershell-release-stable).',
+      getPlatform() === 'windows'
+        ? 'Git Bash is required for Bash commands. Install Git for Windows and restart claudex.'
+        : 'No suitable shell found. Install bash and restart claudex.',
     )
   },
   powershell: getPsProvider,
