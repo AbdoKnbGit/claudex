@@ -20,10 +20,12 @@ import { OpenAIProvider } from './openai_provider.js'
 import {
   buildProviderStreamResult,
   type AnthropicMessage,
+  type ModelInfo,
   type ProviderConfig,
   type ProviderRequestParams,
   type ProviderStreamResult,
 } from './base_provider.js'
+import { ALL_NIM_MODELS } from '../../../utils/model/nim_catalog.js'
 import {
   anthropicMessagesToOpenAI,
   anthropicToolsToOpenAI,
@@ -79,6 +81,33 @@ export class NimProvider extends OpenAIProvider {
    */
   protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
     return params
+  }
+
+  /**
+   * Return only models present in our curated NIM catalog.
+   * Fetches live IDs from the API and intersects with the allowlist,
+   * so junk/unknown models never appear in the picker.
+   */
+  async listModels(): Promise<ModelInfo[]> {
+    const allowlist = new Set(ALL_NIM_MODELS.map(m => m.id))
+
+    let liveIds: Set<string> | null = null
+    try {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        headers: this._headers(),
+        signal: AbortSignal.timeout(8_000),
+      })
+      if (response.ok) {
+        const data = (await response.json()) as { data: Array<{ id: string }> }
+        liveIds = new Set((data.data ?? []).map(m => m.id))
+      }
+    } catch {
+      // API unreachable — fall through to static catalog
+    }
+
+    return ALL_NIM_MODELS
+      .filter(m => !liveIds || liveIds.has(m.id))
+      .map(m => ({ id: m.id, name: m.name, provider: m.provider }))
   }
 
   /**
