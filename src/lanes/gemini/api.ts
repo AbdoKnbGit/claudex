@@ -28,6 +28,7 @@ import {
   clearCodeAssistCache,
   warmupCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
+import { resolveCliModelsForPicker } from '../../services/api/providers/gemini_provider.js'
 import {
   classifyGeminiError,
   type ClassifiedGeminiError,
@@ -657,12 +658,23 @@ class GeminiApiClient {
       const showAntigravity = providerFilter !== 'gemini'
       const models: ModelInfo[] = []
       if (showCli && this.cliOAuthToken) {
-        models.push(
-          { id: 'gemini-3-flash-preview',        name: 'Gemini 3 Flash (preview)' },
-          { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (preview)' },
-          { id: 'gemini-2.5-flash',              name: 'Gemini 2.5 Flash' },
-          { id: 'gemini-2.5-flash-lite',         name: 'Gemini 2.5 Flash Lite' },
-        )
+        // The picker is often the FIRST thing the user opens after
+        // /login, before any chat request has triggered onboarding —
+        // force the round-trip here so the entitled-ids / tier caches
+        // that resolveCliModelsForPicker reads are populated.
+        // Without this, a freshly-logged-in Pro user would see flash
+        // until the next session.
+        try {
+          await ensureCodeAssistReady(this.cliOAuthToken, 'cli')
+        } catch {
+          // Onboarding failed — the picker falls back to flash. The
+          // user will hit a clearer error next time they try to chat.
+        }
+        // Strict tier filter: free accounts see flash, paid accounts
+        // see Pro. No mixing — a free user with a Pro option in their
+        // picker would 403 on first chat, and a Pro user with flash
+        // mixed in would pick the slow option by accident.
+        models.push(...resolveCliModelsForPicker())
       }
       if (showAntigravity && this.antigravityOAuthToken) {
         models.push(

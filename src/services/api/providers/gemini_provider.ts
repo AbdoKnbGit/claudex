@@ -35,8 +35,14 @@ import {
 } from '../adapters/gemini_to_anthropic.js'
 import {
   CODE_ASSIST_BASE,
+  GEMINI_TIER_FREE,
+  GEMINI_TIER_LEGACY,
   ensureCodeAssistReady,
   executorForModel,
+  getGeminiEntitledModelIds,
+  getGeminiTier,
+  hasPaidEntitlement,
+  isPaidGeminiTier,
   parseCodeAssistSSE,
   unwrapCodeAssistResponse,
   wrapForCodeAssist,
@@ -47,6 +53,72 @@ import {
 } from './gemini_code_assist.js'
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'
+
+/**
+ * Hardcoded Pro-model id set — anything that is *not* a flash variant
+ * routed through the CLI executor. Used by the success-path latch in
+ * `stream`/`create` to auto-record paid entitlement. Stays in sync with
+ * `GEMINI_CLI_PRO_MODELS` below.
+ */
+const GEMINI_PRO_MODEL_IDS = new Set([
+  'gemini-3.1-pro-preview',
+  'gemini-2.5-pro',
+])
+
+/**
+ * Resolve the persistent "show Pro models" decision.
+ *
+ * Priority:
+ *   1. `GEMINI_SHOW_PRO_MODELS` env var when explicitly set ('true' or
+ *      'false'). The decision is also persisted to global config so the
+ *      user only configures it once per machine.
+ *   2. The persisted `geminiShowProModels` flag in global config.
+ *   3. `null` — caller should fall back to live-detection (entitled-id
+ *      list / tier id from Code Assist).
+ *
+ * Persisting on env-var read means a one-shot
+ * `GEMINI_SHOW_PRO_MODELS=true claudex` permanently flips the toggle on
+ * that machine; subsequent launches don't need the env var. The user can
+ * undo this with `GEMINI_SHOW_PRO_MODELS=false`.
+ */
+export function resolvePersistedShowPro(): boolean | null {
+  const env = process.env.GEMINI_SHOW_PRO_MODELS
+  if (env === 'true' || env === 'false') {
+    const value = env === 'true'
+    const persisted = getGlobalConfig().geminiShowProModels
+    if (persisted !== value) {
+      try {
+        saveGlobalConfig(c => ({ ...c, geminiShowProModels: value }))
+      } catch {
+        // Best-effort persistence; the env var still applies this run.
+      }
+    }
+    return value
+  }
+  const persisted = getGlobalConfig().geminiShowProModels
+  return typeof persisted === 'boolean' ? persisted : null
+}
+
+/**
+ * Latch the "user has paid Gemini access" flag in global config the first
+ * time a Pro Gemini model call succeeds. Idempotent — only writes when
+ * the flag isn't already set. This is the auto-discovery path: even
+ * users who never set GEMINI_SHOW_PRO_MODELS will get Pro models in the
+ * picker on the next session as long as one Pro chat goes through.
+ */
+function latchProEntitlementOnSuccess(model: string): void {
+  if (!GEMINI_PRO_MODEL_IDS.has(model)) return
+  if (getGlobalConfig().geminiShowProModels === true) return
+  try {
+    saveGlobalConfig(c =>
+      c.geminiShowProModels === true ? c : { ...c, geminiShowProModels: true },
+    )
+  } catch {
+    // Persistence is best-effort; failure here just means we'll retry
+    // on the next successful Pro call.
+  }
+}
 
 /**
  * Parse a Gemini 429 error body to extract the reset duration in seconds.
@@ -151,13 +223,109 @@ async function _throttle(rpm: number = DEFAULT_RPM_FREE): Promise<void> {
 // The curated lists below are split by executor so the provider can show
 // only the models the user actually has tokens for.
 
-/** Models available via the Gemini CLI OAuth client (free tier). */
-const GEMINI_CLI_MODELS: ModelInfo[] = [
+/**
+ * Flash/lite models the Gemini CLI OAuth executor exposes to free-tier
+ * accounts. Exported so the lane and the legacy provider share the same
+ * source of truth — and so the strict tier-filtering logic in
+ * `resolveCliModelsForPicker` returns this list for free users instead
+ * of mixing flash with Pro.
+ */
+export const GEMINI_CLI_FLASH_MODELS: ModelInfo[] = [
   { id: 'gemini-3-flash-preview',              name: 'Gemini 3 Flash (preview)' },
   { id: 'gemini-3.1-flash-lite-preview',       name: 'Gemini 3.1 Flash Lite (preview)' },
   { id: 'gemini-2.5-flash',                    name: 'Gemini 2.5 Flash' },
   { id: 'gemini-2.5-flash-lite',               name: 'Gemini 2.5 Flash Lite' },
 ]
+
+/**
+ * Pro/preview models that paid Google CLI accounts (standard-tier and
+ * higher) can call through the Code Assist proxy on top of the flash/
+ * lite list above. These IDs are NOT in ANTIGRAVITY_MODEL_SET, so
+ * `executorForModel` keeps them on the CLI executor — no Antigravity
+ * token needed. Free-tier accounts never see these because their
+ * tier id is `free-tier` (or `legacy-tier`) and the picker filters
+ * them out.
+ *
+ * Exported because the native gemini lane (`src/lanes/gemini/api.ts`)
+ * runs its own `listModels` and must surface the same Pro models — the
+ * legacy provider path is only used as a fallback when the lane is
+ * disabled, so duplicating the catalog there would silently regress
+ * the picker for default (lanes-on) users.
+ */
+export const GEMINI_CLI_PRO_MODELS: ModelInfo[] = [
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (preview)', tags: ['pro'] },
+  { id: 'gemini-2.5-pro',         name: 'Gemini 2.5 Pro',           tags: ['pro'] },
+]
+
+/**
+ * Decide which Pro models to show for the Gemini CLI executor based on
+ * the user's current entitlement. Single source of truth for both the
+ * legacy provider's `listModels` and the native gemini lane's
+ * `listModels` so the picker stays consistent regardless of whether
+ * `CLAUDEX_NATIVE_LANES` is on.
+ *
+ * Detection priority — LIVE DATA WINS over the persisted flag:
+ *   1. Persisted/env flag = false → explicit opt-out, hide Pro.
+ *   2. `retrieveUserQuota.buckets[].modelId` from the cache populated
+ *      by `ensureCodeAssistReady`:
+ *        - Match against our Pro catalog → show those.
+ *        - Generic entitlement check → show all Pro.
+ *        - Buckets present but contain only flash → free user, hide
+ *          Pro (this overrides any stale persisted "true" flag from a
+ *          previous Pro-tier session — the bug that this priority
+ *          ordering fixes).
+ *   3. Cached tier id → paid tier shows Pro, explicit free/legacy
+ *      hides Pro (again, overriding stale persisted "true").
+ *   4. No live data at all (ghost-project 403) → fall back to
+ *      persisted/env flag = true as the manual escape hatch.
+ *   5. Default → hide Pro.
+ *
+ * Callers MUST trigger `ensureCodeAssistReady('cli')` before calling
+ * this on a freshly-logged-in session — onboarding is what populates
+ * the entitled-ids and tier caches this function reads from.
+ */
+export function resolveCliProModelsToShow(): ModelInfo[] {
+  const persisted = resolvePersistedShowPro()
+
+  // Explicit opt-out always wins, even when the user is paid.
+  if (persisted === false) return []
+
+  // Live entitlement (most reliable signal — gemini-cli's source of truth).
+  const entitledIds = getGeminiEntitledModelIds('cli')
+  if (entitledIds && entitledIds.length > 0) {
+    const entitledSet = new Set(entitledIds)
+    const matches = GEMINI_CLI_PRO_MODELS.filter(m => entitledSet.has(m.id))
+    if (matches.length > 0) return matches
+    if (hasPaidEntitlement(entitledIds)) return [...GEMINI_CLI_PRO_MODELS]
+    // Buckets exist but contain no Pro/preview ids → free account.
+    // Ignore any stale persisted "true" flag; live data is authoritative.
+    return []
+  }
+
+  // Live tier id — also authoritative when set.
+  const tier = getGeminiTier('cli')
+  if (tier === GEMINI_TIER_FREE || tier === GEMINI_TIER_LEGACY) return []
+  if (isPaidGeminiTier(tier)) return [...GEMINI_CLI_PRO_MODELS]
+
+  // No live data (ghost-project bug) — persisted "true" is the escape hatch.
+  if (persisted === true) return [...GEMINI_CLI_PRO_MODELS]
+  return []
+}
+
+/**
+ * Pick the catalog the picker should show for the Gemini CLI executor.
+ *
+ *   - Free-tier accounts see flash/lite only.
+ *   - Paid accounts see flash/lite **plus** the entitled Pro models on
+ *     top — Pro users still want flash for cheap/fast tasks.
+ *
+ * Callers MUST trigger `ensureCodeAssistReady('cli')` first when they
+ * have an OAuth token; entitlement detection reads the cache that call
+ * populates.
+ */
+export function resolveCliModelsForPicker(): ModelInfo[] {
+  return [...GEMINI_CLI_FLASH_MODELS, ...resolveCliProModelsToShow()]
+}
 
 /**
  * Models available via the Antigravity OAuth client (pro/premium tier).
@@ -502,6 +670,12 @@ export class GeminiProvider extends BaseProvider {
         throw new Error('Gemini Code Assist returned no response body for streaming request')
       }
 
+      // Pro model on the CLI executor returned 200 → the user has paid
+      // entitlement, even when Code Assist's loadCodeAssist/quota
+      // endpoints fail to advertise it. Latch the flag so future
+      // /models invocations surface Pro models without the env var.
+      if (executor === 'cli') latchProEntitlementOnSuccess(model)
+
       const geminiChunks = parseCodeAssistSSE(response.body)
       const anthropicEvents = geminiStreamToAnthropicEvents(geminiChunks, model)
       return buildProviderStreamResult(anthropicEvents, ac)
@@ -584,6 +758,10 @@ export class GeminiProvider extends BaseProvider {
 
         throw this._formatGeminiError(response.status, errText)
       }
+
+      // Pro model on the CLI executor returned 200 → record paid
+      // entitlement so /models picks it up without the env var.
+      if (executor === 'cli') latchProEntitlementOnSuccess(model)
 
       const caData = await response.json()
       const data = unwrapCodeAssistResponse(caData)
@@ -693,12 +871,32 @@ export class GeminiProvider extends BaseProvider {
     // rejects cloud-platform tokens (403 restricted_client).
     if (this.hasOAuth) {
       const models: ModelInfo[] = []
-      if (this.cliOAuthToken) models.push(...GEMINI_CLI_MODELS)
+      if (this.cliOAuthToken) {
+        // The picker is often the FIRST thing the user opens after
+        // /login, before any chat request has triggered onboarding —
+        // force the round-trip here so the entitled-ids / tier caches
+        // that resolveCliModelsForPicker reads are populated.
+        try {
+          await ensureCodeAssistReady(this.cliOAuthToken, 'cli')
+        } catch {
+          // Onboarding failed — fall back to the flash list. The user
+          // will hit a clearer error next time they actually try to chat.
+        }
+        models.push(...resolveCliModelsForPicker())
+      }
       if (this.antigravityOAuthToken) models.push(...ANTIGRAVITY_MODELS)
       return models
     }
 
-    // API key path — use header auth.
+    // API key path — hidden from the picker by default. Listing
+    // /v1beta/models is slow (100+ entries, no useful filtering) and
+    // most users never need it. Set GEMINI_SHOW_API_KEY_MODELS=true to
+    // opt back in. The chat path itself is unaffected: stream/create
+    // continue to honor the configured api key when no OAuth is set.
+    if (process.env.GEMINI_SHOW_API_KEY_MODELS !== 'true') {
+      return []
+    }
+
     const url = `${this.baseUrl}/models`
     const response = await fetch(url, {
       headers: this._apiKeyHeaders(),

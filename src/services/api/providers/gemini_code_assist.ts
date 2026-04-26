@@ -83,12 +83,93 @@ const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
 const CACHE_FILE_CLI = join(CONFIG_DIR, 'gemini-code-assist-cli.json')
 const CACHE_FILE_ANTIGRAVITY = join(CONFIG_DIR, 'gemini-code-assist.json')
 
-const CACHE_VERSION = 3  // bump: split caches per executor
+const CACHE_VERSION = 6  // bump: drop allowedTiers from tier detection
 
 interface CodeAssistCache {
   version: number
   projectId: string | null
   onboardedAt: number
+  /**
+   * Cached `currentTier.id` from loadCodeAssist (e.g. 'free-tier',
+   * 'standard-tier', 'legacy-tier'). Kept as a fallback for the picker
+   * when the quota lookup is unavailable; entitled model ids below are
+   * the canonical signal.
+   */
+  tier?: string | null
+  /**
+   * Concrete model ids the user has quota for, sourced from
+   * retrieveUserQuota.buckets. This is gemini-cli's source of truth
+   * for "does the user have access to model X" — far more reliable
+   * than the tier id, since Google AI Pro consumers often keep
+   * `currentTier.id = 'free-tier'` while still receiving Pro buckets.
+   * Empty array means the quota lookup ran but returned nothing
+   * actionable; `undefined` means the lookup hasn't run yet.
+   */
+  entitledModelIds?: string[]
+}
+
+// ─── Tier-id constants ──────────────────────────────────────────────
+// Mirrors the subset of UserTierId values gemini-cli treats specially
+// (reference/gemini-cli-main/packages/core/src/code_assist/types.ts).
+// Anything outside FREE/LEGACY is treated as a paid tier.
+export const GEMINI_TIER_FREE = 'free-tier'
+export const GEMINI_TIER_LEGACY = 'legacy-tier'
+export const GEMINI_TIER_STANDARD = 'standard-tier'
+
+/**
+ * True when the tier id represents a paid Google account that unlocks
+ * Pro models. Free and legacy tiers are flash-only. An unknown/missing
+ * tier is treated as free to avoid showing models the user can't call.
+ */
+export function isPaidGeminiTier(tier: string | null | undefined): boolean {
+  if (!tier) return false
+  if (tier === GEMINI_TIER_FREE) return false
+  if (tier === GEMINI_TIER_LEGACY) return false
+  return true
+}
+
+/**
+ * Read the cached tier id for an executor (set during onboarding).
+ * Returns null when no tier has been captured yet — typical for the
+ * Antigravity executor, since loadCodeAssist there returns a project
+ * id directly without enumerating tiers.
+ */
+export function getGeminiTier(executor: GeminiExecutor): string | null {
+  const cache = _readCache(executor)
+  return cache?.tier ?? null
+}
+
+/**
+ * Read the cached list of model ids the user has quota for. Sourced
+ * from retrieveUserQuota.buckets and refreshed during onboarding.
+ * Returns null when no quota lookup has happened yet, or an array
+ * (possibly empty) when one has. Callers should treat null/empty as
+ * "no Pro entitlement detected" and fall back to the tier-based check.
+ */
+export function getGeminiEntitledModelIds(
+  executor: GeminiExecutor,
+): readonly string[] | null {
+  const cache = _readCache(executor)
+  if (!cache) return null
+  return cache.entitledModelIds ?? null
+}
+
+/**
+ * True when the entitled-models list contains any Pro-tier model id —
+ * that is, anything that isn't a flash variant. Mirrors the heuristic
+ * gemini-cli uses to set `hasAccessToPreviewModel` from quota buckets
+ * (`config.ts:2235-2239` walks buckets looking for a preview model).
+ */
+export function hasPaidEntitlement(
+  modelIds: readonly string[] | null,
+): boolean {
+  if (!modelIds || modelIds.length === 0) return false
+  return modelIds.some(id => {
+    const lower = id.toLowerCase()
+    if (lower.includes('flash')) return false
+    if (lower.includes('embedding')) return false
+    return lower.includes('pro') || lower.includes('preview')
+  })
 }
 
 // In-memory caches — one per executor type
@@ -250,6 +331,8 @@ export async function ensureCodeAssistReady(
   // cases — we do too).
   const loadData = (await loadRes.json()) as {
     cloudaicompanionProject?: string | { id?: string }
+    currentTier?: { id?: string }
+    paidTier?: { id?: string }
     allowedTiers?: Array<{
       id?: string
       name?: string
@@ -257,12 +340,66 @@ export async function ensureCodeAssistReady(
     }>
   }
 
+  // Capture the user's effective tier so the model picker can decide
+  // whether to surface Pro models. Use `paidTier.id` first (set when
+  // the user actually has a paid subscription — Google AI Pro / Ultra)
+  // then `currentTier.id` (active tier). This mirrors gemini-cli's
+  // setup.ts: `loadRes.paidTier?.id ?? loadRes.currentTier.id`.
+  //
+  // Do NOT consult `allowedTiers` here — those are tiers the user
+  // *could* be on, not the one they actually use. A free-tier account
+  // typically has `allowedTiers = [free, standard]` because they are
+  // *eligible* to upgrade, and treating that as "they're already paid"
+  // makes the picker show Pro models to free users (the bug we're fixing).
+  // Consumer Google AI Pro users without a `paidTier` field are caught
+  // by the entitled-id bucket check downstream, not by this tier.
+  const observedTier = _pickTier(
+    _normalizeTier(loadData.paidTier?.id),
+    _normalizeTier(loadData.currentTier?.id),
+  )
+
+  // Workaround for Google's "ghost project" bug
+  // (github.com/google-gemini/gemini-cli/issues/24747, /25189): the
+  // backend sometimes returns a `cloudaicompanionProject` that the
+  // user's account doesn't actually have permission on, producing a
+  // 403 PERMISSION_DENIED on every subsequent call. Honor an explicit
+  // `GOOGLE_CLOUD_PROJECT` (or `GEMINI_CLOUD_PROJECT`) env var to
+  // override the auto-discovered project. This matches the env var
+  // gemini-cli, gcloud, and the Google AI SDKs already check.
+  const projectOverride = _projectOverrideFromEnv()
+  if (projectOverride) {
+    const entitled = await _fetchEntitledModelIds(
+      accessToken,
+      projectOverride,
+      executor,
+    )
+    _writeCache(executor, {
+      version: CACHE_VERSION,
+      projectId: projectOverride,
+      onboardedAt: Date.now(),
+      tier: observedTier,
+      entitledModelIds: entitled,
+    })
+    return projectOverride
+  }
+
   const directProjectId = _extractProjectId(loadData.cloudaicompanionProject)
   if (directProjectId) {
+    // Resolve quota in parallel with returning the project id. The quota
+    // call is best-effort — Code Assist returns 403 on some scoped
+    // tokens, and we don't want listModels() to fail just because the
+    // entitlement lookup did. tier alone is then the fallback signal.
+    const entitled = await _fetchEntitledModelIds(
+      accessToken,
+      directProjectId,
+      executor,
+    )
     _writeCache(executor, {
       version: CACHE_VERSION,
       projectId: directProjectId,
       onboardedAt: Date.now(),
+      tier: observedTier,
+      entitledModelIds: entitled,
     })
     return directProjectId
   }
@@ -280,12 +417,149 @@ export async function ensureCodeAssistReady(
   }
 
   const onboardedProject = await _onboardUser(accessToken, tierId, executor)
+  const entitled = onboardedProject
+    ? await _fetchEntitledModelIds(accessToken, onboardedProject, executor)
+    : undefined
   _writeCache(executor, {
     version: CACHE_VERSION,
     projectId: onboardedProject,
     onboardedAt: Date.now(),
+    tier: observedTier ?? _normalizeTier(tierId),
+    entitledModelIds: entitled,
   })
   return onboardedProject
+}
+
+/**
+ * Call retrieveUserQuota on the Code Assist v1internal endpoint and
+ * return the list of model ids the user has buckets for.
+ *
+ * gemini-cli's `config.ts:2196-2240` makes the same call and uses the
+ * returned `buckets[].modelId` array as the source of truth for "does
+ * the user have access to model X". Buckets that lack a `modelId` (rare
+ * — global quota) are skipped.
+ *
+ * Best-effort: returns undefined on 403, network error, or a malformed
+ * payload. The caller falls back to the tier-id signal in that case.
+ */
+async function _fetchEntitledModelIds(
+  accessToken: string,
+  projectId: string,
+  executor: GeminiExecutor,
+): Promise<string[] | undefined> {
+  const buckets = await _fetchQuotaBuckets(accessToken, projectId, executor)
+  if (!buckets) return undefined
+  const ids = buckets
+    .map(b => (typeof b.modelId === 'string' ? b.modelId.trim() : ''))
+    .filter(id => id.length > 0)
+  // Dedupe while preserving order — buckets occasionally repeat the
+  // same model under different reset windows.
+  return Array.from(new Set(ids))
+}
+
+/**
+ * One bucket entry from `retrieveUserQuota`. Mirrors the proto shape
+ * gemini-cli reads in `RetrieveUserQuotaResponse.buckets[]`. Surfaced
+ * publicly so the `/usage` reporter can render per-tier progress bars
+ * without re-implementing the wire call.
+ */
+export interface GeminiQuotaBucket {
+  modelId?: string
+  /** Remaining count (string-encoded int64 in the proto). */
+  remainingAmount?: string
+  /** 0..1 — what gemini-cli plots as "% remaining". */
+  remainingFraction?: number
+  /** ISO-8601 timestamp for the next quota reset. */
+  resetTime?: string
+  /** "credit", "throttled", etc. — passed through unmodified. */
+  tokenType?: string
+}
+
+async function _fetchQuotaBuckets(
+  accessToken: string,
+  projectId: string,
+  executor: GeminiExecutor,
+): Promise<GeminiQuotaBucket[] | undefined> {
+  const headers = executor === 'cli'
+    ? _cliOnboardHeaders(accessToken)
+    : _antigravityOnboardHeaders(accessToken)
+
+  try {
+    const res = await _fetchWithTransientRetry(
+      `${CODE_ASSIST_BASE}:retrieveUserQuota`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project: projectId }),
+      },
+      { maxAttempts: 2 },
+    )
+
+    if (!res.ok) return undefined
+
+    const data = (await res.json()) as { buckets?: GeminiQuotaBucket[] }
+    return data.buckets ?? []
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Public quota fetch for the `/usage` Gemini reporter. Returns the raw
+ * `retrieveUserQuota.buckets[]` for the CLI executor — `modelId`,
+ * `remainingFraction`, `resetTime` are the fields the bar chart needs.
+ *
+ * Returns `undefined` when the call fails (403/network/malformed).
+ * Callers must have onboarded the user first; pass the projectId from
+ * `ensureCodeAssistReady('cli')`.
+ */
+export async function fetchGeminiCliQuotaBuckets(
+  accessToken: string,
+  projectId: string,
+): Promise<GeminiQuotaBucket[] | undefined> {
+  return _fetchQuotaBuckets(accessToken, projectId, 'cli')
+}
+
+function _normalizeTier(tier: string | null | undefined): string | null {
+  if (!tier) return null
+  const trimmed = tier.trim()
+  return trimmed ? trimmed : null
+}
+
+/**
+ * Pick the most "paid" tier id from a list of candidates. Order: any
+ * non-null, non-free, non-legacy id wins; otherwise return the first
+ * non-null id; otherwise null. This is what lets a Google AI Pro user
+ * with `currentTier=free-tier` but `allowedTiers=[free, standard]`
+ * resolve to `standard-tier` instead of `free-tier`.
+ */
+function _pickTier(...candidates: Array<string | null>): string | null {
+  for (const c of candidates) {
+    if (c && c !== GEMINI_TIER_FREE && c !== GEMINI_TIER_LEGACY) return c
+  }
+  for (const c of candidates) {
+    if (c) return c
+  }
+  return null
+}
+
+/**
+ * Read an explicit Cloud project override from the environment. We
+ * accept `GOOGLE_CLOUD_PROJECT` (the gcloud / Vertex / GenAI standard)
+ * and `GEMINI_CLOUD_PROJECT` (claudex-specific). Returns null when
+ * neither is set or both are blank. This is the documented client-side
+ * mitigation for the "ghost project" 403 bug — see
+ * github.com/google-gemini/gemini-cli/issues/24747.
+ */
+function _projectOverrideFromEnv(): string | null {
+  const candidates = [
+    process.env.GEMINI_CLOUD_PROJECT,
+    process.env.GOOGLE_CLOUD_PROJECT,
+  ]
+  for (const raw of candidates) {
+    if (typeof raw === 'string' && raw.trim()) return raw.trim()
+  }
+  return null
 }
 
 /**

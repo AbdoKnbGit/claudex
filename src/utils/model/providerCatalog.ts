@@ -168,6 +168,7 @@ export type ModelTag =
   | 'reasoning'
   | 'recommended'
   | 'free'
+  | 'pro'
   | 'fast'
   | 'pulled'
   | 'missing'
@@ -616,6 +617,7 @@ const KNOWN_MODEL_TAGS = new Set<ModelTag>([
   'reasoning',
   'recommended',
   'free',
+  'pro',
   'fast',
   'pulled',
   'missing',

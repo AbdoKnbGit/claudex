@@ -8,7 +8,14 @@ import {
 } from './auth/oauth_services.js'
 import { getGeminiOAuthToken } from './auth/google_oauth.js'
 import { loadProviderKey } from './auth/api_key_manager.js'
-import { CODE_ASSIST_BASE, antigravityApiHeaders, ensureCodeAssistReady } from './providers/gemini_code_assist.js'
+import {
+  CODE_ASSIST_BASE,
+  antigravityApiHeaders,
+  ensureCodeAssistReady,
+  fetchGeminiCliQuotaBuckets,
+  getGeminiTier,
+  type GeminiQuotaBucket,
+} from './providers/gemini_code_assist.js'
 import { fetchUtilization, type Utilization } from './usage.js'
 import {
   loadStore,
@@ -112,6 +119,7 @@ export async function fetchAllProviderUsage(): Promise<ProviderUsageSnapshot> {
 const REPORTERS: Reporter[] = [
   reportAnthropic,
   reportOpenAI,
+  reportGemini,
   reportAntigravity,
   reportOpenRouter,
   reportDeepSeek,
@@ -274,6 +282,163 @@ async function reportOpenAI(): Promise<ProviderUsageReport> {
     metrics,
     docsUrl: DOCS.openai,
   }
+}
+
+async function reportGemini(): Promise<ProviderUsageReport> {
+  const accessToken = await getGeminiOAuthToken('cli')
+  if (!accessToken) {
+    return baseReport(
+      'gemini',
+      'not_configured',
+      'none',
+      'Google Code Assist',
+      'No Gemini OAuth is connected. Run `/login` to authorize the CLI flow.',
+    )
+  }
+
+  let projectId: string | null = null
+  try {
+    projectId = await ensureCodeAssistReady(accessToken, 'cli')
+  } catch (error) {
+    return {
+      ...baseReport(
+        'gemini',
+        'connected',
+        'oauth',
+        'Google Code Assist',
+        'Gemini is connected, but Code Assist onboarding failed.',
+      ),
+      detail: messageFromError(error),
+    }
+  }
+
+  if (!projectId) {
+    return baseReport(
+      'gemini',
+      'connected',
+      'oauth',
+      'Google Code Assist',
+      'Gemini is connected, but no Cloud project is bound to the account yet.',
+    )
+  }
+
+  const buckets = await fetchGeminiCliQuotaBuckets(accessToken, projectId)
+  if (!buckets || buckets.length === 0) {
+    return {
+      ...baseReport(
+        'gemini',
+        'connected',
+        'oauth',
+        'Google Code Assist',
+        'Gemini is connected, but the quota response did not include model usage.',
+      ),
+      detail: 'Free-tier accounts sometimes get an empty buckets array; the picker still routes to flash/lite.',
+    }
+  }
+
+  const metrics = parseGeminiCliQuota(buckets)
+  if (metrics.length === 0) {
+    return baseReport(
+      'gemini',
+      'connected',
+      'oauth',
+      'Google Code Assist',
+      'Gemini quota returned but no per-model usage was parseable.',
+    )
+  }
+
+  const tier = getGeminiTier('cli')
+  const tierNote = tier ? ` Tier: ${tier}.` : ''
+
+  return {
+    ...baseReport(
+      'gemini',
+      'ok',
+      'oauth',
+      'Google Code Assist',
+      'Fetched per-tier model quota from retrieveUserQuota.',
+    ),
+    detail: `Project: ${projectId}.${tierNote} Usage is calculated per tier from buckets[].remainingFraction.`,
+    metrics,
+  }
+}
+
+/**
+ * Group Code Assist quota buckets into tier-level rows (Pro / Flash /
+ * Flash Lite), mirroring gemini-cli's ModelQuotaDisplay grouping.
+ *
+ * For each tier we keep the bucket with the LOWEST `remainingFraction`
+ * — i.e. the most-used bucket in that tier. This matches gemini-cli's
+ * "show the binding-rate-limit row per tier" rule. Ungrouped models
+ * (no tier match) fall through under their raw modelId so users still
+ * see them.
+ */
+function parseGeminiCliQuota(buckets: GeminiQuotaBucket[]): UsageMetric[] {
+  const TIER_DISPLAY: Record<string, { label: string; order: number }> = {
+    pro:          { label: 'Pro',         order: 0 },
+    flash:        { label: 'Flash',       order: 1 },
+    'flash-lite': { label: 'Flash Lite',  order: 2 },
+  }
+
+  type Row = {
+    tier: string
+    label: string
+    order: number
+    remainingFraction: number
+    resetTime?: string
+  }
+
+  const grouped = new Map<string, Row>()
+  for (const bucket of buckets) {
+    const modelId = typeof bucket.modelId === 'string' ? bucket.modelId.trim() : ''
+    if (!modelId) continue
+    const remainingFraction = readNumber(bucket.remainingFraction)
+    if (remainingFraction === null) continue
+
+    const tier = classifyGeminiModelTier(modelId)
+    const meta = TIER_DISPLAY[tier]
+    const tierKey = meta ? tier : modelId
+    const label = meta?.label ?? modelId
+    const order = meta?.order ?? 99
+
+    const existing = grouped.get(tierKey)
+    if (!existing || remainingFraction < existing.remainingFraction) {
+      grouped.set(tierKey, {
+        tier: tierKey,
+        label,
+        order,
+        remainingFraction,
+        resetTime: validFutureIso(readString(bucket.resetTime)) ?? undefined,
+      })
+    }
+  }
+
+  return Array.from(grouped.values())
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label))
+    .map(row => ({
+      label: row.label,
+      usedPercent: clampPercent((1 - row.remainingFraction) * 100),
+      summary: `${Math.round(clampPercent(row.remainingFraction * 100))}% remaining`,
+      resetsAt: row.resetTime,
+    }))
+}
+
+/**
+ * Map a Gemini model id to one of the `pro` / `flash` / `flash-lite`
+ * tiers used by gemini-cli's quota display. Returns the raw modelId
+ * for anything that doesn't match (image gen, embeddings) so the
+ * picker still surfaces it ungrouped.
+ */
+function classifyGeminiModelTier(modelId: string): string {
+  const lower = modelId.toLowerCase()
+  // Order matters: flash-lite must beat flash; pro must beat flash on
+  // ids like `gemini-3-pro-preview` (no flash substring) but lose to
+  // flash-lite when the id literally contains both (none today, but
+  // cheap insurance against future drift).
+  if (lower.includes('flash-lite')) return 'flash-lite'
+  if (lower.includes('flash')) return 'flash'
+  if (lower.includes('pro')) return 'pro'
+  return modelId
 }
 
 async function reportAntigravity(): Promise<ProviderUsageReport> {

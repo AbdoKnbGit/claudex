@@ -54,6 +54,7 @@ const TAG_STYLE: Record<ModelTag, { label: string; color: string }> = {
   reasoning: { label: 'reasoning', color: 'blue' },
   recommended: { label: 'RECOMMENDED', color: 'green' },
   free:      { label: 'FREE',      color: 'green' },
+  pro:       { label: 'PRO PLAN',  color: 'magenta' },
   fast:      { label: 'fast',      color: 'cyan' },
   pulled:    { label: 'ready',     color: 'green' },
   missing:   { label: 'pull',      color: 'yellow' },
@@ -86,17 +87,21 @@ function filterSections(
   if (!normalized) return [...sections]
 
   return sections
-    .map(section => ({
-      ...section,
-      models: section.models.filter(model => {
-        const variantHaystack = model.variants
-          ?.map(variant => `${variant.id} ${variant.name ?? ''} ${variant.label} ${variant.tags?.join(' ') ?? ''}`)
-          .join(' ')
-          ?? ''
-        const haystack = `${model.id} ${model.name ?? ''} ${model.tags?.join(' ') ?? ''} ${variantHaystack}`.toLowerCase()
-        return haystack.includes(normalized)
-      }),
-    }))
+    .map(section => {
+      const sectionMatches = section.title.toLowerCase().includes(normalized)
+      return {
+        ...section,
+        models: section.models.filter(model => {
+          if (sectionMatches) return true
+          const variantHaystack = model.variants
+            ?.map(variant => `${variant.id} ${variant.name ?? ''} ${variant.label} ${variant.tags?.join(' ') ?? ''}`)
+            .join(' ')
+            ?? ''
+          const haystack = `${model.id} ${model.name ?? ''} ${model.provider ?? ''} ${model.tags?.join(' ') ?? ''} ${variantHaystack}`.toLowerCase()
+          return haystack.includes(normalized)
+        }),
+      }
+    })
     .filter(section => section.models.length > 0)
 }
 
