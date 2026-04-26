@@ -20,7 +20,7 @@ Because Anthropic rate limits are real, and sometimes you just want to say hi to
 
 Claudex lets you swap providers mid-session. Anthropic giving you the cold shoulder? Switch to Kimi K2.6. Still need the agent loop, the file editing, the bash execution, the MCP servers, the hooks? You have all of it. Nothing changes except who's doing the thinking.
 
-And here's the part that actually matters: you can work with any provider — Codex CLI, Gemini CLI, Antigravity, Cline, Cursor, KiloCode, Kiro, GitHub Copilot — without any of them installed on your machine. Not downloaded, not configured, not even present. Claudex brings the runtime. You bring the API key.
+And here's the part that actually matters: you can work with any provider — Codex CLI, Gemini CLI, Antigravity, Cline, Cursor, KiloCode, Kiro, GitHub Copilot — without any of them installed on your machine. Not downloaded, not configured, not even present. Claudex brings the runtime. You bring the auth most of them or  API key.
 
 That's the point. Same experience. Different brain. Zero dependencies on the original tool.
 
