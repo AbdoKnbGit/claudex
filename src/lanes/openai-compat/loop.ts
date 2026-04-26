@@ -42,6 +42,10 @@ import {
   isCopilotModelUnsupportedError,
   isCopilotQuotaExceededError,
 } from '../../utils/model/copilotAccount.js'
+import {
+  toOpenRouterModelInfo,
+  type OpenRouterCatalogModel,
+} from '../../utils/model/openrouterCatalog.js'
 
 // ─── Provider Detection ──────────────────────────────────────────
 
@@ -120,6 +124,10 @@ interface OpenAIChatRequest {
   models?: string[]
   route?: string
   prompt_cache_key?: string
+}
+
+interface CompatCatalogModel extends OpenRouterCatalogModel {
+  owned_by?: string
 }
 
 // ─── Lane Implementation ─────────────────────────────────────────
@@ -669,13 +677,10 @@ export class OpenAICompatLane implements Lane {
         }
         const resp = await fetch(url, { headers, method: 'GET' })
         if (resp.ok) {
-          const data = await resp.json() as { data?: Array<{ id?: string; owned_by?: string }> }
+          const data = await resp.json() as { data?: CompatCatalogModel[] }
           const raw = (data.data ?? [])
-            .filter(m => typeof m.id === 'string')
-            .map(m => ({
-              id: m.id as string,
-              name: m.id as string,
-            }))
+            .map(m => toCompatCatalogModel(providerName, m))
+            .filter((model): model is ModelInfo => model !== null)
           // Per-provider catalog filter: e.g. Groq hides whisper/preview
           // models so `/models` only shows chat-capable production IDs.
           const filtered = transformer.filterModelCatalog?.(raw) ?? raw
@@ -691,7 +696,7 @@ export class OpenAICompatLane implements Lane {
       if (r.status !== 'fulfilled') continue
       // filterModelCatalog declares `name?: string` so the union with
       // staticCatalog widens; backfill from id when the upstream omitted it.
-      for (const m of r.value) out.push({ id: m.id, name: m.name ?? m.id })
+      for (const m of r.value) out.push({ ...m, name: m.name ?? m.id })
     }
     _modelsCacheByProvider.set(cacheKey, { models: out, at: now })
     return out
@@ -718,6 +723,30 @@ export class OpenAICompatLane implements Lane {
   }
 
   dispose(): void {}
+}
+
+function toCompatCatalogModel(
+  providerName: string,
+  model: CompatCatalogModel,
+): ModelInfo | null {
+  if (providerName === 'openrouter') {
+    return toOpenRouterModelInfo(model)
+  }
+
+  if (typeof model.id !== 'string' || model.id.length === 0) {
+    return null
+  }
+
+  return {
+    id: model.id,
+    name: typeof model.name === 'string' && model.name.length > 0
+      ? model.name
+      : model.id,
+    contextWindow: model.context_length,
+    ...(typeof model.owned_by === 'string' && model.owned_by.length > 0
+      ? { provider: model.owned_by }
+      : {}),
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

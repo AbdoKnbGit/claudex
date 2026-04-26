@@ -96,6 +96,8 @@ export interface ProviderConfig {
 export interface ModelInfo {
   id: string
   name: string
+  /** Upstream organization/provider used for grouped model catalogs. */
+  provider?: string
   contextWindow?: number
   supportsToolCalling?: boolean
   tags?: readonly string[]

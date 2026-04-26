@@ -8,6 +8,7 @@
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
+import { ALL_NIM_MODELS } from '../../../utils/model/nim_catalog.js'
 
 export const nimTransformer: Transformer = {
   id: 'nim',
@@ -15,6 +16,17 @@ export const nimTransformer: Transformer = {
   defaultBaseUrl: 'https://integrate.api.nvidia.com/v1',
 
   supportsStrictMode: () => true,
+
+  staticCatalog() {
+    return ALL_NIM_MODELS.map(model => ({
+      id: model.id,
+      name: model.name,
+    }))
+  },
+
+  preferLiveModelCatalog(): boolean {
+    return true
+  },
 
   clampMaxTokens(requested: number): number {
     return requested

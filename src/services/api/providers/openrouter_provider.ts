@@ -11,6 +11,10 @@
 
 import { OpenAIProvider } from './openai_provider.js'
 import type { ModelInfo, ProviderConfig, ProviderRequestParams } from './base_provider.js'
+import {
+  toOpenRouterModelInfo,
+  type OpenRouterCatalogModel,
+} from '../../../utils/model/openrouterCatalog.js'
 
 export class OpenRouterProvider extends OpenAIProvider {
   readonly name = 'openrouter'
@@ -68,18 +72,11 @@ export class OpenRouterProvider extends OpenAIProvider {
     if (!response.ok) return []
 
     const data = (await response.json()) as {
-      data: Array<{
-        id: string
-        name: string
-        context_length?: number
-        pricing?: { prompt: string; completion: string }
-      }>
+      data: OpenRouterCatalogModel[]
     }
 
-    return (data.data ?? []).map(m => ({
-      id: m.id,
-      name: m.name,
-      contextWindow: m.context_length,
-    }))
+    return (data.data ?? [])
+      .map(toOpenRouterModelInfo)
+      .filter((model): model is ModelInfo => model !== null)
   }
 }

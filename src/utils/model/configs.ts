@@ -87,9 +87,9 @@ function isValidTier(t: string): t is ProviderTier {
 //   Haiku → gemini-3.1-flash-lite-preview (cost-efficient, high-volume)
 //
 // OpenRouter (April 2026):
-//   free  → qwen/qwen3-235b-a22b:free (strongest free MoE model)
-//   pro   → anthropic/claude-sonnet-4-5 / openai/gpt-5.4
-//   plus  → anthropic/claude-opus-4-6 (best available via OR)
+//   free  → tencent/hy3-preview:free / inclusionai/ling-2.6-1t:free
+//   pro   → anthropic/claude-opus-4.7 / openai/gpt-5.5
+//   plus  → anthropic/claude-opus-4.7 (best stable Opus on OR)
 //
 // Groq (April 2026 — all models free with rate limits):
 //   free  → deepseek-r1-distill-llama-70b (best reasoning, free)
@@ -98,10 +98,10 @@ function isValidTier(t: string): t is ProviderTier {
 //   Haiku → llama-3.3-70b-versatile (proven fast workhorse)
 //
 // NVIDIA NIM (April 2026):
-//   free  → moonshotai/kimi-k2-instruct (free on NIM, strong coding)
-//   pro   → moonshotai/kimi-k2-thinking (reasoning model, budget_tokens)
-//   plus  → minimaxai/minimax-m2.5 (230B params, Feb 2026)
-//   Haiku → nvidia/llama-3.1-8b-instruct (ultra-fast)
+//   free  → nvidia/nemotron-3-super-120b-a12b (NVIDIA-hosted default)
+//   pro   → nvidia/llama-3.1-nemotron-ultra-253b-v1
+//   plus  → nvidia/llama-3.1-nemotron-ultra-253b-v1
+//   Haiku → nvidia/nemotron-3-nano-30b-a3b
 
 export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
   openai: {
@@ -195,19 +195,19 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     defaultTier: 'pro',
     tiers: {
       free: {
-        opus:   'qwen/qwen3-235b-a22b:free',
-        sonnet: 'meta-llama/llama-4-maverick:free',
-        haiku:  'google/gemma-3-27b-it:free',
+        opus:   'tencent/hy3-preview:free',
+        sonnet: 'inclusionai/ling-2.6-1t:free',
+        haiku:  'inclusionai/ling-2.6-flash:free',
       },
       pro: {
-        opus:   process.env.OR_MODEL_OPUS   ?? 'anthropic/claude-sonnet-4-5',
-        sonnet: process.env.OR_MODEL_SONNET ?? 'openai/gpt-5.4',
+        opus:   process.env.OR_MODEL_OPUS   ?? 'anthropic/claude-opus-4.7',
+        sonnet: process.env.OR_MODEL_SONNET ?? 'openai/gpt-5.5',
         haiku:  process.env.OR_MODEL_HAIKU  ?? 'openai/gpt-5.4-mini',
       },
       plus: {
-        opus:   process.env.OR_MODEL_OPUS   ?? 'anthropic/claude-opus-4-6',
+        opus:   process.env.OR_MODEL_OPUS   ?? 'anthropic/claude-opus-4.7',
         sonnet: process.env.OR_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
-        haiku:  process.env.OR_MODEL_HAIKU  ?? 'google/gemini-3.1-flash-lite',
+        haiku:  process.env.OR_MODEL_HAIKU  ?? 'google/gemini-3.1-flash-lite-preview',
       },
     },
   },
@@ -276,19 +276,19 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     defaultTier: 'pro',
     tiers: {
       free: {
-        opus:   'moonshotai/kimi-k2-instruct',
-        sonnet: 'moonshotai/kimi-k2-instruct',
-        haiku:  'nvidia/llama-3.1-8b-instruct',
+        opus:   'nvidia/nemotron-3-super-120b-a12b',
+        sonnet: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+        haiku:  'nvidia/nemotron-3-nano-30b-a3b',
       },
       pro: {
-        opus:   process.env.NIM_MODEL_OPUS   ?? 'moonshotai/kimi-k2-thinking',
-        sonnet: process.env.NIM_MODEL_SONNET ?? 'moonshotai/kimi-k2.5',
-        haiku:  process.env.NIM_MODEL_HAIKU  ?? 'nvidia/llama-3.1-8b-instruct',
+        opus:   process.env.NIM_MODEL_OPUS   ?? 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+        sonnet: process.env.NIM_MODEL_SONNET ?? 'nvidia/nemotron-3-super-120b-a12b',
+        haiku:  process.env.NIM_MODEL_HAIKU  ?? 'nvidia/nemotron-3-nano-30b-a3b',
       },
       plus: {
-        opus:   process.env.NIM_MODEL_OPUS   ?? 'minimaxai/minimax-m2.5',
-        sonnet: process.env.NIM_MODEL_SONNET ?? 'moonshotai/kimi-k2-thinking',
-        haiku:  process.env.NIM_MODEL_HAIKU  ?? 'moonshotai/kimi-k2-instruct',
+        opus:   process.env.NIM_MODEL_OPUS   ?? 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+        sonnet: process.env.NIM_MODEL_SONNET ?? 'nvidia/nemotron-3-super-120b-a12b',
+        haiku:  process.env.NIM_MODEL_HAIKU  ?? 'nvidia/nemotron-3-nano-30b-a3b',
       },
     },
   },

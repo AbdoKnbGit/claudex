@@ -9,6 +9,10 @@ import {
   type OllamaModelInfo,
 } from './ollamaCatalog.js'
 import {
+  NIM_PROVIDER_GROUPS,
+  type NimModelEntry,
+} from './nim_catalog.js'
+import {
   SELECTABLE_PROVIDERS,
   type APIProvider,
   PROVIDER_DISPLAY_NAMES,
@@ -20,6 +24,7 @@ import {
   type CursorModelSection,
   type CursorVariantTag,
 } from '../../lanes/cursor/catalog.js'
+import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
 
 export type BrowsableModelProvider = APIProvider
 
@@ -116,13 +121,17 @@ export async function loadProviderModels(
     // Cline also returns a curated, provider-owned order.
     return models
   }
+  if (provider === 'openrouter' || provider === 'nim') {
+    return sortProviderModels(
+      models.map(model => enrichUpstreamProviderModel(provider, model)),
+    )
+  }
   return sortProviderModels(models)
 }
 
 /**
  * A sectioned section of models to render inside the picker. Sections are
- * header-labelled groups with optional capability badges on each row. Non-
- * Ollama providers render a single "All models" section.
+ * header-labelled groups with optional capability badges on each row.
  */
 export interface ProviderModelSection {
   id: string
@@ -252,10 +261,9 @@ export function resolveProviderModelSelection(
 }
 
 /**
- * Load a provider's models split into sections. For Ollama this means
- * {Cloud, Local, No-tool-support}. For every other provider it's a single
- * "All models" bucket — existing callers keep working untouched via
- * loadProviderModels() above.
+ * Load a provider's models split into sections. Ollama splits by local/cloud,
+ * OpenRouter and NIM split by upstream provider, and OpenAI splits reasoning
+ * models from the rest.
  */
 export async function loadProviderModelSections(
   provider: BrowsableModelProvider,
@@ -275,6 +283,10 @@ export async function loadProviderModelSections(
   }
 
   const models = await loadProviderModels(provider)
+
+  if (provider === 'openrouter' || provider === 'nim') {
+    return buildUpstreamProviderSections(provider, models)
+  }
 
   // For OpenAI: split into Codex (reasoning) and other models.
   if (provider === 'openai') {
@@ -476,7 +488,8 @@ export function filterProviderModels(
 
   return models.filter(model => {
     const tags = model.tags?.join(' ') ?? ''
-    const haystack = `${model.id} ${model.name ?? ''} ${tags}`.toLowerCase()
+    const provider = model.provider ?? ''
+    const haystack = `${model.id} ${model.name ?? ''} ${provider} ${tags}`.toLowerCase()
     return haystack.includes(normalized)
   })
 }
@@ -485,8 +498,88 @@ export function getProviderBrowseLabel(provider: BrowsableModelProvider): string
   return PROVIDER_DISPLAY_NAMES[provider]
 }
 
+function buildUpstreamProviderSections(
+  catalogProvider: BrowsableModelProvider,
+  models: readonly ModelInfo[],
+): ProviderModelSection[] {
+  const grouped = new Map<string, ModelInfo[]>()
+  for (const model of models) {
+    const enriched = enrichUpstreamProviderModel(catalogProvider, model)
+    const upstreamProvider = enriched.provider ?? getProviderBrowseLabel(catalogProvider)
+    const list = grouped.get(upstreamProvider) ?? []
+    list.push(enriched)
+    grouped.set(upstreamProvider, list)
+  }
+
+  return Array.from(grouped.entries())
+    .sort(([left], [right]) => compareSectionTitles(catalogProvider, left, right))
+    .map(([title, sectionModels]) => ({
+      id: sectionId(title),
+      title,
+      models: sortProviderModels(sectionModels).map(toProviderSectionedModel),
+    }))
+}
+
+function enrichUpstreamProviderModel(
+  catalogProvider: BrowsableModelProvider,
+  model: ModelInfo,
+): ModelInfo {
+  if (catalogProvider === 'nim') {
+    const catalog = NIM_MODEL_METADATA.get(model.id)
+    return {
+      ...model,
+      name: model.name && model.name !== model.id
+        ? model.name
+        : catalog?.model.name ?? model.name,
+      provider: catalog?.groupName
+        ?? model.provider
+        ?? inferProviderLabelFromModelId(model.id, getProviderBrowseLabel(catalogProvider)),
+    }
+  }
+
+  return {
+    ...model,
+    provider: model.provider
+      ?? inferProviderLabelFromModelId(model.id, getProviderBrowseLabel(catalogProvider)),
+  }
+}
+
+function compareSectionTitles(
+  catalogProvider: BrowsableModelProvider,
+  left: string,
+  right: string,
+): number {
+  if (catalogProvider === 'nim') {
+    const leftOrder = NIM_GROUP_ORDER.get(left) ?? Number.MAX_SAFE_INTEGER
+    const rightOrder = NIM_GROUP_ORDER.get(right) ?? Number.MAX_SAFE_INTEGER
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder
+  }
+
+  return left.localeCompare(right)
+}
+
+function sectionId(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    || 'provider'
+}
+
 function sortProviderModels(models: readonly ModelInfo[]): ModelInfo[] {
   return [...models].sort((left, right) => {
+    const leftProvider = (left.provider ?? '').toLowerCase()
+    const rightProvider = (right.provider ?? '').toLowerCase()
+    if (leftProvider !== rightProvider) {
+      return leftProvider.localeCompare(rightProvider)
+    }
+
+    const leftFreeRank = left.tags?.includes('free') ? 0 : 1
+    const rightFreeRank = right.tags?.includes('free') ? 0 : 1
+    if (leftFreeRank !== rightFreeRank) {
+      return leftFreeRank - rightFreeRank
+    }
+
     const leftName = (left.name || left.id).toLowerCase()
     const rightName = (right.name || right.id).toLowerCase()
 
@@ -497,6 +590,22 @@ function sortProviderModels(models: readonly ModelInfo[]): ModelInfo[] {
     return left.id.localeCompare(right.id)
   })
 }
+
+const NIM_MODEL_METADATA = new Map<string, {
+  model: NimModelEntry
+  groupName: string
+}>(
+  NIM_PROVIDER_GROUPS.flatMap(group =>
+    group.models.map(model => [
+      model.id,
+      { model, groupName: group.name },
+    ] as const),
+  ),
+)
+
+const NIM_GROUP_ORDER = new Map(
+  NIM_PROVIDER_GROUPS.map((group, index) => [group.name, index] as const),
+)
 
 const KNOWN_MODEL_TAGS = new Set<ModelTag>([
   'cloud',
