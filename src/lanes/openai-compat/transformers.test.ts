@@ -270,6 +270,42 @@ function main(): void {
     TRANSFORMERS.nim.transformRequest(body, mkCtx('nvidia/llama-3.1-nemotron'))
     assert(body.stream_options === undefined, 'stream_options not deleted')
   })
+  test('nim clamps large max_tokens reservations by default', () => {
+    const old = process.env.NIM_MAX_TOKENS
+    delete process.env.NIM_MAX_TOKENS
+    try {
+      assert(TRANSFORMERS.nim.clampMaxTokens(32000) === 8192, 'expected default 8192 cap')
+      assert(TRANSFORMERS.nim.clampMaxTokens(4096) === 4096, 'small request should pass through')
+      process.env.NIM_MAX_TOKENS = '2048'
+      assert(TRANSFORMERS.nim.clampMaxTokens(4096) === 2048, 'expected env cap to win')
+    } finally {
+      if (old === undefined) delete process.env.NIM_MAX_TOKENS
+      else process.env.NIM_MAX_TOKENS = old
+    }
+  })
+  test('nim filters to fast core tools unless full tools are requested', () => {
+    const raw = [
+      { name: 'Bash' }, { name: 'PowerShell' }, { name: 'Read' }, { name: 'Edit' },
+      { name: 'Write' }, { name: 'Grep' }, { name: 'Glob' }, { name: 'TodoWrite' },
+      { name: 'Agent' }, { name: 'Skill' }, { name: 'WebSearch' }, { name: 'WebFetch' },
+      { name: 'NotebookEdit' }, { name: 'TaskCreate' }, { name: 'CronCreate' },
+      { name: 'RemoteTrigger' }, { name: 'mcp__github__list_issues' },
+    ]
+    const kept = TRANSFORMERS.nim.filterTools?.('moonshotai/kimi-k2-instruct', raw) ?? raw
+    const names = kept.map(t => t.name)
+    assert(names.includes('Read') && names.includes('Bash') && names.includes('PowerShell'),
+      'expected core shell/read tools kept')
+    assert(names.includes('Grep') && names.includes('Glob') && names.includes('TodoWrite'),
+      'expected core search/planning tools kept')
+    assert(names.includes('Agent') && names.includes('Skill'), 'expected delegation helpers kept')
+    assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped in NIM fast mode')
+    assert(!names.includes('CronCreate'), 'CronCreate should be dropped in NIM fast mode')
+    assert(!names.includes('mcp__github__list_issues'), 'MCP should be opt-in for NIM fast mode')
+  })
+  test('nim skips compat tool preamble by default', () => {
+    assert(TRANSFORMERS.nim.skipToolUsagePreamble?.('moonshotai/kimi-k2-instruct') === true,
+      'expected NIM to skip preamble in fast mode')
+  })
   test('ollama deletes stream_options', () => {
     const body = mkBody('llama3')
     TRANSFORMERS.ollama.transformRequest(body, mkCtx('llama3'))

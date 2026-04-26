@@ -79,7 +79,7 @@ Live model browser. Fetches the actual catalog from your provider's API in real 
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
 | DeepSeek | Solid |
 | Ollama | Local and private, but you knew that already |
-| Cline | Moonshot AI's Kimi K2.6 free tier through here is the big win |
+| Cline | Moonshot AI's Kimi K2.6 through here is still the big win. Note: the old free tier is no longer fully free, but you still get some free credit |
 | GitHub Copilot | For enterprise people. The free models are not coding, they're cosplaying |
 | Cursor | Peak performance on Plan mode, but auto mode fails sometimes |
 | KiloCode | Good for low-effort sidequest tasks. Cache hit rate is a server-side problem — Claudex fixes it where it can, but you may still pay full price occasionally |
