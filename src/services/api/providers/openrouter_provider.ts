@@ -13,6 +13,7 @@ import { OpenAIProvider } from './openai_provider.js'
 import type { ModelInfo, ProviderConfig, ProviderRequestParams } from './base_provider.js'
 import {
   toOpenRouterModelInfo,
+  OPENROUTER_ALLOWLIST,
   type OpenRouterCatalogModel,
 } from '../../../utils/model/openrouterCatalog.js'
 
@@ -76,6 +77,12 @@ export class OpenRouterProvider extends OpenAIProvider {
     }
 
     return (data.data ?? [])
+      .filter(m => {
+        if (typeof m.id !== 'string') return false
+        // Strip :free suffix for allowlist lookup
+        const baseId = m.id.replace(/:free$/, '')
+        return OPENROUTER_ALLOWLIST.has(baseId) || OPENROUTER_ALLOWLIST.has(m.id)
+      })
       .map(toOpenRouterModelInfo)
       .filter((model): model is ModelInfo => model !== null)
   }
