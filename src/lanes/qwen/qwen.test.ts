@@ -59,6 +59,12 @@ function main(): void {
   test('tool registry has run_shell_command', () => {
     assert(getQwenRegistrationByNativeName('run_shell_command'), 'run_shell_command missing')
   })
+  test('run_shell_command advertises Bash syntax for the Bash implementation', () => {
+    const reg = getQwenRegistrationByNativeName('run_shell_command')!
+    assert(reg.implId === 'Bash', 'run_shell_command must be backed by Bash')
+    assert(/Bash\/POSIX/i.test(reg.nativeDescription), 'description must tell Qwen to use Bash syntax')
+    assert(!/powershell/i.test(reg.nativeDescription), 'description must not advertise PowerShell')
+  })
   test('buildQwenTools shape is OpenAI function-calling', () => {
     const tools = buildQwenTools()
     assert(tools.length > 0, 'no tools built')

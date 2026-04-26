@@ -92,9 +92,7 @@ export const QWEN_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'run_shell_command',
     implId: 'Bash',
     nativeDescription:
-      process.platform === 'win32'
-        ? 'Run a PowerShell command. Set is_background=true for long-running processes.'
-        : 'Run a shell command. Set is_background=true for long-running processes. Do NOT use "&" to background.',
+      'Run a Bash/POSIX shell command. Set is_background=true for long-running processes. Do NOT use "&" to background.',
     nativeSchema: {
       type: 'object',
       properties: {

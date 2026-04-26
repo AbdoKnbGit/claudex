@@ -1,5 +1,6 @@
 import type { ProviderTool } from '../../services/api/providers/base_provider.js'
 import type { LaneToolRegistration } from '../types.js'
+import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 import { GEMINI_TOOL_REGISTRY } from '../gemini/tools.js'
 
 export const CURSOR_CLIENT_SIDE_TOOL_V2 = {
@@ -793,10 +794,7 @@ function _asNumber(value: unknown): number | undefined {
 }
 
 function _cursorListDirCommand(dirPath: string | undefined): string {
-  if (process.platform === 'win32') {
-    return dirPath
-      ? `$p=${JSON.stringify(dirPath)}; Get-ChildItem -Force -LiteralPath $p`
-      : 'Get-ChildItem -Force'
-  }
-  return dirPath ? `ls -la -- ${JSON.stringify(dirPath)}` : 'ls -la'
+  if (!dirPath) return 'ls -la'
+  const bashPath = process.platform === 'win32' ? windowsPathToPosixPath(dirPath) : dirPath
+  return `ls -la -- ${JSON.stringify(bashPath)}`
 }

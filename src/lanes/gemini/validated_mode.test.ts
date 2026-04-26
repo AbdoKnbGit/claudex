@@ -16,6 +16,7 @@ import {
   buildStrictParamsSummary,
   GEMINI_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import { GEMINI_TOOL_REGISTRY } from './tools.js'
 
 let passed = 0
 let failed = 0
@@ -114,6 +115,18 @@ function main(): void {
   })
 
   // ── TOOL_USAGE_RULES ────────────────────────────────────────────
+  test('run_shell_command advertises Bash syntax for the Bash implementation', () => {
+    const reg = GEMINI_TOOL_REGISTRY.find(r => r.nativeName === 'run_shell_command')!
+    assert(reg.implId === 'Bash', 'run_shell_command must be backed by Bash')
+    assert(/Bash\/POSIX/i.test(reg.nativeDescription), 'description must tell Gemini to use Bash syntax')
+    assert(!/powershell/i.test(reg.nativeDescription), 'description must not advertise PowerShell')
+    const command = reg.nativeSchema.properties?.command
+    assert(typeof command === 'object' && command !== null && !Array.isArray(command), 'command schema missing')
+    const commandDescription = String((command as { description?: unknown }).description ?? '')
+    assert(/Bash\/POSIX/i.test(commandDescription), 'command field must tell Gemini to use Bash syntax')
+    assert(!/powershell/i.test(commandDescription), 'command field must not advertise PowerShell')
+  })
+
   test('TOOL_USAGE_RULES contains the three critical nudges', () => {
     const r = GEMINI_TOOL_USAGE_RULES
     assert(r.includes('<TOOL_USAGE_RULES>'), 'XML wrapper present')

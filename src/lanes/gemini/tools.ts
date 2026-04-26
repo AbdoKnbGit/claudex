@@ -16,6 +16,7 @@
  */
 
 import type { LaneToolRegistration } from '../types.js'
+import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 
 // ─── Native Tool Definitions ─────────────────────────────────────
 //
@@ -145,17 +146,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'run_shell_command',
     implId: 'Bash',
     nativeDescription:
-      process.platform === 'win32'
-        ? 'This tool executes a given shell command as `powershell.exe -NoProfile -Command <command>`. To run a command in the background, set the `is_background` parameter to true.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.'
-        : 'This tool executes a given shell command as `bash -c <command>`. To run a command in the background, set the `is_background` parameter to true. Do NOT use `&` to background commands.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.',
+      'This tool executes a given shell command using Bash/POSIX syntax. To run a command in the background, set the `is_background` parameter to true. Do NOT use `&` to background commands.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.',
     nativeSchema: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: process.platform === 'win32'
-            ? 'Exact command to execute as `powershell.exe -NoProfile -Command <command>`'
-            : 'Exact bash command to execute as `bash -c <command>`',
+          description: 'Exact Bash/POSIX command to execute.',
         },
         description: {
           type: 'string',
@@ -338,7 +335,11 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['dir_path'],
     },
     adaptInput(native) {
-      return { command: `ls -la ${JSON.stringify(native.dir_path)}` }
+      const dirPath = typeof native.dir_path === 'string'
+        ? native.dir_path
+        : String(native.dir_path ?? '.')
+      const bashPath = process.platform === 'win32' ? windowsPathToPosixPath(dirPath) : dirPath
+      return { command: `ls -la -- ${JSON.stringify(bashPath)}` }
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)

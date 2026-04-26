@@ -109,6 +109,15 @@ test('Cursor run_shell_command input adapts to shared Bash schema', () => {
   assert(resolved.input.run_in_background === true, 'wrong background flag')
 })
 
+test('Cursor list_dir emits Bash syntax for the Bash implementation', () => {
+  const resolved = resolveCursorToolCall('list_dir', {
+    dir_path: 'C:\\Users\\ok\\Desktop\\claudex',
+  })
+  assert(resolved?.implId === 'Bash', 'wrong impl')
+  assert(String(resolved.input.command).startsWith('ls -la -- '), 'list_dir must use ls for Bash')
+  assert(!/Get-ChildItem/i.test(String(resolved.input.command)), 'list_dir must not emit PowerShell')
+})
+
 test('Cursor keeps MCP tools in their independent names', () => {
   const defs = buildCursorToolDefinitions([
     {
