@@ -69,9 +69,7 @@ Live model browser. Fetches the actual catalog from your provider's API in real 
 
 Tracks usage across every provider you're logged into. Quotas, remaining credit, request counts — see what each one has left before you hit a wall.
 
-[![Watch the tutorial](tutoriel-thumb.jpg)](https://github.com/AbdoKnbGit/claudex/raw/master/tutoriel-readme.mp4)
-
-> Click the image to play the tutorial video.
+https://github.com/user-attachments/assets/ff7d0ec7-fffd-4248-a011-41ed6e9a0eea
 
 ---
 
