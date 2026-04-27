@@ -44,7 +44,7 @@ claudex
 
 ---
 
-## The Three Commands You Need to Know
+## The Four Commands You Need to Know
 
 ### `/login` — Start here
 
@@ -64,6 +64,14 @@ Live model browser. Fetches the actual catalog from your provider's API in real 
 /models openrouter:kimi     search a specific provider
 /model kimi-k2-5            set a model directly
 ```
+
+### `/usage` — Watch the meter
+
+Tracks usage across every provider you're logged into. Quotas, remaining credit, request counts — see what each one has left before you hit a wall.
+
+<video src="https://github.com/AbdoKnbGit/claudex/raw/master/tutoriel-readme.mp4" controls width="100%"></video>
+
+> If the video doesn't play above, [download it here](tutoriel-readme.mp4).
 
 ---
 
