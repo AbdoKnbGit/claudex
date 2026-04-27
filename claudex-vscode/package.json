@@ -1,26 +1,20 @@
 {
   "name": "claudex-vscode",
   "displayName": "Claudex",
-  "description": "Multi-provider VS Code companion for Claudex with project-aware launch behavior, provider switching, and a real Control Center.",
-  "version": "0.2.0",
+  "description": "Claudex companion for VS Code: one-click launch with full IDE awareness — diagnostics, inline diffs, selection context, and provider switching.",
+  "version": "0.5.6",
   "publisher": "devnull-bootloader",
   "engines": {
     "vscode": "^1.95.0"
   },
   "categories": [
+    "AI",
+    "Chat",
     "Themes",
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:claudex.start",
-    "onCommand:claudex.startInWorkspaceRoot",
-    "onCommand:claudex.openDocs",
-    "onCommand:claudex.openSetupDocs",
-    "onCommand:claudex.openWorkspaceProfile",
-    "onCommand:claudex.openControlCenter",
-    "onCommand:claudex.switchProvider",
-    "onView:claudex.controlCenter"
+    "onStartupFinished"
   ],
   "main": "./src/extension.js",
   "files": [
@@ -29,6 +23,7 @@
     "src/extension.js",
     "src/presentation.js",
     "src/state.js",
+    "src/companion/**/*.js",
     "themes/**"
   ],
   "contributes": {
@@ -67,8 +62,34 @@
         "command": "claudex.switchProvider",
         "title": "Claudex: Switch Provider",
         "category": "Claudex"
+      },
+      {
+        "command": "claudex.acceptDiff",
+        "title": "Claudex: Accept Diff",
+        "category": "Claudex",
+        "icon": "$(check)"
+      },
+      {
+        "command": "claudex.rejectDiff",
+        "title": "Claudex: Reject Diff",
+        "category": "Claudex",
+        "icon": "$(close)"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "claudex.acceptDiff",
+          "when": "claudex.diff.isVisible",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudex.rejectDiff",
+          "when": "claudex.diff.isVisible",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -133,9 +154,12 @@
     ]
   },
   "scripts": {
-    "test": "node --test ./src/*.test.js",
-    "lint": "node -e \"for (const file of require('node:fs').readdirSync('./src')) { if (file.endsWith('.js')) { require('node:child_process').execFileSync(process.execPath, ['--check', require('node:path').join('src', file)], { stdio: 'inherit' }); } }\"",
-    "package": "npx @vscode/vsce package --no-dependencies"
+    "test": "node --test ./src/*.test.js ./src/companion/*.test.js ./src/companion/handlers/*.test.js",
+    "lint": "node ./scripts/lint.js",
+    "package": "npx @vscode/vsce package"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   },
   "keywords": [
     "claudex",

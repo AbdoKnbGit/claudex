@@ -13,8 +13,8 @@ const {
 } = require('./state');
 const { buildControlCenterViewModel } = require('./presentation');
 
-const CLAUDEX_REPO_URL = 'https://github.com/anthropics/claude-code';
-const CLAUDEX_SETUP_URL = 'https://github.com/anthropics/claude-code/blob/main/README.md#quick-start';
+const CLAUDEX_REPO_URL = 'https://github.com/AbdoKnbGit/claudex';
+const CLAUDEX_SETUP_URL = 'https://github.com/AbdoKnbGit/claudex#readme';
 const PROFILE_FILE_NAME = '.claudex-profile.json';
 
 /** Provider env var mapping for terminal injection */
@@ -290,7 +290,7 @@ async function collectControlCenterState() {
 }
 
 async function launchClaudex(options = {}) {
-  const { requireWorkspace = false } = options;
+  const { requireWorkspace = false, companion = null } = options;
   const configured = vscode.workspace.getConfiguration('claudex');
   const launchCommand = configured.get('launchCommand', 'claudex');
   const terminalName = configured.get('terminalName', 'Claudex');
@@ -334,6 +334,17 @@ async function launchClaudex(options = {}) {
 
   // Inject provider env vars based on active provider setting
   const env = { ...(PROVIDER_ENV_VARS[activeProvider] || {}) };
+
+  // Inject companion-server discovery hints so the CLI auto-attaches to *this*
+  // VS Code window (matters when multiple windows are open). The CLI looks for
+  // CLAUDE_CODE_SSE_PORT to disambiguate; the auth token lets it open the
+  // WebSocket without having to re-read the lockfile.
+  if (companion && companion.port) {
+    env.CLAUDE_CODE_SSE_PORT = String(companion.port);
+    if (companion.authToken) {
+      env.CLAUDE_CODE_IDE_AUTHORIZATION = companion.authToken;
+    }
+  }
 
   const terminalOptions = {
     name: terminalName,
@@ -1055,8 +1066,12 @@ function renderControlCenterHtml(status, options = {}) {
 }
 
 class ClaudexControlCenterProvider {
-  constructor() {
+  constructor(options = {}) {
     this.webviewView = null;
+    // `companion` is an optional accessor returning { port, authToken } so we
+    // can read fresh values each launch — the server may not have started yet
+    // when the provider is first instantiated.
+    this._getCompanion = options.getCompanion || (() => null);
   }
 
   async resolveWebviewView(webviewView) {
@@ -1070,12 +1085,13 @@ class ClaudexControlCenterProvider {
     });
 
     webviewView.webview.onDidReceiveMessage(async message => {
+      const companion = this._getCompanion();
       switch (message?.type) {
         case 'launch':
-          await launchClaudex();
+          await launchClaudex({ companion });
           break;
         case 'launchRoot':
-          await launchClaudex({ requireWorkspace: true });
+          await launchClaudex({ requireWorkspace: true, companion });
           break;
         case 'openProfile':
           await openWorkspaceProfile();
@@ -1188,11 +1204,190 @@ class ClaudexControlCenterProvider {
   }
 }
 
+// Companion state owned by activate(). Stored at module scope so deactivate()
+// can stop the server cleanly without juggling an extra lifecycle channel.
+let companionServer = null;
+let companionLockfilePort = null;
+let companionLog = () => {};
+
+function getCompanionRef() {
+  if (!companionServer || !companionServer.port || !companionServer.authToken) {
+    return null;
+  }
+  return { port: companionServer.port, authToken: companionServer.authToken };
+}
+
+async function startCompanion(context) {
+  const { CompanionServer } = require('./companion/server');
+  const { writeLockfile, deleteLockfile } = require('./companion/lockfile');
+  const {
+    DiffContentProvider,
+    DiffManager,
+    DIFF_SCHEME,
+    createDiffHandlers,
+  } = require('./companion/handlers/diff');
+  const { createGetDiagnosticsHandler } = require('./companion/handlers/diagnostics');
+
+  const output = vscode.window.createOutputChannel('Claudex Companion');
+  context.subscriptions.push(output);
+  companionLog = msg => {
+    try {
+      output.appendLine(msg);
+    } catch (_) {
+      // ignore output channel disposal races
+    }
+  };
+
+  const diffContentProvider = new DiffContentProvider(vscode);
+  const diffManager = new DiffManager(vscode, diffContentProvider, companionLog);
+
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      DIFF_SCHEME,
+      diffContentProvider,
+    ),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      if (doc.uri.scheme === DIFF_SCHEME) {
+        void diffManager.onDocumentClosed(doc.uri);
+      }
+    }),
+    vscode.commands.registerCommand('claudex.acceptDiff', uri => {
+      void diffManager.acceptDiff(uri);
+    }),
+    vscode.commands.registerCommand('claudex.rejectDiff', uri => {
+      void diffManager.rejectDiff(uri);
+    }),
+  );
+
+  const diffHandlers = createDiffHandlers(diffManager);
+  const getDiagnostics = createGetDiagnosticsHandler(vscode);
+
+  const tools = {
+    getDiagnostics: {
+      description: 'Get language-server diagnostics from the IDE.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          uri: {
+            type: 'string',
+            description: 'Optional file URI to scope to. Omit for all workspace diagnostics.',
+          },
+        },
+      },
+      handler: getDiagnostics,
+    },
+    openDiff: {
+      description: 'Open a diff view in the IDE and wait for accept/reject.',
+      inputSchema: {
+        type: 'object',
+        required: ['new_file_contents'],
+        properties: {
+          old_file_path: { type: 'string' },
+          new_file_path: { type: 'string' },
+          new_file_contents: { type: 'string' },
+          tab_name: { type: 'string' },
+        },
+      },
+      handler: diffHandlers.openDiff,
+    },
+    close_tab: {
+      description: 'Close a tab in the IDE by name.',
+      inputSchema: {
+        type: 'object',
+        required: ['tab_name'],
+        properties: { tab_name: { type: 'string' } },
+      },
+      handler: diffHandlers.close_tab,
+    },
+    closeAllDiffTabs: {
+      description: 'Close every Claudex-owned diff tab in the IDE.',
+      inputSchema: { type: 'object', properties: {} },
+      handler: diffHandlers.closeAllDiffTabs,
+    },
+  };
+
+  const server = new CompanionServer({
+    tools,
+    log: companionLog,
+    onCliNotification: (method, params) => {
+      companionLog(`CLI notif: ${method} ${JSON.stringify(params || {})}`);
+    },
+  });
+
+  try {
+    await server.start();
+  } catch (err) {
+    companionLog(`Failed to start companion: ${err && err.message}`);
+    return null;
+  }
+
+  companionServer = server;
+  companionLockfilePort = server.port;
+
+  const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(
+    f => f.uri.fsPath,
+  );
+  const lockfilePath = writeLockfile({
+    port: server.port,
+    workspaceFolders,
+    pid: process.pid,
+    ideName: 'VS Code',
+    authToken: server.authToken,
+  });
+
+  if (lockfilePath) {
+    companionLog(`Lockfile written: ${lockfilePath}`);
+  } else {
+    companionLog('Lockfile write failed — CLI auto-discovery may not work');
+  }
+
+  // Keep workspace folders fresh in the lockfile so the CLI's path-matching
+  // detection picks up newly added folders without restarting VS Code.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const folders = (vscode.workspace.workspaceFolders || []).map(
+        f => f.uri.fsPath,
+      );
+      writeLockfile({
+        port: server.port,
+        workspaceFolders: folders,
+        pid: process.pid,
+        ideName: 'VS Code',
+        authToken: server.authToken,
+      });
+    }),
+  );
+
+  context.subscriptions.push({
+    dispose: async () => {
+      try {
+        await server.stop();
+      } catch (_) {
+        // ignore
+      }
+      deleteLockfile(companionLockfilePort);
+      companionServer = null;
+      companionLockfilePort = null;
+    },
+  });
+
+  return server;
+}
+
 /**
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-  const provider = new ClaudexControlCenterProvider();
+  const provider = new ClaudexControlCenterProvider({
+    getCompanion: getCompanionRef,
+  });
+
+  // Boot the companion server lazily — failures here must not block the rest
+  // of the extension (provider switching, theme, manual launch all still work
+  // even if the lockfile/HOME is read-only).
+  void startCompanion(context).catch(err => {
+    companionLog(`startCompanion error: ${err && err.message}`);
+  });
 
   // Status bar item showing active provider
   const statusBarItem = vscode.window.createStatusBarItem(
@@ -1209,13 +1404,13 @@ function activate(context) {
   };
 
   const startCommand = vscode.commands.registerCommand('claudex.start', async () => {
-    await launchClaudex();
+    await launchClaudex({ companion: getCompanionRef() });
   });
 
   const startInWorkspaceRootCommand = vscode.commands.registerCommand(
     'claudex.startInWorkspaceRoot',
     async () => {
-      await launchClaudex({ requireWorkspace: true });
+      await launchClaudex({ requireWorkspace: true, companion: getCompanionRef() });
     },
   );
 
@@ -1280,7 +1475,28 @@ function activate(context) {
   );
 }
 
-function deactivate() {}
+async function deactivate() {
+  // VS Code disposes context.subscriptions on shutdown, but we belt-and-brace
+  // the lockfile cleanup here so a crash during dispose() doesn't leave stale
+  // entries that mislead the CLI's lockfile scanner.
+  try {
+    if (companionServer) {
+      await companionServer.stop();
+      companionServer = null;
+    }
+  } catch (_) {
+    // ignore
+  }
+  if (companionLockfilePort != null) {
+    try {
+      const { deleteLockfile } = require('./companion/lockfile');
+      deleteLockfile(companionLockfilePort);
+    } catch (_) {
+      // ignore
+    }
+    companionLockfilePort = null;
+  }
+}
 
 module.exports = {
   activate,

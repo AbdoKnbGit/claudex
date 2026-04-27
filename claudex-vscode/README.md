@@ -1,70 +1,94 @@
-# OpenClaude VS Code Extension
+# Claudex — VS Code Companion
 
-A practical VS Code companion for OpenClaude with a project-aware **Control Center**, predictable terminal launch behavior, and quick access to useful OpenClaude workflows.
+The official VS Code companion for [Claudex](https://github.com/AbdoKnbGit/claudex), the multi-provider AI coding CLI. One install, one click, full IDE awareness — no env-var juggling.
 
-## Features
+## What it does
 
-- **Real Control Center status** in the Activity Bar:
-  - whether the configured `openclaude` command is installed
-  - the launch command being used
-  - whether the launch shim injects `CLAUDE_CODE_USE_OPENAI=1`
-  - the current workspace folder
-  - the launch cwd that will be used for terminal sessions
-  - whether `.openclaude-profile.json` exists in the current workspace root
-  - a conservative provider summary derived from the workspace profile or known environment flags
-- **Project-aware launch behavior**:
-  - `Launch OpenClaude` launches from the active editor's workspace when possible
-  - falls back to the first workspace folder when needed
-  - avoids launching from an arbitrary default cwd when a project is open
-- **Practical sidebar actions**:
-  - Launch OpenClaude
-  - Launch in Workspace Root
-  - Open Workspace Profile
-  - Open Repository
-  - Open Setup Guide
-  - Open Command Palette
-- **Built-in dark theme**: `OpenClaude Terminal Black`
+When this extension is installed, every Claudex run launched inside VS Code automatically:
 
-## Requirements
+- Sees your **open file, current selection, and language-server diagnostics**.
+- Renders **inline diffs** as real VS Code diff tabs with accept / reject buttons — the CLI waits for your decision before applying changes.
+- Auto-attaches to **the right window** when you have multiple VS Code windows open.
+- Inherits the **provider** you've selected in the Control Center (Anthropic, OpenAI, Gemini, OpenRouter, Groq, NIM, DeepSeek, Ollama).
 
-- VS Code `1.95+`
-- `openclaude` available in your terminal PATH (`npm install -g @gitlawb/openclaude`)
+You don't have to set `CLAUDE_CODE_USE_*` or `CLAUDE_CODE_SSE_PORT` yourself — the extension injects them into the launched terminal for you.
+
+## How it works (short version)
+
+The extension starts a tiny local WebSocket server on `127.0.0.1:<random_port>` when VS Code activates and writes a lockfile to `~/.claude/ide/<port>.lock`. When `claudex` runs in a terminal launched by the extension, it reads the lockfile, opens the WebSocket, and uses MCP to ask the IDE for context (diagnostics, file content, diffs). This is the same protocol Claude Code's official extension uses, so Claudex's CLI inherits the integration without any extra config.
+
+If you launch `claudex` from an external terminal, it falls back to scanning the lockfile directory and finds the matching VS Code window automatically.
+
+## One-click usage
+
+1. Install the extension.
+2. Click the **Claudex** icon in the Activity Bar.
+3. Click **Launch Claudex** in the Control Center.
+4. Done — claudex is running with full IDE context.
 
 ## Commands
 
-- `OpenClaude: Open Control Center`
-- `OpenClaude: Launch in Terminal`
-- `OpenClaude: Launch in Workspace Root`
-- `OpenClaude: Open Repository`
-- `OpenClaude: Open Setup Guide`
-- `OpenClaude: Open Workspace Profile`
+All commands are also available through `Ctrl+Shift+P` → search "Claudex":
+
+| Command | What it does |
+|---|---|
+| `Claudex: Launch in Terminal` | Project-aware launch (starts beside the active file when possible). |
+| `Claudex: Launch in Workspace Root` | Always launches from the workspace root. |
+| `Claudex: Open Control Center` | Opens the sidebar panel. |
+| `Claudex: Switch Provider` | Quick-pick to choose Anthropic, OpenAI, Gemini, etc. |
+| `Claudex: Open Workspace Profile` | Open `.claudex-profile.json` for the current workspace. |
+| `Claudex: Open Repository` | Browse the upstream Claudex project on GitHub. |
+| `Claudex: Open Setup Guide` | Jump to install / provider docs. |
+| `Claudex: Accept Diff` / `Claudex: Reject Diff` | Decide on the active diff tab (also wired into the diff editor toolbar). |
 
 ## Settings
 
-- `openclaude.launchCommand` (default: `openclaude`)
-- `openclaude.terminalName` (default: `OpenClaude`)
-- `openclaude.useOpenAIShim` (default: `false`)
+| Setting | Default | Notes |
+|---|---|---|
+| `claudex.launchCommand` | `claudex` | Command run in the integrated terminal. |
+| `claudex.terminalName` | `Claudex` | Terminal tab name. |
+| `claudex.activeProvider` | _(auto)_ | Active LLM provider. Drives provider env vars. |
 
-`openclaude.useOpenAIShim` only injects `CLAUDE_CODE_USE_OPENAI=1` into terminals launched by the extension. It does not guess or configure a provider by itself.
+## Requirements
 
-## Notes on Status Detection
+- VS Code `1.95+`.
+- `claudex` available on your terminal `PATH` — `npm install -g @abdoknbgit/claudex`.
 
-- Provider status prefers the real workspace `.openclaude-profile.json` file when present.
-- If no saved profile exists, the extension falls back to known environment flags available to the VS Code extension host.
-- If the source of truth is unclear, the extension shows `unknown` instead of guessing.
+## Tools the extension exposes to the CLI
+
+The companion server speaks MCP and exposes:
+
+| Tool | Used by |
+|---|---|
+| `getDiagnostics(uri?)` | Pulls language-server problems for a file or the whole workspace. |
+| `openDiff({ old_file_path, new_file_path, new_file_contents, tab_name })` | Shows a real VS Code diff tab. Resolves with `FILE_CONTENTS:<text>` when accepted, or `FILE_REJECTED` otherwise. |
+| `close_tab({ tab_name })` | Closes a previously opened diff tab. |
+| `closeAllDiffTabs()` | Bulk-closes every Claudex-owned diff tab. |
+
+These are the same RPCs the official Claude Code extension implements. The Claudex CLI reuses them transparently.
+
+## Themes
+
+Bundled: **Claudex Dark** and **Claudex Light**. Switch via `Ctrl+K Ctrl+T`.
+
+## Privacy
+
+- The companion server binds to `127.0.0.1` only — it is not reachable from the network.
+- Connections are gated by a per-session random `authToken` written into the lockfile and validated via the `X-Claude-Code-Ide-Authorization` header.
+- The extension does not phone home and does not collect telemetry.
 
 ## Development
 
-From this folder:
-
 ```bash
-npm run test
-npm run lint
+cd claudex-vscode
+npm install
+npm test          # runs node --test on src/**/*.test.js
+npm run lint      # syntax-checks every .js file under src/
+npm run package   # produces a .vsix via @vscode/vsce
 ```
 
-To package (optional):
+The extension activates on `onStartupFinished`. Companion failures are logged to the **Claudex Companion** output channel without disrupting the rest of the extension.
 
-```bash
-npm run package
-```
+## License
 
+MIT.
