@@ -173,8 +173,144 @@ function getAssistantAPIErrorText(message: AssistantMessage): string {
   )
 }
 
+function getUnknownErrorStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined
+  }
+
+  const record = error as Record<string, unknown>
+  for (const key of ['status', 'statusCode', 'status_code']) {
+    const value = record[key]
+    if (typeof value === 'number' && value >= 100 && value <= 599) {
+      return value
+    }
+    if (typeof value === 'string' && /^\d{3}$/.test(value)) {
+      return Number(value)
+    }
+  }
+
+  const response = record.response
+  if (response && typeof response === 'object') {
+    const status = (response as Record<string, unknown>).status
+    if (typeof status === 'number' && status >= 100 && status <= 599) {
+      return status
+    }
+    if (typeof status === 'string' && /^\d{3}$/.test(status)) {
+      return Number(status)
+    }
+  }
+
+  const originalError = record.originalError
+  if (originalError && originalError !== error) {
+    const status = getUnknownErrorStatusCode(originalError)
+    if (status !== undefined) {
+      return status
+    }
+  }
+
+  const cause = record.cause
+  if (cause && cause !== error) {
+    return getUnknownErrorStatusCode(cause)
+  }
+
+  return undefined
+}
+
+function hasFallbackErrorSignal(text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) {
+    return false
+  }
+
+  const lower = normalized.toLowerCase()
+
+  if (
+    /\b(tool_use|tool use|tool_result|tool result|duplicate tool|unexpected tool|image exceeds|image dimensions exceed|pdf is password protected|pdf file was not valid)\b/i.test(
+      normalized,
+    )
+  ) {
+    return false
+  }
+
+  // Plain transport failures like "fetch failed" can usually be retried by
+  // the current agent/provider. They are not enough to move to fallback.
+  if (
+    lower.includes('api connection error') &&
+    !/\b\d{3}\b/.test(lower) &&
+    !/\b(rate[-\s]?limit|quota|credit|subscription|billing|prompt is too long|context[_\s-]?length|token limit|max_output_tokens)\b/i.test(
+      normalized,
+    )
+  ) {
+    return false
+  }
+
+  if (
+    /\b(rate[-\s]?limit(?:ed)?|too many requests|quota|quota exceeded|no quota|quota left|usage limit|limit reached|resource_exhausted)\b/i.test(
+      normalized,
+    ) ||
+    /\b(insufficient (?:credits?|balance|quota)|credit balance|out of credits?|payment required|billing|402)\b/i.test(
+      normalized,
+    ) ||
+    /\b(subscription|required subscription|requires a subscription|upgrade for access|not available with .* plan|plan does not include|extra usage is required)\b/i.test(
+      normalized,
+    ) ||
+    /\b(prompt is too long|context_length_exceeded|maximum context length|context window|token limit|input token limit|request too large|max_output_tokens|output token maximum)\b/i.test(
+      normalized,
+    ) ||
+    /\b(authentication failed|unauthorized|forbidden|invalid api key|token revoked|oauth token|no access to (?:the )?model|does not have access|model .*not available|model .*requires)\b/i.test(
+      normalized,
+    )
+  ) {
+    return true
+  }
+
+  if (!/\b\d{3}\b/.test(normalized)) {
+    return false
+  }
+
+  return /\b(api error|http|status|request rejected|request failed|auth error|authentication failed|provider|model|quota|billing|subscription|ollama|cline|kilo|kiro|cursor|gemini|qwen|codex|openai|copilot|openrouter|deepseek|groq|mistral|nim)\b/i.test(
+    normalized,
+  )
+}
+
+function hasProviderFailureFrame(text: string): boolean {
+  return /\b(api error|api connection error|request rejected|rejected this request|auth error|authentication failed|http\s+\d{3}|status\s+\d{3}|prompt is too long\s*\(|ollama|cline|kilo|kiro|cursor|gemini|qwen|codex|openai|github copilot|copilot|openrouter|deepseek|groq|mistral|nim)\b/i.test(
+    text,
+  )
+}
+
 function isFallbackEligibleAPIErrorMessage(message: AssistantMessage): boolean {
-  return message.isApiErrorMessage === true
+  const errorText = getAssistantAPIErrorText(message)
+  if (
+    message.isApiErrorMessage !== true &&
+    !hasProviderFailureFrame(errorText)
+  ) {
+    return false
+  }
+
+  const errorKind = String(message.error ?? message.apiError ?? '')
+  if (
+    errorKind === 'billing_error' ||
+    errorKind === 'rate_limit' ||
+    errorKind === 'authentication_failed' ||
+    errorKind === 'server_error' ||
+    errorKind === 'max_output_tokens'
+  ) {
+    return true
+  }
+
+  return hasFallbackErrorSignal(errorText)
+}
+
+function isFallbackEligibleThrownError(
+  error: unknown,
+  errorMessage: string,
+): boolean {
+  if (getUnknownErrorStatusCode(error) !== undefined) {
+    return true
+  }
+
+  return hasFallbackErrorSignal(errorMessage)
 }
 
 function truncateFallbackErrorMessage(message: string): string {
@@ -1163,7 +1299,10 @@ async function* queryLoop(
         return { reason: 'image_error' }
       }
 
-      if (!toolUseContext.abortController.signal.aborted) {
+      if (
+        !toolUseContext.abortController.signal.aborted &&
+        isFallbackEligibleThrownError(error, errorMessage)
+      ) {
         const fallbackAction = resolveConfiguredFallbackAction(errorMessage)
         if (fallbackAction.type === 'retry') {
           yield* yieldMissingToolResultBlocks(
