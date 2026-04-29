@@ -174,6 +174,7 @@ import { isFirstPartyAnthropicBaseUrl } from './utils/model/providers.js'
 import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
+import fallback from './commands/fallback/index.js'
 import model from './commands/model/index.js'
 import models from './commands/models/index.js'
 import surf from './commands/surf/index.js'
@@ -294,6 +295,7 @@ const COMMANDS = memoize((): Command[] => [
   mobile,
   model,
   models,
+  fallback,
   surf,
   outputStyle,
   remoteEnv,

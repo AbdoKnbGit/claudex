@@ -618,6 +618,14 @@ export type GlobalConfig = {
       { provider: string; model: string; effort?: string | number }
     >
   >
+
+  // Ordered fallback chain used by /fallback. When the active model fails,
+  // the user is asked to approve continuing with these targets in order.
+  fallbackTargets?: Array<{
+    provider: string
+    model: string
+    effort?: string | number
+  }>
 }
 
 /**
@@ -708,6 +716,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'remoteControlAtStartup',
   'remoteDialogSeen',
   'surfPhaseTargets',
+  'fallbackTargets',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]

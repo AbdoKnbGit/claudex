@@ -15,6 +15,10 @@ const VALID_PROVIDERS: readonly APIProvider[] = [
   'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
+export function isAPIProvider(value: string): value is APIProvider {
+  return VALID_PROVIDERS.includes(value as APIProvider)
+}
+
 // Session-local snapshot of the active provider.
 //
 // The previous implementation re-read activeProvider from the shared

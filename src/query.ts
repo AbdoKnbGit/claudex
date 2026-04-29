@@ -82,6 +82,16 @@ import {
   getRuntimeMainLoopModel,
   renderModelName,
 } from './utils/model/model.js'
+import { applyFallbackTargetToRuntime } from './utils/fallback/apply.js'
+import {
+  clearFallbackProcess,
+  formatFallbackTarget,
+  getActiveFallbackAttempt,
+  getConfiguredFallbackTargets,
+  getNextFallbackAttempt,
+  requestFallbackConfirmation,
+  type FallbackAttempt,
+} from './utils/fallback/state.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
@@ -147,6 +157,45 @@ function* yieldMissingToolResultBlocks(
       })
     }
   }
+}
+
+function getAssistantAPIErrorText(message: AssistantMessage): string {
+  const text = message.message.content
+    .map(block => (block.type === 'text' && 'text' in block ? block.text : ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+
+  return (
+    text ||
+    message.errorDetails ||
+    String(message.error ?? message.apiError ?? 'Model request failed')
+  )
+}
+
+function isFallbackEligibleAPIErrorMessage(message: AssistantMessage): boolean {
+  if (!message.isApiErrorMessage) {
+    return false
+  }
+
+  const errorKind = String(message.error ?? message.apiError ?? '').toLowerCase()
+  if (
+    errorKind.includes('max_output_tokens') ||
+    errorKind.includes('prompt_too_long') ||
+    isPromptTooLongMessage(message)
+  ) {
+    return false
+  }
+
+  return true
+}
+
+function truncateFallbackErrorMessage(message: string): string {
+  const normalized = message.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= 300) {
+    return normalized
+  }
+  return `${normalized.slice(0, 297)}...`
 }
 
 /**
@@ -570,6 +619,7 @@ async function* queryLoop(
 
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
+    let currentEffortValue = appState.effortValue
     let currentModel = getRuntimeMainLoopModel({
       permissionMode,
       mainLoopModel: toolUseContext.options.mainLoopModel,
@@ -577,6 +627,74 @@ async function* queryLoop(
         permissionMode === 'plan' &&
         doesMostRecentAssistantMessageExceed200k(messagesForQuery),
     })
+    const configuredFallbackTargets = getConfiguredFallbackTargets()
+    const fallbackRuntimeAllowed =
+      configuredFallbackTargets.length > 0 &&
+      !toolUseContext.agentId &&
+      !toolUseContext.options.isNonInteractiveSession &&
+      querySource.startsWith('repl_main_thread')
+
+    const activeFallbackAttempt = getActiveFallbackAttempt()
+    if (activeFallbackAttempt && fallbackRuntimeAllowed) {
+      const effort = applyFallbackTargetToRuntime(activeFallbackAttempt.target)
+      currentModel = activeFallbackAttempt.target.model
+      toolUseContext.options.mainLoopModel = activeFallbackAttempt.target.model
+      if (effort !== undefined) {
+        currentEffortValue = effort
+      }
+      if (activeFallbackAttempt.target.provider === 'firstParty') {
+        messagesForQuery = stripSignatureBlocks(messagesForQuery)
+      }
+    }
+
+    const shouldHandleConfiguredFallbackError = (
+      message: AssistantMessage,
+    ): boolean =>
+      fallbackRuntimeAllowed && isFallbackEligibleAPIErrorMessage(message)
+
+    const resetFailedModelAttempt = () => {
+      assistantMessages.length = 0
+      toolResults.length = 0
+      toolUseBlocks.length = 0
+      needsFollowUp = false
+
+      if (streamingToolExecutor) {
+        streamingToolExecutor.discard()
+        streamingToolExecutor = new StreamingToolExecutor(
+          toolUseContext.options.tools,
+          canUseTool,
+          toolUseContext,
+        )
+      }
+    }
+
+    const switchToFallbackAttempt = (attempt: FallbackAttempt): string => {
+      const originalProvider = getAPIProvider()
+      const originalModel = currentModel
+      const effort = applyFallbackTargetToRuntime(attempt.target)
+
+      currentModel = attempt.target.model
+      toolUseContext.options.mainLoopModel = attempt.target.model
+      if (effort !== undefined) {
+        currentEffortValue = effort
+      }
+      if (attempt.target.provider === 'firstParty') {
+        messagesForQuery = stripSignatureBlocks(messagesForQuery)
+      }
+
+      logEvent('tengu_model_fallback_triggered', {
+        original_model:
+          `${originalProvider}/${originalModel}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        fallback_model:
+          `${attempt.target.provider}/${attempt.target.model}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        entrypoint:
+          'cli' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        queryChainId: queryChainIdForAnalytics,
+        queryDepth: queryTracking.depth,
+      })
+
+      return `Fallback ${attempt.index + 1}/${attempt.total}: switched to ${formatFallbackTarget(attempt.target)} after ${renderModelName(originalModel)} failed.`
+    }
 
     queryCheckpoint('query_setup_end')
 
@@ -644,6 +762,7 @@ async function* queryLoop(
           content: PROMPT_TOO_LONG_ERROR_MESSAGE,
           error: 'invalid_request',
         })
+        clearFallbackProcess()
         return { reason: 'blocking_limit' }
       }
     }
@@ -692,7 +811,7 @@ async function* queryLoop(
                 c => c.type === 'pending',
               ),
               queryTracking,
-              effortValue: appState.effortValue,
+              effortValue: currentEffortValue,
               advisorModel: appState.advisorModel,
               skipCacheWrite,
               agentId: toolUseContext.agentId,
@@ -819,6 +938,12 @@ async function* queryLoop(
               withheld = true
             }
             if (isWithheldMaxOutputTokens(message)) {
+              withheld = true
+            }
+            if (
+              message.type === 'assistant' &&
+              shouldHandleConfiguredFallbackError(message)
+            ) {
               withheld = true
             }
             if (!withheld) {
@@ -985,6 +1110,7 @@ async function* queryLoop(
         yield createAssistantAPIErrorMessage({
           content: error.message,
         })
+        clearFallbackProcess()
         return { reason: 'image_error' }
       }
 
@@ -1004,6 +1130,7 @@ async function* queryLoop(
 
       // To help track down bugs, log loudly for ants
       logAntError('Query error', error)
+      clearFallbackProcess()
       return { reason: 'model_error', error }
     }
 
@@ -1059,6 +1186,7 @@ async function* queryLoop(
           toolUse: false,
         })
       }
+      clearFallbackProcess()
       return { reason: 'aborted_streaming' }
     }
 
@@ -1183,6 +1311,7 @@ async function* queryLoop(
         // → retry → error → … (the hook injects more tokens each cycle).
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
+        clearFallbackProcess()
         return { reason: isWithheldMedia ? 'image_error' : 'prompt_too_long' }
       } else if (feature('CONTEXT_COLLAPSE') && isWithheld413) {
         // reactiveCompact compiled out but contextCollapse withheld and
@@ -1190,6 +1319,7 @@ async function* queryLoop(
         // early-return rationale — don't fall through to stop hooks.
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
+        clearFallbackProcess()
         return { reason: 'prompt_too_long' }
       }
 
@@ -1271,7 +1401,71 @@ async function* queryLoop(
       // real response — hooks evaluating it create a death spiral:
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
+        if (shouldHandleConfiguredFallbackError(lastMessage)) {
+          const fallbackErrorMessage = getAssistantAPIErrorText(lastMessage)
+          const activeAttempt = getActiveFallbackAttempt()
+          const nextAttempt = activeAttempt ? getNextFallbackAttempt() : null
+
+          if (nextAttempt) {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback triggered',
+            )
+            resetFailedModelAttempt()
+            yield createSystemMessage(switchToFallbackAttempt(nextAttempt), 'warning')
+
+            const next: State = {
+              messages: messagesForQuery,
+              toolUseContext,
+              autoCompactTracking: tracking,
+              maxOutputTokensRecoveryCount,
+              hasAttemptedReactiveCompact,
+              maxOutputTokensOverride,
+              pendingToolUseSummary: undefined,
+              stopHookActive,
+              turnCount,
+              transition: undefined,
+            }
+            state = next
+            continue
+          }
+
+          if (!activeAttempt) {
+            const errorMessage = truncateFallbackErrorMessage(
+              fallbackErrorMessage,
+            )
+            requestFallbackConfirmation({
+              originalProvider: getAPIProvider(),
+              originalModel: currentModel,
+              errorMessage,
+            })
+
+            const targets = getConfiguredFallbackTargets()
+            const lines = [
+              `Model failed on ${getAPIProvider()}/${currentModel}: ${errorMessage}`,
+              'Complete this work with fallback models?',
+              '',
+              'Fallback priority:',
+              ...targets.map(
+                (target, index) =>
+                  `  ${index + 1}. ${formatFallbackTarget(target)}`,
+              ),
+              '',
+              'Run /fallback yes to continue or /fallback no to cancel.',
+            ]
+            yield createSystemMessage(lines.join('\n'), 'warning')
+            return {
+              reason: 'model_error',
+              error: new Error(fallbackErrorMessage),
+            }
+          }
+
+          clearFallbackProcess()
+          yield lastMessage
+        }
+
         void executeStopFailureHooks(lastMessage, toolUseContext)
+        clearFallbackProcess()
         return { reason: 'completed' }
       }
 
@@ -1287,6 +1481,7 @@ async function* queryLoop(
       )
 
       if (stopHookResult.preventContinuation) {
+        clearFallbackProcess()
         return { reason: 'stop_hook_prevented' }
       }
 
@@ -1365,6 +1560,7 @@ async function* queryLoop(
         }
       }
 
+      clearFallbackProcess()
       return { reason: 'completed' }
     }
 
@@ -1523,11 +1719,13 @@ async function* queryLoop(
           turnCount: nextTurnCountOnAbort,
         })
       }
+      clearFallbackProcess()
       return { reason: 'aborted_tools' }
     }
 
     // If a hook indicated to prevent continuation, stop here
     if (shouldPreventContinuation) {
+      clearFallbackProcess()
       return { reason: 'hook_stopped' }
     }
 
@@ -1719,6 +1917,7 @@ async function* queryLoop(
         maxTurns,
         turnCount: nextTurnCount,
       })
+      clearFallbackProcess()
       return { reason: 'max_turns', turnCount: nextTurnCount }
     }
 

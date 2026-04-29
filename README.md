@@ -44,7 +44,7 @@ claudex
 
 ---
 
-## The Four Commands You Need to Know
+## The Commands You Need to Know
 
 ### `/login` — Start here
 
@@ -64,6 +64,19 @@ Live model browser. Fetches the actual catalog from your provider's API in real 
 /models openrouter:kimi     search a specific provider
 /model kimi-k2-5            set a model directly
 ```
+
+### `/fallback` - Keep working when a model fails
+
+Pick three backup models in priority order. If the active model fails, Claudex asks before switching, then continues the same work through fallback 1, fallback 2, and fallback 3 until the job is done.
+
+```
+/fallback                  configure the fallback chain
+/fallback status           show the current priority order
+/fallback yes              continue a failed turn with fallback models
+/fallback no               cancel fallback for the failed turn
+```
+
+![Fallback command](fallback.PNG)
 
 ### `/usage` — Watch the meter
 
@@ -106,8 +119,6 @@ File editing, bash execution, glob, grep, web search, web fetch, MCP servers, ho
 ## Coming Soon
 
 **`/surf`** — Intelligent model routing. Claudex reads the task and routes to the best available model automatically. Experimental, in progress.
-
-**`/fallback`** — Automatic recovery when a model fails mid-session. Configure a fallback and never lose your work to a provider outage again.
 
 **`/github-me`** — A tool that handles the full development lifecycle: review, edit, CI/CD, testing, and automation of every GitHub action you'd otherwise do manually.
 
