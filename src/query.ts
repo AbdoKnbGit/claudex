@@ -174,20 +174,7 @@ function getAssistantAPIErrorText(message: AssistantMessage): string {
 }
 
 function isFallbackEligibleAPIErrorMessage(message: AssistantMessage): boolean {
-  if (!message.isApiErrorMessage) {
-    return false
-  }
-
-  const errorKind = String(message.error ?? message.apiError ?? '').toLowerCase()
-  if (
-    errorKind.includes('max_output_tokens') ||
-    errorKind.includes('prompt_too_long') ||
-    isPromptTooLongMessage(message)
-  ) {
-    return false
-  }
-
-  return true
+  return message.isApiErrorMessage === true
 }
 
 function truncateFallbackErrorMessage(message: string): string {
@@ -696,6 +683,68 @@ async function* queryLoop(
       return `Fallback ${attempt.index + 1}/${attempt.total}: switched to ${formatFallbackTarget(attempt.target)} after ${renderModelName(originalModel)} failed.`
     }
 
+    const resolveConfiguredFallbackAction = (
+      fallbackErrorMessage: string,
+    ):
+      | { type: 'retry'; attempt: FallbackAttempt }
+      | { type: 'confirm'; message: string; error: Error }
+      | { type: 'none' } => {
+      if (!fallbackRuntimeAllowed) {
+        return { type: 'none' }
+      }
+
+      const activeAttempt = getActiveFallbackAttempt()
+      const nextAttempt = activeAttempt ? getNextFallbackAttempt() : null
+      if (nextAttempt) {
+        return { type: 'retry', attempt: nextAttempt }
+      }
+
+      if (activeAttempt) {
+        clearFallbackProcess()
+        return { type: 'none' }
+      }
+
+      const errorMessage = truncateFallbackErrorMessage(fallbackErrorMessage)
+      requestFallbackConfirmation({
+        originalProvider: getAPIProvider(),
+        originalModel: currentModel,
+        errorMessage,
+      })
+
+      const targets = getConfiguredFallbackTargets()
+      const lines = [
+        `Model failed on ${getAPIProvider()}/${currentModel}: ${errorMessage}`,
+        'Complete this work with fallback models?',
+        '',
+        'Fallback priority:',
+        ...targets.map(
+          (target, index) =>
+            `  ${index + 1}. ${formatFallbackTarget(target)}`,
+        ),
+        '',
+        'Run /fallback yes to continue or /fallback no to cancel.',
+      ]
+
+      return {
+        type: 'confirm',
+        message: lines.join('\n'),
+        error: new Error(fallbackErrorMessage),
+      }
+    }
+
+    const buildFallbackRetryState = (): State => ({
+      messages: messagesForQuery,
+      toolUseContext,
+      autoCompactTracking: tracking,
+      maxOutputTokensRecoveryCount,
+      hasAttemptedReactiveCompact,
+      maxOutputTokensOverride,
+      pendingToolUseSummary: undefined,
+      stopHookActive,
+      turnCount,
+      transition: undefined,
+    })
+
     queryCheckpoint('query_setup_end')
 
     // Create fetch wrapper once per query session to avoid memory retention.
@@ -1114,6 +1163,33 @@ async function* queryLoop(
         return { reason: 'image_error' }
       }
 
+      if (!toolUseContext.abortController.signal.aborted) {
+        const fallbackAction = resolveConfiguredFallbackAction(errorMessage)
+        if (fallbackAction.type === 'retry') {
+          yield* yieldMissingToolResultBlocks(
+            assistantMessages,
+            'Model fallback triggered',
+          )
+          resetFailedModelAttempt()
+          yield createSystemMessage(
+            switchToFallbackAttempt(fallbackAction.attempt),
+            'warning',
+          )
+
+          state = buildFallbackRetryState()
+          continue
+        }
+
+        if (fallbackAction.type === 'confirm') {
+          yield* yieldMissingToolResultBlocks(
+            assistantMessages,
+            'Model fallback pending confirmation',
+          )
+          yield createSystemMessage(fallbackAction.message, 'warning')
+          return { reason: 'model_error', error: fallbackAction.error }
+        }
+      }
+
       // Generally queryModelWithStreaming should not throw errors but instead
       // yield them as synthetic assistant messages. However if it does throw
       // due to a bug, we may end up in a state where we have already emitted
@@ -1309,6 +1385,37 @@ async function* queryLoop(
         // so hooks have nothing meaningful to evaluate. Running stop hooks
         // on prompt-too-long creates a death spiral: error → hook blocking
         // → retry → error → … (the hook injects more tokens each cycle).
+        if (
+          isWithheld413 &&
+          lastMessage?.type === 'assistant' &&
+          shouldHandleConfiguredFallbackError(lastMessage)
+        ) {
+          const fallbackAction = resolveConfiguredFallbackAction(
+            getAssistantAPIErrorText(lastMessage),
+          )
+          if (fallbackAction.type === 'retry') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback triggered',
+            )
+            resetFailedModelAttempt()
+            yield createSystemMessage(
+              switchToFallbackAttempt(fallbackAction.attempt),
+              'warning',
+            )
+            state = buildFallbackRetryState()
+            continue
+          }
+          if (fallbackAction.type === 'confirm') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback pending confirmation',
+            )
+            yield createSystemMessage(fallbackAction.message, 'warning')
+            return { reason: 'model_error', error: fallbackAction.error }
+          }
+        }
+
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
         clearFallbackProcess()
@@ -1317,6 +1424,36 @@ async function* queryLoop(
         // reactiveCompact compiled out but contextCollapse withheld and
         // couldn't recover (staged queue empty/stale). Surface. Same
         // early-return rationale — don't fall through to stop hooks.
+        if (
+          lastMessage?.type === 'assistant' &&
+          shouldHandleConfiguredFallbackError(lastMessage)
+        ) {
+          const fallbackAction = resolveConfiguredFallbackAction(
+            getAssistantAPIErrorText(lastMessage),
+          )
+          if (fallbackAction.type === 'retry') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback triggered',
+            )
+            resetFailedModelAttempt()
+            yield createSystemMessage(
+              switchToFallbackAttempt(fallbackAction.attempt),
+              'warning',
+            )
+            state = buildFallbackRetryState()
+            continue
+          }
+          if (fallbackAction.type === 'confirm') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback pending confirmation',
+            )
+            yield createSystemMessage(fallbackAction.message, 'warning')
+            return { reason: 'model_error', error: fallbackAction.error }
+          }
+        }
+
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
         clearFallbackProcess()
@@ -1393,7 +1530,40 @@ async function* queryLoop(
         }
 
         // Recovery exhausted — surface the withheld error now.
+        if (
+          lastMessage?.type === 'assistant' &&
+          shouldHandleConfiguredFallbackError(lastMessage)
+        ) {
+          const fallbackAction = resolveConfiguredFallbackAction(
+            getAssistantAPIErrorText(lastMessage),
+          )
+          if (fallbackAction.type === 'retry') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback triggered',
+            )
+            resetFailedModelAttempt()
+            yield createSystemMessage(
+              switchToFallbackAttempt(fallbackAction.attempt),
+              'warning',
+            )
+            state = buildFallbackRetryState()
+            continue
+          }
+          if (fallbackAction.type === 'confirm') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback pending confirmation',
+            )
+            yield createSystemMessage(fallbackAction.message, 'warning')
+            return { reason: 'model_error', error: fallbackAction.error }
+          }
+        }
+
         yield lastMessage
+        void executeStopFailureHooks(lastMessage, toolUseContext)
+        clearFallbackProcess()
+        return { reason: 'completed' }
       }
 
       // Skip stop hooks when the last message is an API error (rate limit,
@@ -1403,64 +1573,33 @@ async function* queryLoop(
       if (lastMessage?.isApiErrorMessage) {
         if (shouldHandleConfiguredFallbackError(lastMessage)) {
           const fallbackErrorMessage = getAssistantAPIErrorText(lastMessage)
-          const activeAttempt = getActiveFallbackAttempt()
-          const nextAttempt = activeAttempt ? getNextFallbackAttempt() : null
+          const fallbackAction =
+            resolveConfiguredFallbackAction(fallbackErrorMessage)
 
-          if (nextAttempt) {
+          if (fallbackAction.type === 'retry') {
             yield* yieldMissingToolResultBlocks(
               assistantMessages,
               'Model fallback triggered',
             )
             resetFailedModelAttempt()
-            yield createSystemMessage(switchToFallbackAttempt(nextAttempt), 'warning')
+            yield createSystemMessage(
+              switchToFallbackAttempt(fallbackAction.attempt),
+              'warning',
+            )
 
-            const next: State = {
-              messages: messagesForQuery,
-              toolUseContext,
-              autoCompactTracking: tracking,
-              maxOutputTokensRecoveryCount,
-              hasAttemptedReactiveCompact,
-              maxOutputTokensOverride,
-              pendingToolUseSummary: undefined,
-              stopHookActive,
-              turnCount,
-              transition: undefined,
-            }
-            state = next
+            state = buildFallbackRetryState()
             continue
           }
 
-          if (!activeAttempt) {
-            const errorMessage = truncateFallbackErrorMessage(
-              fallbackErrorMessage,
+          if (fallbackAction.type === 'confirm') {
+            yield* yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Model fallback pending confirmation',
             )
-            requestFallbackConfirmation({
-              originalProvider: getAPIProvider(),
-              originalModel: currentModel,
-              errorMessage,
-            })
-
-            const targets = getConfiguredFallbackTargets()
-            const lines = [
-              `Model failed on ${getAPIProvider()}/${currentModel}: ${errorMessage}`,
-              'Complete this work with fallback models?',
-              '',
-              'Fallback priority:',
-              ...targets.map(
-                (target, index) =>
-                  `  ${index + 1}. ${formatFallbackTarget(target)}`,
-              ),
-              '',
-              'Run /fallback yes to continue or /fallback no to cancel.',
-            ]
-            yield createSystemMessage(lines.join('\n'), 'warning')
-            return {
-              reason: 'model_error',
-              error: new Error(fallbackErrorMessage),
-            }
+            yield createSystemMessage(fallbackAction.message, 'warning')
+            return { reason: 'model_error', error: fallbackAction.error }
           }
 
-          clearFallbackProcess()
           yield lastMessage
         }
 
