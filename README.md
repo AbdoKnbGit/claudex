@@ -93,7 +93,7 @@ https://github.com/user-attachments/assets/ff7d0ec7-fffd-4248-a011-41ed6e9a0eea
 | Anthropic | No comment |
 | OpenAI | Best in class, but GPT-5.5 is paywalled behind Plus/Pro |
 | Google Gemini | Use your own account — some server configs block certain regions |
-| Antigravity | Saving lives from agent server overload errors |
+| Antigravity | Saving lives from agent server overload errors(rn this lane on maintainance because of new version realese comptability  |
 | OpenRouter | Would use this full-time if the bills didn't care |
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
 | DeepSeek | Solid |
