@@ -18,6 +18,119 @@
 import type { LaneToolRegistration } from '../types.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 
+type AskUserOption = {
+  label: string
+  description: string
+}
+
+type AskUserQuestion = {
+  question: string
+  header: string
+  options: AskUserOption[]
+  multiSelect: boolean
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : null
+}
+
+function askUserHeader(value: unknown, question: string, index: number): string {
+  const explicit = nonEmptyString(value)
+  if (explicit) return explicit.slice(0, 12)
+  const fromQuestion = question
+    .replace(/[^\w\s]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .join(' ')
+  return (fromQuestion || `Q${index + 1}`).slice(0, 12)
+}
+
+function askUserOptions(rawOptions: unknown, type: unknown): AskUserOption[] {
+  const options: AskUserOption[] = []
+  if (Array.isArray(rawOptions)) {
+    for (let i = 0; i < rawOptions.length; i++) {
+      const raw = rawOptions[i]
+      if (typeof raw === 'string') {
+        const label = raw.trim()
+        if (label) options.push({ label, description: `Select ${label}.` })
+        continue
+      }
+
+      const record = asRecord(raw)
+      if (!record) continue
+      const label = nonEmptyString(record.label)
+        ?? nonEmptyString(record.text)
+        ?? nonEmptyString(record.value)
+        ?? `Option ${i + 1}`
+      const description = nonEmptyString(record.description)
+        ?? nonEmptyString(record.desc)
+        ?? `Select ${label}.`
+      options.push({ label, description })
+    }
+  }
+
+  const deduped: AskUserOption[] = []
+  const seen = new Set<string>()
+  for (const option of options) {
+    const key = option.label.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(option)
+    if (deduped.length >= 4) break
+  }
+
+  const fallback = String(type ?? '').toLowerCase() === 'yesno'
+    ? [
+        { label: 'Yes', description: 'Confirm this option.' },
+        { label: 'No', description: 'Decline this option.' },
+      ]
+    : [
+        { label: 'Answer', description: 'Provide a custom answer.' },
+        { label: 'Skip', description: 'Do not answer this now.' },
+      ]
+
+  for (const option of fallback) {
+    if (deduped.length >= 2) break
+    if (!seen.has(option.label.toLowerCase())) {
+      deduped.push(option)
+      seen.add(option.label.toLowerCase())
+    }
+  }
+
+  return deduped.slice(0, 4)
+}
+
+function normalizeAskUserInput(native: Record<string, unknown>): { questions: AskUserQuestion[] } {
+  const rawQuestions = Array.isArray(native.questions) && native.questions.length > 0
+    ? native.questions
+    : [native]
+
+  const questions = rawQuestions.map((raw, index) => {
+    const record = asRecord(raw) ?? {}
+    const question = nonEmptyString(record.question)
+      ?? nonEmptyString(native.question)
+      ?? 'Please choose an option.'
+    const type = record.type ?? native.type
+    return {
+      question,
+      header: askUserHeader(record.header ?? native.header, question, index),
+      options: askUserOptions(record.options ?? native.options, type),
+      multiSelect: Boolean(record.multiSelect ?? record.multi_select ?? native.multiSelect ?? native.multi_select),
+    }
+  })
+
+  return { questions }
+}
+
 // ─── Native Tool Definitions ─────────────────────────────────────
 //
 // These are the EXACT tool names and schemas from gemini-cli.
@@ -387,10 +500,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       required: ['questions'],
     },
     adaptInput(native) {
-      // Shared AskUserQuestion expects a single question string.
-      // Tolerate a missing/empty questions array (invariants tests pass {}).
-      const questions = (native.questions as Array<{ question: string }> | undefined) ?? []
-      return { question: questions.map(q => q.question).join('\n') }
+      return normalizeAskUserInput(native)
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
