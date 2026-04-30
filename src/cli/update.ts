@@ -9,6 +9,7 @@ import { regenerateCompletionCache } from 'src/utils/completionCache.js'
 import {
   getGlobalConfig,
   type InstallMethod,
+  type ReleaseChannel,
   saveGlobalConfig,
 } from 'src/utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -27,11 +28,90 @@ import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
 import { getInitialSettings } from 'src/utils/settings/settings.js'
 
+function isClaudexNpmPackage(): boolean {
+  return MACRO.PACKAGE_URL === '@abdoknbgit/claudex'
+}
+
+async function updateClaudexFromNpm(): Promise<void> {
+  writeToStdout('Checking npm for latest Claudex version...\n')
+
+  const latestVersion = await getLatestVersion('latest')
+  logForDebugging(
+    `update: Latest Claudex version from npm: ${latestVersion || 'FAILED'}`,
+  )
+
+  if (!latestVersion) {
+    process.stderr.write(chalk.red('Failed to check for Claudex updates') + '\n')
+    process.stderr.write('Unable to fetch latest version from npm registry\n')
+    process.stderr.write('\n')
+    process.stderr.write('Try:\n')
+    process.stderr.write('  Check your internet connection\n')
+    process.stderr.write(
+      `  Manually check: npm view ${MACRO.PACKAGE_URL}@latest version\n`,
+    )
+    await gracefulShutdown(1)
+  }
+
+  if (latestVersion === MACRO.VERSION || gte(MACRO.VERSION, latestVersion)) {
+    writeToStdout(
+      chalk.green(`Claudex is up to date (${MACRO.VERSION})`) + '\n',
+    )
+    await gracefulShutdown(0)
+  }
+
+  writeToStdout(
+    `New Claudex version available: ${latestVersion} (current: ${MACRO.VERSION}) - run claudex update\n`,
+  )
+  writeToStdout(`Installing ${MACRO.PACKAGE_URL}@${latestVersion} globally...\n`)
+
+  const status = await installGlobalPackage(latestVersion)
+  logForDebugging(`update: Claudex npm installation status: ${status}`)
+
+  switch (status) {
+    case 'success':
+      writeToStdout(
+        chalk.green(
+          `Successfully updated Claudex from ${MACRO.VERSION} to ${latestVersion}`,
+        ) + '\n',
+      )
+      await regenerateCompletionCache()
+      await gracefulShutdown(0)
+      break
+    case 'no_permissions':
+      process.stderr.write(
+        'Error: Insufficient permissions to install Claudex update\n',
+      )
+      process.stderr.write('Try manually updating with:\n')
+      process.stderr.write(`  npm install -g ${MACRO.PACKAGE_URL}@latest\n`)
+      await gracefulShutdown(1)
+      break
+    case 'install_failed':
+      process.stderr.write('Error: Failed to install Claudex update\n')
+      process.stderr.write('Try manually updating with:\n')
+      process.stderr.write(`  npm install -g ${MACRO.PACKAGE_URL}@latest\n`)
+      await gracefulShutdown(1)
+      break
+    case 'in_progress':
+      process.stderr.write(
+        'Error: Another instance is currently performing an update\n',
+      )
+      process.stderr.write('Please wait and try again later\n')
+      await gracefulShutdown(1)
+      break
+  }
+}
+
 export async function update() {
   logEvent('tengu_update_check', {})
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
 
-  const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest'
+  if (isClaudexNpmPackage()) {
+    await updateClaudexFromNpm()
+    return
+  }
+
+  const channel: ReleaseChannel =
+    getInitialSettings()?.autoUpdatesChannel ?? 'latest'
   writeToStdout(`Checking for updates to ${channel} version...\n`)
 
   logForDebugging('update: Starting update check')
@@ -314,7 +394,7 @@ export async function update() {
   }
 
   writeToStdout(
-    `New version available: ${latestVersion} (current: ${MACRO.VERSION})\n`,
+    `New version available: ${latestVersion} (current: ${MACRO.VERSION}) - run claudex update\n`,
   )
   writeToStdout('Installing update...\n')
 

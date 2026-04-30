@@ -209,6 +209,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Fast-path self-update commands so they do not wait on the full interactive
+  // startup path before Commander dispatches the subcommand.
+  if (args.length === 1 && (args[0] === 'update' || args[0] === 'upgrade')) {
+    const { update } = await import('../cli/update.js');
+    await update();
+    return;
+  }
+
   // Pre-Ink RGB gradient logo. Prints directly to stdout so the user gets
   // immediate feedback before the heavier imports load. Internally gated for
   // non-TTY / NO_COLOR / -p so scripted and CI runs stay silent.

@@ -217,6 +217,24 @@ function main(): void {
     assert(d.retryDelaySeconds === 1.5, `got ${d.retryDelaySeconds}`)
   })
 
+  test('429 RESOURCE_EXHAUSTED without details routes through quota handling', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        message: 'Resource has been exhausted (e.g. check quota).',
+        status: 'RESOURCE_EXHAUSTED',
+      },
+    })
+    const cls = classifyGeminiError(429, body)
+    assert(cls.kind === 'retryable-quota', `wanted retryable-quota, got ${cls.kind}`)
+    assert(isRotationCase(cls), 'should be a rotation case')
+    assert(cls.details.status === 'RESOURCE_EXHAUSTED', `bad status: ${cls.details.status}`)
+    assert(
+      cls.details.message === 'Resource has been exhausted (e.g. check quota).',
+      `bad message: ${cls.details.message}`,
+    )
+  })
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

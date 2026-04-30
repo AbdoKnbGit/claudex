@@ -16,7 +16,6 @@
 
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import {
-  CODE_ASSIST_BASE,
   ensureCodeAssistReady,
   executorForModel,
   parseCodeAssistSSE,
@@ -25,6 +24,7 @@ import {
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
   antigravityApiHeaders,
+  codeAssistGenerationBase,
   clearCodeAssistCache,
   warmupCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
@@ -44,6 +44,13 @@ import {
 // module resolution that breaks bun-test). The string must stay
 // identical so isPromptTooLongMessage() downstream matches.
 const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
+
+function antigravitySessionHeaders(wrappedBody: Record<string, unknown>): Record<string, string> {
+  const request = wrappedBody.request as { sessionId?: unknown } | undefined
+  return typeof request?.sessionId === 'string'
+    ? { 'X-Machine-Session-Id': request.sessionId }
+    : {}
+}
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -290,7 +297,8 @@ class GeminiApiClient {
       // outside retryWithBackoff and the cleared cache was moot).
       let reonboardsLeft = 1
       let sigStripsLeft = 1
-      const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
+      const urlForExecutor = (executor: 'cli' | 'antigravity') =>
+        `${codeAssistGenerationBase(executor)}:streamGenerateContent?alt=sse`
       const rotation = getAntigravityRotation()
 
       const response = await retryWithBackoff(
@@ -311,14 +319,19 @@ class GeminiApiClient {
             ? wrapForCodeAssist(model, projectId, body)
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
-            ? { ...antigravityApiHeaders(token), 'Connection': 'keep-alive' }
+            ? {
+              ...antigravityApiHeaders(token),
+              ...antigravitySessionHeaders(wrappedBody as unknown as Record<string, unknown>),
+              'Accept': 'text/event-stream',
+              'Connection': 'keep-alive',
+            }
             : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
           // Code Assist uses proto-json snake_case — rename thoughtSignature
           // on the wire. One string replace on the outgoing payload; cheap.
           const serialized = JSON.stringify(wrappedBody)
             .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
 
-          const resp = await fetch(url, {
+          const resp = await fetch(urlForExecutor(executor), {
             method: 'POST',
             headers,
             body: serialized,
@@ -516,7 +529,8 @@ class GeminiApiClient {
     if (oauthRouting) {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
-      const url = `${CODE_ASSIST_BASE}:generateContent`
+      const urlForExecutor = (executor: 'cli' | 'antigravity') =>
+        `${codeAssistGenerationBase(executor)}:generateContent`
       const rotation = getAntigravityRotation()
 
       const data = await retryWithBackoff(
@@ -534,12 +548,17 @@ class GeminiApiClient {
             ? wrapForCodeAssist(model, projectId, body)
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
-            ? { ...antigravityApiHeaders(token), 'Connection': 'keep-alive' }
+            ? {
+              ...antigravityApiHeaders(token),
+              ...antigravitySessionHeaders(wrappedBody as unknown as Record<string, unknown>),
+              'Accept': 'application/json',
+              'Connection': 'keep-alive',
+            }
             : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
           const serialized = JSON.stringify(wrappedBody)
             .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
 
-          const resp = await fetch(url, {
+          const resp = await fetch(urlForExecutor(executor), {
             method: 'POST',
             headers,
             body: serialized,

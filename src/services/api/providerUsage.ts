@@ -16,6 +16,7 @@ import {
   getGeminiTier,
   type GeminiQuotaBucket,
 } from './providers/gemini_code_assist.js'
+import { ANTIGRAVITY_API_VERSION } from '../../constants/antigravity.js'
 import { fetchUtilization, type Utilization } from './usage.js'
 import {
   loadStore,
@@ -1293,7 +1294,7 @@ async function fetchAntigravityAvailableModels(
     ...antigravityApiHeaders(accessToken),
     Accept: 'application/json',
     'X-Client-Name': 'antigravity',
-    'X-Client-Version': '1.107.0',
+    'X-Client-Version': ANTIGRAVITY_API_VERSION,
     'x-request-source': 'local',
   }
   let bestData: unknown = null

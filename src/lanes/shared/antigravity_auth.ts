@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, chmodSy
 import { join } from 'path'
 import { homedir, platform } from 'os'
 import { URL } from 'url'
+import { ANTIGRAVITY_API_VERSION } from '../../constants/antigravity.js'
 
 // Hardcoded from upstream plugin. These are public installed-app credentials
 // — not sensitive per Google's OAuth-for-installed-apps docs. OpenCode /
@@ -277,7 +278,7 @@ export function buildApiHeaders(accessToken: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
-    'User-Agent': 'antigravity/1.18.3 google-cloud-sdk vscode_cloudshelleditor/0.1',
+    'User-Agent': `antigravity/${ANTIGRAVITY_API_VERSION} google-cloud-sdk vscode_cloudshelleditor/0.1`,
     'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
     'Client-Metadata': '{"ideType":"ANTIGRAVITY","platform":"WINDOWS","pluginType":"GEMINI"}',
   }

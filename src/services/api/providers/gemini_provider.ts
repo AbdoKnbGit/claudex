@@ -34,7 +34,6 @@ import {
   type GeminiGenerateContentResponse,
 } from '../adapters/gemini_to_anthropic.js'
 import {
-  CODE_ASSIST_BASE,
   GEMINI_TIER_FREE,
   GEMINI_TIER_LEGACY,
   ensureCodeAssistReady,
@@ -49,6 +48,7 @@ import {
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
   antigravityApiHeaders,
+  codeAssistGenerationBase,
   clearCodeAssistCache,
 } from './gemini_code_assist.js'
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
@@ -65,6 +65,13 @@ const GEMINI_PRO_MODEL_IDS = new Set([
   'gemini-3.1-pro-preview',
   'gemini-2.5-pro',
 ])
+
+function antigravitySessionHeaders(wrappedBody: Record<string, unknown>): Record<string, string> {
+  const request = wrappedBody.request as { sessionId?: unknown } | undefined
+  return typeof request?.sessionId === 'string'
+    ? { 'X-Machine-Session-Id': request.sessionId }
+    : {}
+}
 
 /**
  * Resolve the persistent "show Pro models" decision.
@@ -638,10 +645,15 @@ export class GeminiProvider extends BaseProvider {
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
-        ? { ...antigravityApiHeaders(oauthToken), 'Connection': 'keep-alive' }
+        ? {
+          ...antigravityApiHeaders(oauthToken),
+          ...antigravitySessionHeaders(wrapped as unknown as Record<string, unknown>),
+          'Accept': 'text/event-stream',
+          'Connection': 'keep-alive',
+        }
         : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
-      const url = `${CODE_ASSIST_BASE}:streamGenerateContent?alt=sse`
+      const url = `${codeAssistGenerationBase(executor)}:streamGenerateContent?alt=sse`
       const ac = new AbortController()
       const response = await fetch(url, {
         method: 'POST',
@@ -735,10 +747,15 @@ export class GeminiProvider extends BaseProvider {
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
-        ? { ...antigravityApiHeaders(oauthToken), 'Connection': 'keep-alive' }
+        ? {
+          ...antigravityApiHeaders(oauthToken),
+          ...antigravitySessionHeaders(wrapped as unknown as Record<string, unknown>),
+          'Accept': 'application/json',
+          'Connection': 'keep-alive',
+        }
         : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
-      const url = `${CODE_ASSIST_BASE}:generateContent`
+      const url = `${codeAssistGenerationBase(executor)}:generateContent`
       const response = await fetch(url, {
         method: 'POST',
         headers,

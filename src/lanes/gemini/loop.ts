@@ -564,11 +564,16 @@ export class GeminiLane implements Lane {
       const isTerminalAuth = errKind === 'auth-stale'
         || errKind === 'non-retryable'
         || (err?.status === 401 || err?.status === 403)
+      const isQuotaOrCapacity = errKind === 'retryable-quota'
+        || errKind === 'terminal-quota'
+        || err?.status === 429
       const errText = isPTL
         ? (err?.message ?? String(err))
         : isTerminalAuth
-          ? buildAuthErrorMessage(err)
-          : `\n\nGemini API error: ${err?.message ?? String(err)}`
+          ? buildAuthErrorMessage(err, model)
+          : isQuotaOrCapacity
+            ? buildQuotaErrorMessage(err, model)
+            : `\n\nGemini API error (model: ${model}): ${err?.message ?? String(err)}`
       yield {
         type: 'content_block_delta',
         index: blockIndex,
@@ -1255,28 +1260,150 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
 // remediation surface (Antigravity account page for Antigravity
 // models, /provider for OAuth refresh, /login for a fresh auth).
 
-function buildAuthErrorMessage(err: any): string {
+// Antigravity-only model ids — these route through the Antigravity
+// quota pool and 403 if the user only has the Gemini-CLI OAuth token.
+// Kept in sync with ANTIGRAVITY_MODEL_SET in gemini_code_assist.ts.
+const ANTIGRAVITY_ONLY_MODEL_IDS = new Set([
+  'gemini-3.1-pro-high',
+  'gemini-3.1-pro-low',
+  'gemini-3-flash',
+  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
+])
+
+function buildAuthErrorMessage(err: any, model?: string): string {
   const status = err?.status
   const statusPrefix = status ? `Gemini ${status} ` : 'Gemini '
   const detail = (err?.body && typeof err.body === 'string')
     ? err.body.slice(0, 180).replace(/\s+/g, ' ').trim()
     : (err?.message ?? String(err))
+  const modelLine = model ? `Model attempted: ${model}` : null
 
-  return [
+  // Detect the most common actionable mistake: user picked an
+  // Antigravity-only model but only has the Gemini CLI OAuth token
+  // configured. This is a user-fixable case (run /login antigravity)
+  // — distinct from the server-side ghost-project bug below.
+  const isAntigravityOnly = !!model && ANTIGRAVITY_ONLY_MODEL_IDS.has(model)
+
+  // Detect the Google "ghost project" 403 pattern. Per gemini-cli
+  // issues #24747 / #25189 / #25609, Google AI Pro/Ultra subscribers
+  // sometimes get an inaccessible cloudaicompanionProject auto-bound
+  // to their account; every Code Assist call then 403s. The only
+  // reliable client-side mitigation is a manual project override via
+  // GOOGLE_CLOUD_PROJECT.
+  const looksLikeGhostProject =
+    status === 403
+    && /cloudaicompanion|caller does not have permission|PERMISSION_DENIED/i.test(
+      typeof err?.body === 'string' ? err.body : String(err?.message ?? ''),
+    )
+
+  const lines = [
     '',
     '',
     `${statusPrefix}authentication failed — the request was rejected before it reached the model.`,
     '',
+    ...(modelLine ? [modelLine, ''] : []),
     `Server said: ${detail}`,
     '',
-    'What to do:',
-    '  1. Run `/provider` to refresh your Gemini OAuth token, or',
-    '  2. Run `/login` and re-authorize the Google account, or',
-    '  3. Open https://antigravity.google.com/ to confirm the account still has access.',
+  ]
+
+  if (isAntigravityOnly) {
+    lines.push(
+      'This model only routes through the Antigravity quota pool, but',
+      'no Antigravity OAuth is configured. To use it:',
+      '  1. Run `/login antigravity` to authorize the Antigravity flow, or',
+      '  2. Pick a different Pro model (gemini-3.1-pro-preview,',
+      '     gemini-3-pro-preview, gemini-2.5-pro) which routes through',
+      '     the Gemini CLI executor.',
+    )
+  } else if (looksLikeGhostProject) {
+    lines.push(
+      'This is the known "ghost cloudaicompanionProject" 403 that hits',
+      'Google AI Pro/Ultra subscribers (gemini-cli issues #24747, #25189,',
+      '#25609). Google\'s backend auto-binds an inaccessible project ID',
+      'to the account. The only reliable client-side fixes:',
+      '  1. Set `GOOGLE_CLOUD_PROJECT=<your-project-id>` (or',
+      '     `GEMINI_CLOUD_PROJECT`) and restart claudex — claudex will',
+      '     skip the auto-discovered project and use yours instead.',
+      '     (Grab a project id from console.cloud.google.com on the same',
+      '     Google account you logged in with.)',
+      '  2. If `/models` is also missing your Pro models, set',
+      '     `GEMINI_SHOW_PRO_MODELS=true` to force-show them — Google\'s',
+      '     entitlement endpoints don\'t always reflect AI Pro subscriptions.',
+      '  3. Run `/provider` and reconnect — sometimes the next loadCodeAssist',
+      '     returns a working project on retry.',
+      '  4. As a last resort, switch to API key (set GEMINI_API_KEY and',
+      '     GEMINI_SHOW_API_KEY_LOGIN=true), which uses a different endpoint.',
+    )
+  } else {
+    lines.push(
+      'What to do:',
+      '  1. Run `/provider` to refresh your Gemini OAuth token, or',
+      '  2. Run `/login` and re-authorize the Google account, or',
+      '  3. Open https://antigravity.google.com/ to confirm the account still has access.',
+      '',
+      'If you have multiple Google accounts enrolled, the lane will',
+      'automatically rotate to the next healthy account on the next request.',
+    )
+  }
+
+  return lines.join('\n')
+}
+
+function buildQuotaErrorMessage(err: any, model?: string): string {
+  const status = err?.status
+  const details = err?.classification?.details
+  const serverMessage = typeof details?.message === 'string'
+    ? details.message
+    : extractGoogleErrorMessage(err?.body)
+      ?? (err?.message ?? String(err))
+  const retryAfterMs = typeof err?.retryAfterMs === 'number' ? err.retryAfterMs : undefined
+  const retryLine = retryAfterMs && retryAfterMs > 0
+    ? `Retry after: about ${Math.ceil(retryAfterMs / 1000)} seconds`
+    : null
+  const modelLine = model ? `Model attempted: ${model}` : null
+  const isAntigravityModel = !!model && ANTIGRAVITY_ONLY_MODEL_IDS.has(model)
+
+  const lines = [
     '',
-    'If you have multiple Google accounts enrolled, the lane will',
-    'automatically rotate to the next healthy account on the next request.',
-  ].join('\n')
+    '',
+    `${isAntigravityModel ? 'Antigravity' : 'Gemini'} request was throttled or capacity-limited${status ? ` (HTTP ${status})` : ''}.`,
+    '',
+    ...(modelLine ? [modelLine, ''] : []),
+    `Server said: ${serverMessage}`,
+    ...(retryLine ? ['', retryLine] : []),
+    '',
+  ]
+
+  if (isAntigravityModel) {
+    lines.push(
+      'Claudex retried this request and, when possible, marked the selected account/model family for rotation.',
+      'This can happen even when the usage page shows remaining quota, because the backend can throttle an endpoint or request window separately.',
+      'What to do:',
+      '  1. Wait for the Antigravity request window or backend capacity to recover, or',
+      '  2. Add/switch another Antigravity account with `/login antigravity`, or',
+      '  3. Pick a non-Antigravity model for now, such as gemini-3.1-pro-preview, gemini-3-pro-preview, or gemini-2.5-pro.',
+    )
+  } else {
+    lines.push(
+      'What to do:',
+      '  1. Wait for quota/capacity to recover, or',
+      '  2. Switch model/account/provider and retry.',
+    )
+  }
+
+  return lines.join('\n')
+}
+
+function extractGoogleErrorMessage(body: unknown): string | null {
+  if (typeof body !== 'string' || !body) return null
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }
+    const message = parsed.error?.message ?? parsed.message
+    return typeof message === 'string' ? message : null
+  } catch {
+    return null
+  }
 }
 
 // ─── System-prompt stable/volatile split ─────────────────────────

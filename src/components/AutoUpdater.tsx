@@ -170,7 +170,8 @@ export function AutoUpdater({
   if (!autoUpdaterResult?.version && (!versions.global || !versions.latest)) {
     return null;
   }
-  if (!autoUpdaterResult?.version && !isUpdating) {
+  const manualUpdateAvailable = !!versions.global && !!versions.latest && !gte(versions.global, versions.latest);
+  if (!autoUpdaterResult?.version && !isUpdating && !manualUpdateAvailable) {
     return null;
   }
   return <Box flexDirection="row" gap={1}>
@@ -187,6 +188,9 @@ export function AutoUpdater({
         </> : autoUpdaterResult?.status === 'success' && showSuccessMessage && updateSemver && <Text color="success" wrap="truncate">
             ✓ Update installed · Restart to apply
           </Text>}
+      {!isUpdating && !autoUpdaterResult?.version && manualUpdateAvailable && <Text color="warning" wrap="truncate">
+          Update available! Run: <Text bold>claudex update</Text>
+        </Text>}
       {(autoUpdaterResult?.status === 'install_failed' || autoUpdaterResult?.status === 'no_permissions') && <Text color="error" wrap="truncate">
           ✗ Auto-update failed &middot; Try <Text bold>claude doctor</Text> or{' '}
           <Text bold>

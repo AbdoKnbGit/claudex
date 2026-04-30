@@ -8,8 +8,10 @@
  * `generative-language` scope ("403 restricted_client"), so OAuth calls must
  * go through the Code Assist endpoint instead.
  *
- * Code Assist endpoint:
+ * Code Assist endpoints:
  *   https://cloudcode-pa.googleapis.com/v1internal:{method}
+ *   https://daily-cloudcode-pa.googleapis.com/v1internal:{method} for
+ *   Antigravity generateContent / streamGenerateContent
  *
  * Request body is wrapped (Antigravity format from CLIProxyAPI):
  *   { model, userAgent, requestType, project, requestId, request: { sessionId, contents, ...config } }
@@ -43,14 +45,20 @@ import type {
   GeminiGenerateContentResponse,
   GeminiStreamChunk,
 } from '../adapters/gemini_to_anthropic.js'
+import { ANTIGRAVITY_API_VERSION } from '../../../constants/antigravity.js'
 
 export const CODE_ASSIST_BASE = 'https://cloudcode-pa.googleapis.com/v1internal'
+export const ANTIGRAVITY_GENERATION_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal'
 
 // ─── Executor types ──────────────────────────────────────────────────
 // Two distinct executors route to the same Code Assist proxy but with
 // different body envelopes, headers, and quota pools.
 
 export type GeminiExecutor = 'cli' | 'antigravity'
+
+export function codeAssistGenerationBase(executor: GeminiExecutor): string {
+  return executor === 'antigravity' ? ANTIGRAVITY_GENERATION_BASE : CODE_ASSIST_BASE
+}
 
 // Antigravity-specific models — everything else is Gemini CLI.
 // Includes Claude models that Antigravity re-sells through the same
@@ -801,7 +809,8 @@ export function antigravityApiHeaders(accessToken: string): Record<string, strin
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${accessToken}`,
-    'User-Agent': `antigravity/1.21.9 ${os}/${arch}`,
+    'User-Agent': `antigravity/${ANTIGRAVITY_API_VERSION} ${os}/${arch}`,
+    'x-request-source': 'local',
   }
 }
 

@@ -1,0 +1,1 @@
+export const ANTIGRAVITY_API_VERSION = '1.23.2'

@@ -31,6 +31,9 @@ export type GeminiErrorKind =
   | 'non-retryable'
 
 export interface GoogleErrorDetails {
+  code?: number
+  message?: string
+  status?: string
   reason?: string
   domain?: string
   metadata?: Record<string, string>
@@ -76,9 +79,22 @@ export function parseGoogleErrorDetails(body: string): GoogleErrorDetails {
   if (!root || typeof root !== 'object') return {}
 
   const details = (root as { details?: unknown[] }).details ?? []
-  if (!Array.isArray(details)) return {}
-
   const out: GoogleErrorDetails = {}
+
+  const code = (root as { code?: unknown }).code
+  if (typeof code === 'number') out.code = code
+  const message = (root as { message?: unknown }).message
+  if (typeof message === 'string') out.message = message
+  const status = (root as { status?: unknown }).status
+  if (typeof status === 'string') {
+    out.status = status
+    // Some Code Assist quota responses only set error.status and omit
+    // details[].reason; keep a reason-like value so callers can branch
+    // without reparsing the raw body.
+    out.reason ??= status
+  }
+
+  if (!Array.isArray(details)) return out
 
   for (const d of details) {
     if (!d || typeof d !== 'object') continue
@@ -202,7 +218,11 @@ export function classifyGeminiError(
     if (details.insufficientCredits) {
       return { kind: 'terminal-quota', details, retryAfterMs }
     }
-    if (details.reason === 'RATE_LIMIT_EXCEEDED' || !details.reason) {
+    if (
+      details.reason === 'RATE_LIMIT_EXCEEDED'
+      || details.reason === 'RESOURCE_EXHAUSTED'
+      || !details.reason
+    ) {
       return { kind: 'retryable-quota', details, retryAfterMs }
     }
     return { kind: 'retryable-quota', details, retryAfterMs }

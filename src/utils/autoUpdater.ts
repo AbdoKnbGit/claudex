@@ -61,7 +61,7 @@ export type MaxVersionConfig = {
  *
  * Versioning approach:
  * 1. For version requirements/compatibility (assertMinVersion), we use semver comparison that ignores build metadata
- * 2. For updates ('claude update'), we use exact string comparison to detect any change, including SHA
+ * 2. For updates ('claudex update'), we use exact string comparison to detect any change, including SHA
  *    - This ensures users always get the latest build, even when only the SHA changes
  *    - The UI clearly shows both versions including build metadata
  *
@@ -87,7 +87,7 @@ It looks like your version of Claude Code (${MACRO.VERSION}) needs an update.
 A newer version (${versionConfig.minVersion} or higher) is required to continue.
 
 To update, please run:
-    claude update
+    claudex update
 
 This will ensure you have access to the latest features and improvements.
 `)
@@ -456,6 +456,9 @@ export async function getVersionHistory(limit: number): Promise<string[]> {
 export async function installGlobalPackage(
   specificVersion?: string | null,
 ): Promise<InstallStatus> {
+  const isAnthropicPackage = MACRO.PACKAGE_URL.startsWith('@anthropic-ai/')
+  const productName = isAnthropicPackage ? 'Claude Code' : 'Claudex'
+
   if (!(await acquireLock())) {
     logError(
       new AutoUpdaterError('Another process is currently installing an update'),
@@ -470,7 +473,9 @@ export async function installGlobalPackage(
   }
 
   try {
-    await removeClaudeAliasesFromShellConfigs()
+    if (isAnthropicPackage) {
+      await removeClaudeAliasesFromShellConfigs()
+    }
     // Check if we're using npm from Windows path in WSL
     if (!env.isRunningWithBun() && env.isNpmFromWindowsPath()) {
       logError(new Error('Windows NPM detected in WSL environment'))
@@ -482,13 +487,13 @@ export async function installGlobalPackage(
       console.error(`
 Error: Windows NPM detected in WSL
 
-You're running Claude Code in WSL but using the Windows NPM installation from /mnt/c/.
+You're running ${productName} in WSL but using the Windows NPM installation from /mnt/c/.
 This configuration is not supported for updates.
 
 To fix this issue:
   1. Install Node.js within your Linux distribution: e.g. sudo apt install nodejs npm
   2. Make sure Linux NPM is in your PATH before the Windows version
-  3. Try updating again with 'claude update'
+  3. Try updating again
 `)
       return 'install_failed'
     }
@@ -513,7 +518,7 @@ To fix this issue:
     )
     if (installResult.code !== 0) {
       const error = new AutoUpdaterError(
-        `Failed to install new version of claude: ${installResult.stdout} ${installResult.stderr}`,
+        `Failed to install new version of ${productName}: ${installResult.stdout} ${installResult.stderr}`,
       )
       logError(error)
       return 'install_failed'
