@@ -10,8 +10,7 @@ import { getCommandName } from '../commands.js'
 import { getSystemContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
-  AUTOCOMPACT_BUFFER_TOKENS,
-  getEffectiveContextWindowSize,
+  getAutoCompactThreshold,
   isAutoCompactEnabled,
   MANUAL_COMPACT_BUFFER_TOKENS,
 } from '../services/compact/autoCompact.js'
@@ -19,6 +18,7 @@ import {
   countMessagesTokensWithAPI,
   countTokensViaHaikuFallback,
   roughTokenCountEstimation,
+  roughTokenCountEstimationForMessages,
 } from '../services/tokenEstimation.js'
 import { estimateSkillFrontmatterTokens } from '../skills/loadSkillsDir.js'
 import {
@@ -105,6 +105,34 @@ async function countTokensWithFallback(
     )
     logError(err)
     return null
+  }
+}
+
+async function countTokensOrEstimate(
+  messages: Anthropic.Beta.Messages.BetaMessageParam[],
+  tools: Anthropic.Beta.Messages.BetaToolUnion[],
+  estimateTokens: () => number,
+): Promise<number> {
+  const counted = await countTokensWithFallback(messages, tools)
+  if (counted !== null && counted > 0) {
+    return counted
+  }
+
+  const estimated = safeTokenEstimate(estimateTokens)
+  if (counted !== null && estimated === 0) {
+    return counted
+  }
+  return estimated
+}
+
+function safeTokenEstimate(estimateTokens: () => number): number {
+  try {
+    const estimated = estimateTokens()
+    return Number.isFinite(estimated) ? Math.max(0, Math.round(estimated)) : 0
+  } catch (err) {
+    logForDebugging(`safeTokenEstimate failed: ${errorMessage(err)}`)
+    logError(err)
+    return 0
   }
 }
 
@@ -247,14 +275,20 @@ export async function countToolDefinitionTokens(
       }),
     ),
   )
-  const result = await countTokensWithFallback([], toolSchemas)
-  if (result === null || result === 0) {
+  const result = await countTokensOrEstimate(
+    [],
+    toolSchemas,
+    () =>
+      roughTokenCountEstimation(jsonStringify(toolSchemas)) +
+      (toolSchemas.length > 0 ? TOOL_TOKEN_COUNT_OVERHEAD : 0),
+  )
+  if (result === 0) {
     const toolNames = tools.map(t => t.name).join(', ')
     logForDebugging(
       `countToolDefinitionTokens returned ${result} for ${tools.length} tools: ${toolNames.slice(0, 100)}${toolNames.length > 100 ? '...' : ''}`,
     )
   }
-  return result ?? 0
+  return result
 }
 
 /** Extract a human-readable name from a system prompt section's content */
@@ -298,7 +332,11 @@ async function countSystemTokens(
 
   const systemTokenCounts = await Promise.all(
     namedEntries.map(({ content }) =>
-      countTokensWithFallback([{ role: 'user', content }], []),
+      countTokensOrEstimate(
+        [{ role: 'user', content }],
+        [],
+        () => roughTokenCountEstimation(content),
+      ),
     ),
   )
 
@@ -339,9 +377,10 @@ async function countMemoryFileTokens(): Promise<{
 
   const claudeMdTokenCounts = await Promise.all(
     memoryFilesData.map(async file => {
-      const tokens = await countTokensWithFallback(
+      const tokens = await countTokensOrEstimate(
         [{ role: 'user', content: file.content }],
         [],
+        () => roughTokenCountEstimation(file.content),
       )
 
       return { file, tokens: tokens || 0 }
@@ -742,17 +781,14 @@ async function countCustomAgentTokens(agentDefinitions: {
   let agentTokens = 0
 
   const tokenCounts = await Promise.all(
-    customAgents.map(agent =>
-      countTokensWithFallback(
-        [
-          {
-            role: 'user',
-            content: [agent.agentType, agent.whenToUse].join(' '),
-          },
-        ],
+    customAgents.map(agent => {
+      const content = [agent.agentType, agent.whenToUse].join(' ')
+      return countTokensOrEstimate(
+        [{ role: 'user', content }],
         [],
-      ),
-    ),
+        () => roughTokenCountEstimation(content),
+      )
+    }),
   )
 
   for (const [i, agent] of customAgents.entries()) {
@@ -896,9 +932,11 @@ async function approximateMessageTokens(
     }
   }
 
+  const normalizedMessages = normalizeMessagesForAPI(microcompactResult.messages)
+
   // Calculate total tokens using the API for accuracy
-  const approximateMessageTokens = await countTokensWithFallback(
-    normalizeMessagesForAPI(microcompactResult.messages).map(_ => {
+  const approximateMessageTokens = await countTokensOrEstimate(
+    normalizedMessages.map(_ => {
       if (_.type === 'assistant') {
         return {
           // Important: strip out fields like id, etc. -- the counting API errors if they're present
@@ -909,9 +947,10 @@ async function approximateMessageTokens(
       return _.message
     }),
     [],
+    () => roughTokenCountEstimationForMessages(normalizedMessages),
   )
 
-  breakdown.totalTokens = approximateMessageTokens ?? 0
+  breakdown.totalTokens = approximateMessageTokens
   return breakdown
 }
 
@@ -1001,7 +1040,7 @@ export async function analyzeContextUsage(
   // Check if autocompact is enabled and calculate threshold
   const isAutoCompact = isAutoCompactEnabled()
   const autoCompactThreshold = isAutoCompact
-    ? getEffectiveContextWindowSize(model) - AUTOCOMPACT_BUFFER_TOKENS
+    ? getAutoCompactThreshold(runtimeModel)
     : undefined
 
   // Create categories
@@ -1170,8 +1209,12 @@ export async function analyzeContextUsage(
       apiUsage.cache_read_input_tokens
     : null
 
-  // Use API total if available, otherwise fall back to estimated total
-  const finalTotalTokens = totalFromAPI ?? totalIncludingReserved
+  // API usage can lag the active provider after a model switch, so never show
+  // less than the locally reconstructed shared context.
+  const finalTotalTokens =
+    totalFromAPI === null
+      ? totalIncludingReserved
+      : Math.max(totalFromAPI, totalIncludingReserved)
 
   // Pre-calculate grid based on model context window and terminal width
   // For narrow screens (< 80 cols), use 5x5 for 200k models, 5x10 for 1M+ models

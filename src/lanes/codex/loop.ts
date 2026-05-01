@@ -554,7 +554,7 @@ export class CodexLane implements Lane {
   async listModels(): Promise<ModelInfo[]> {
     return [
       { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 272000, supportsToolCalling: true, tags: ['recommended', 'reasoning'] },
-      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
+      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
       { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 272000, supportsToolCalling: true, tags: ['fast', 'reasoning'] },
       { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
       { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },

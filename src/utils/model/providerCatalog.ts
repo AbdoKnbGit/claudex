@@ -17,6 +17,7 @@ import {
   type APIProvider,
   PROVIDER_DISPLAY_NAMES,
 } from './providers.js'
+import { recordProviderModelContextWindows } from './contextWindows.js'
 import { modelSupportsReasoning } from './openaiReasoning.js'
 import {
   CURSOR_ORDERED_MODEL_GROUPS,
@@ -105,16 +106,20 @@ export async function loadProviderModels(
   provider: BrowsableModelProvider,
 ): Promise<ModelInfo[]> {
   if (provider === 'firstParty') {
-    return ANTHROPIC_MODELS.map(model => ({
+    const models = ANTHROPIC_MODELS.map(model => ({
       id: model.id,
       name: model.name,
       tags: model.tags,
+      contextWindow: model.contextWindow,
     }))
+    recordProviderModelContextWindows(provider, models)
+    return models
   }
 
   await resolveProviderAuth(provider)
 
   const models = await getProvider(provider).listModels()
+  recordProviderModelContextWindows(provider, models)
   if (provider === 'cursor' || provider === 'cline') {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
@@ -179,6 +184,7 @@ type AnthropicModelInfo = {
   tags: readonly ModelTag[]
   effortLevels?: readonly EffortLevel[]
   defaultEffort?: EffortLevel
+  contextWindow?: number
 }
 
 const ANTHROPIC_EFFORT_SEPARATOR = '::effort='
@@ -203,6 +209,7 @@ const ANTHROPIC_MODELS: readonly AnthropicModelInfo[] = [
     tags: ['recommended', 'reasoning'],
     effortLevels: ANTHROPIC_OPUS_EFFORTS,
     defaultEffort: 'medium',
+    contextWindow: 1_000_000,
   },
   {
     id: 'claude-sonnet-4-6',

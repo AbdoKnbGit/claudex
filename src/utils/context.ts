@@ -2,66 +2,13 @@
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getProviderCatalogContextWindow } from './model/contextWindows.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import { getAPIProvider } from './model/providers.js'
 
-// Model context window size (200k tokens for all models right now)
+// Conservative fallback when no provider or model metadata is available.
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
-
-/**
- * Known context windows for third-party models that don't report via
- * the Anthropic model capabilities API. Used as a fallback when the
- * model is not a Claude model. Entries are matched by prefix.
- */
-const THIRD_PARTY_CONTEXT_WINDOWS: Record<string, number> = {
-  // OpenAI o1 series
-  'o1': 200_000,
-  'o1-mini': 128_000,
-  'o1-preview': 128_000,
-  'o3': 200_000,
-  'o3-mini': 200_000,
-  'o4-mini': 200_000,
-  // OpenAI GPT-4 series
-  'gpt-4o': 128_000,
-  'gpt-4-turbo': 128_000,
-  'gpt-4': 8_192,
-  'gpt-4.1': 1_000_000,
-  // Google Gemini
-  'gemini-2.5-pro': 1_000_000,
-  'gemini-2.5-flash': 1_000_000,
-  'gemini-2.0': 1_000_000,
-  'gemini-1.5-pro': 2_000_000,
-  'gemini-1.5-flash': 1_000_000,
-  // DeepSeek
-  'deepseek-chat': 128_000,
-  'deepseek-reasoner': 128_000,
-  'deepseek-coder': 128_000,
-  // Ollama common models (conservative defaults)
-  'llama3': 8_192,
-  'llama3.1': 128_000,
-  'llama3.2': 128_000,
-  'llama3.3': 128_000,
-  'codellama': 16_384,
-  'mixtral': 32_768,
-  'mistral': 32_768,
-  'qwen2.5': 128_000,
-  'phi3': 128_000,
-  'command-r': 128_000,
-}
-
-/**
- * Look up a known context window for a third-party model.
- * Matches by longest-prefix-first to handle versioned model names.
- */
-function getThirdPartyContextWindow(model: string): number | undefined {
-  const m = model.toLowerCase()
-  // Sort keys by length descending so more specific matches win
-  const keys = Object.keys(THIRD_PARTY_CONTEXT_WINDOWS).sort((a, b) => b.length - a.length)
-  for (const key of keys) {
-    if (m.startsWith(key)) return THIRD_PARTY_CONTEXT_WINDOWS[key]
-  }
-  return undefined
-}
 
 // Maximum output tokens for compact operations
 export const COMPACT_MAX_OUTPUT_TOKENS = 20_000
@@ -154,9 +101,18 @@ export function getContextWindowForModel(
     }
   }
 
-  // Fallback: check known third-party model context windows
-  const thirdPartyWindow = getThirdPartyContextWindow(model)
-  if (thirdPartyWindow) return thirdPartyWindow
+  const provider = getAPIProvider()
+  const providerWindow = getProviderCatalogContextWindow(model, provider)
+  if (providerWindow) {
+    if (
+      provider === 'firstParty' &&
+      providerWindow > MODEL_CONTEXT_WINDOW_DEFAULT &&
+      is1mContextDisabled()
+    ) {
+      return MODEL_CONTEXT_WINDOW_DEFAULT
+    }
+    return providerWindow
+  }
 
   return MODEL_CONTEXT_WINDOW_DEFAULT
 }

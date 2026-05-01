@@ -77,7 +77,7 @@ const OPENAI_FALLBACK_MODELS: ModelInfo[] = [
   {
     id: 'gpt-5.4',
     name: 'GPT-5.4',
-    contextWindow: 272000,
+    contextWindow: 1050000,
     supportsToolCalling: true,
     tags: ['reasoning'],
   },
