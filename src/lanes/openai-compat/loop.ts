@@ -124,6 +124,7 @@ interface OpenAIChatRequest {
   models?: string[]
   route?: string
   prompt_cache_key?: string
+  prompt_cache_retention?: '24h'
   /**
    * OpenRouter-native detailed-usage flag. When set, the gateway returns
    * cache_discount and per-breakpoint hit counts on the final stream
@@ -247,7 +248,7 @@ export class OpenAICompatLane implements Lane {
 
     const provider = cfg.provider
     const isLocal = isLocalBaseUrl(cfg.baseUrl)
-    const cacheSessionId = provider === 'copilot' ? sessionId : undefined
+    const cacheSessionId = provider === 'copilot' || provider === 'openrouter' ? sessionId : undefined
 
     // Assemble system text. We keep it simple for Phase-1 (caller's text).
     const rawSystemText = typeof system === 'string'
@@ -479,7 +480,7 @@ export class OpenAICompatLane implements Lane {
               chunk.usage.prompt_tokens_details?.cached_tokens
               ?? chunk.usage.prompt_cache_hit_tokens
               ?? reportedCachedInputTokens
-            cacheWriteTokens = provider === 'copilot'
+            cacheWriteTokens = provider === 'copilot' || provider === 'openrouter'
               ? (
                   chunk.usage.prompt_tokens_details?.cache_write_tokens
                   ?? chunk.usage.cache_write_tokens

@@ -25,6 +25,14 @@ function assert(cond: unknown, hint: string): void {
   if (!cond) throw new Error(hint)
 }
 
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key]
+  } else {
+    process.env[key] = value
+  }
+}
+
 type CapturedRequest = {
   url: string
   headers: Record<string, string>
@@ -102,7 +110,20 @@ async function captureCopilotRequest(
   }
 }
 
-async function captureOpenRouterRequestWithSessionId(): Promise<CapturedRequest> {
+async function captureOpenRouterRequestWithSessionId(cacheRetention?: string): Promise<{
+  request: CapturedRequest
+  events: AnthropicStreamEvent[]
+}> {
+  const oldClaudexRetention = process.env.CLAUDEX_OPENROUTER_CACHE_RETENTION
+  const oldOpenRouterRetention = process.env.OPENROUTER_CACHE_RETENTION
+  if (cacheRetention === undefined) {
+    delete process.env.CLAUDEX_OPENROUTER_CACHE_RETENTION
+    delete process.env.OPENROUTER_CACHE_RETENTION
+  } else {
+    process.env.CLAUDEX_OPENROUTER_CACHE_RETENTION = cacheRetention
+    delete process.env.OPENROUTER_CACHE_RETENTION
+  }
+
   const lane = new OpenAICompatLane()
   lane.registerProvider('openrouter', 'openrouter-token', 'https://openrouter.ai/api/v1')
 
@@ -127,7 +148,15 @@ async function captureOpenRouterRequestWithSessionId(): Promise<CapturedRequest>
         object: 'chat.completion.chunk',
         model: 'meta-llama/llama-3.3-70b-instruct',
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 7,
+          total_tokens: 107,
+          prompt_tokens_details: {
+            cached_tokens: 80,
+            cache_write_tokens: 30,
+          },
+        },
       },
     ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n'
     return new Response(sse, {
@@ -137,6 +166,7 @@ async function captureOpenRouterRequestWithSessionId(): Promise<CapturedRequest>
   }) as typeof fetch
 
   try {
+    const events: AnthropicStreamEvent[] = []
     const stream = lane.streamAsProvider({
       model: 'meta-llama/llama-3.3-70b-instruct',
       messages: [{ role: 'user', content: 'hello' }],
@@ -148,19 +178,19 @@ async function captureOpenRouterRequestWithSessionId(): Promise<CapturedRequest>
       providerHint: 'openrouter',
     })
 
-    for await (const _ of stream) {
-      // drain
-    }
+    for await (const ev of stream) events.push(ev)
     assert(request !== null, 'fetch was not called')
-    return request
+    return { request, events }
   } finally {
     globalThis.fetch = oldFetch
     lane.unregisterProvider('openrouter')
+    restoreEnv('CLAUDEX_OPENROUTER_CACHE_RETENTION', oldClaudexRetention)
+    restoreEnv('OPENROUTER_CACHE_RETENTION', oldOpenRouterRetention)
   }
 }
 
 async function main(): Promise<void> {
-  console.log('openai-compat copilot cache:')
+  console.log('openai-compat cache affinity:')
 
   await test('sends prompt_cache_key and affinity headers from session id', async () => {
     const { request } = await captureCopilotRequest('session-fixed')
@@ -219,14 +249,36 @@ async function main(): Promise<void> {
       `tool_call_id=${toolMessages[0].tool_call_id}`)
   })
 
-  await test('does not apply session cache fields outside Copilot', async () => {
-    const request = await captureOpenRouterRequestWithSessionId()
-    assert(request.body.prompt_cache_key === undefined, `prompt_cache_key=${request.body.prompt_cache_key}`)
+  await test('sends OpenRouter cache key without Copilot affinity headers', async () => {
+    const { request } = await captureOpenRouterRequestWithSessionId()
+    assert(request.body.prompt_cache_key === 'session-fixed', `prompt_cache_key=${request.body.prompt_cache_key}`)
+    assert(request.body.prompt_cache_retention === undefined,
+      `prompt_cache_retention=${request.body.prompt_cache_retention}`)
     assert(request.headers.session_id === undefined, `session_id=${request.headers.session_id}`)
     assert(request.headers['x-client-request-id'] === undefined,
       `x-client-request-id=${request.headers['x-client-request-id']}`)
     assert(request.headers['x-session-affinity'] === undefined,
       `x-session-affinity=${request.headers['x-session-affinity']}`)
+  })
+
+  await test('normalizes OpenRouter cache read and write usage', async () => {
+    const { events } = await captureOpenRouterRequestWithSessionId()
+    const usageDelta = events.find((ev: any) =>
+      ev.type === 'message_delta' && ev.usage?.output_tokens === 7
+    ) as any
+    assert(usageDelta !== undefined, `events=${JSON.stringify(events)}`)
+    assert(usageDelta.usage.input_tokens === 20, `input_tokens=${usageDelta.usage.input_tokens}`)
+    assert(usageDelta.usage.cache_read_input_tokens === 50,
+      `cache_read_input_tokens=${usageDelta.usage.cache_read_input_tokens}`)
+    assert(usageDelta.usage.cache_creation_input_tokens === 30,
+      `cache_creation_input_tokens=${usageDelta.usage.cache_creation_input_tokens}`)
+  })
+
+  await test('can opt OpenRouter into long cache retention', async () => {
+    const { request } = await captureOpenRouterRequestWithSessionId('long')
+    assert(request.body.prompt_cache_key === 'session-fixed', `prompt_cache_key=${request.body.prompt_cache_key}`)
+    assert(request.body.prompt_cache_retention === '24h',
+      `prompt_cache_retention=${request.body.prompt_cache_retention}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

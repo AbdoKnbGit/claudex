@@ -83,7 +83,11 @@ export class LaneBackedProvider implements BaseProvider {
         stop_sequences: params.stop_sequences,
         thinking: params.thinking,
         signal: controller.signal,
-        ...(providerHint === 'copilot' ? { sessionId: getSessionId() } : {}),
+        ...(
+          providerHint === 'copilot' || providerHint === 'openrouter'
+            ? { sessionId: getSessionId() }
+            : {}
+        ),
         providerHint: providerHint,
       })
       for await (const ev of gen) {

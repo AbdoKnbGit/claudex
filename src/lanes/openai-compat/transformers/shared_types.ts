@@ -44,4 +44,5 @@ export interface OpenAIChatRequest {
   models?: string[]
   route?: string
   prompt_cache_key?: string
+  prompt_cache_retention?: '24h'
 }

@@ -7,6 +7,7 @@
  *   natively support it); stripped for everything else so OpenRouter
  *   doesn't surface it as an unknown-field warning.
  * - Accepts `reasoning: { effort }` for reasoning-capable upstreams.
+ * - Sends OpenAI cache affinity fields when a stable session id is present.
  * - Honors `function.strict: true` for the underlying model.
  * - `transforms`/`route`/`models` are OpenRouter-specific fields that
  *   pass through as-is.
@@ -39,6 +40,14 @@ export const openrouterTransformer: Transformer = {
   },
 
   transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
+    if (ctx.sessionId) {
+      const retention = resolveOpenRouterCacheRetention()
+      if (retention !== 'none') {
+        body.prompt_cache_key = ctx.sessionId
+        if (retention === 'long') body.prompt_cache_retention = '24h'
+      }
+    }
+
     // Only emit the reasoning knob for models that actually support it.
     // Llama-4 / prompt-guard / base-chat Llamas routed via Vertex return
     // "thinking is not supported by this model" when reasoning is set.
@@ -88,6 +97,24 @@ export const openrouterTransformer: Transformer = {
     if (m.includes('google/gemini')) return 'last-only'
     return 'none'
   },
+}
+
+type OpenRouterCacheRetention = 'none' | 'short' | 'long'
+
+function resolveOpenRouterCacheRetention(): OpenRouterCacheRetention {
+  const raw = (
+    process.env.CLAUDEX_OPENROUTER_CACHE_RETENTION
+    ?? process.env.OPENROUTER_CACHE_RETENTION
+    ?? ''
+  ).trim().toLowerCase()
+
+  if (raw === 'none' || raw === 'off' || raw === 'false' || raw === '0' || raw === 'disabled') {
+    return 'none'
+  }
+  if (raw === 'long' || raw === '24h') {
+    return 'long'
+  }
+  return 'short'
 }
 
 function openrouterModelSupportsReasoning(model: string): boolean {
