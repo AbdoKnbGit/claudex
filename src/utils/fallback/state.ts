@@ -20,14 +20,6 @@ export type FallbackAttempt = {
   total: number
 }
 
-export type PendingFallback = {
-  originalProvider: APIProvider
-  originalModel: string
-  errorMessage: string
-  createdAt: number
-}
-
-let pendingFallback: PendingFallback | null = null
 let activeFallback: { current: FallbackAttempt; nextIndex: number } | null =
   null
 
@@ -63,23 +55,8 @@ export function hasConfiguredFallbackTargets(): boolean {
   return getConfiguredFallbackTargets().length > 0
 }
 
-export function requestFallbackConfirmation(details: {
-  originalProvider: APIProvider
-  originalModel: string
-  errorMessage: string
-}): PendingFallback {
-  pendingFallback = { ...details, createdAt: Date.now() }
-  activeFallback = null
-  return pendingFallback
-}
-
-export function getPendingFallback(): PendingFallback | null {
-  return pendingFallback
-}
-
-export function rejectPendingFallback(): void {
-  pendingFallback = null
-  activeFallback = null
+export function isFallbackEnabled(): boolean {
+  return getGlobalConfig().fallbackEnabled === true
 }
 
 export function startFallbackProcess(): FallbackAttempt | null {
@@ -92,7 +69,6 @@ export function startFallbackProcess(): FallbackAttempt | null {
     index: 0,
     total: targets.length,
   }
-  pendingFallback = null
   activeFallback = { current: attempt, nextIndex: 1 }
   return attempt
 }

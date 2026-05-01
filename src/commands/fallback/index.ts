@@ -1,20 +1,20 @@
 import type { Command } from '../../commands.js'
 import {
-  getPendingFallback,
   hasConfiguredFallbackTargets,
+  isFallbackEnabled,
 } from '../../utils/fallback/state.js'
 
 export default {
   type: 'local-jsx',
   name: 'fallback',
   get description() {
-    if (getPendingFallback()) {
-      return 'Approve or cancel fallback continuation'
+    if (!hasConfiguredFallbackTargets()) {
+      return 'Configure three priority fallback models'
     }
-    return hasConfiguredFallbackTargets()
-      ? 'Show or change the fallback model chain'
-      : 'Configure three priority fallback models'
+    return isFallbackEnabled()
+      ? 'Automatic fallback is on'
+      : 'Automatic fallback is off'
   },
-  argumentHint: '[yes|no|status|config|reset|help]',
+  argumentHint: '[on|off|status|config|reset|help]',
   load: () => import('./fallback.js'),
 } satisfies Command

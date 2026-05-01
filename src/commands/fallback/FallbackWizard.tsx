@@ -48,10 +48,11 @@ export function FallbackWizard({
     if (next.length >= FALLBACK_TARGET_COUNT) {
       saveGlobalConfig(current => ({
         ...current,
+        fallbackEnabled: true,
         fallbackTargets: next,
       }))
       const lines = [
-        `${chalk.bold('Fallback chain saved.')} When the active model fails, Claudex will ask before continuing with:`,
+        `${chalk.bold('Fallback chain saved and turned on.')} Eligible provider failures will automatically continue with:`,
         '',
         ...next.map(
           (target, index) =>
@@ -59,7 +60,7 @@ export function FallbackWizard({
         ),
         '',
         chalk.dim(
-          'Use /fallback status to inspect or /fallback config to change it.',
+          'Use /fallback off to disable, /fallback status to inspect, or /fallback config to change it.',
         ),
       ]
       onDone(lines.join('\n'), { display: 'system' })

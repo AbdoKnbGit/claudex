@@ -619,9 +619,13 @@ export type GlobalConfig = {
     >
   >
 
-  // Ordered fallback chain used by /fallback. When the active model fails
-  // with a quota or server-side error, the user is asked to approve
-  // continuing with these targets in priority order.
+  // Whether /fallback should automatically continue on the configured chain
+  // when the active model fails with an API/auth/quota/server-side error.
+  fallbackEnabled?: boolean
+
+  // Ordered fallback chain used by /fallback. When fallbackEnabled is true and
+  // the active model fails with an eligible provider-side error, Claudex
+  // continues with these targets in priority order.
   fallbackTargets?: Array<{
     provider: string
     model: string
@@ -717,6 +721,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'remoteControlAtStartup',
   'remoteDialogSeen',
   'surfPhaseTargets',
+  'fallbackEnabled',
   'fallbackTargets',
 ] as const
 

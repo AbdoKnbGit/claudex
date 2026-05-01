@@ -2,44 +2,140 @@ import { APIError } from '@anthropic-ai/sdk'
 import type { AssistantMessage } from '../../types/message.js'
 
 /**
- * Tight detection for "this error is the kind that fallback models can fix"
+ * Detection for "this error is the kind that fallback models can fix".
  *
- * The /fallback feature is meant to recover ONLY from quota and server-side
- * issues — i.e. errors where retrying the same prompt against a DIFFERENT
- * provider/model has a real chance of succeeding.
+ * /fallback recovers from provider-side API/auth/quota/usage/status failures
+ * where retrying the same prompt against a different provider/model has a real
+ * chance of succeeding.
  *
- * INTENTIONALLY EXCLUDED (per the rule "don't catch agent error signals"):
- *   - tool/Read/Write failures (never reach the API error path)
+ * Intentionally excluded:
+ *   - tool/Read/Write failures
  *   - MCP server failures
- *   - "fetch failed" / connection errors / timeouts (transient; the in-stream
- *     retry already covers these — surfacing to fallback would mask real
- *     networking problems behind a model swap)
- *   - 401/403 authentication issues (a different model on the same broken
- *     auth still 401s — fallback won't help)
- *   - 400 invalid_request (prompt-too-long, malformed PDFs, image size,
- *     tool_use mismatches — all user-input issues that fallback can't fix)
- *   - 404 model-not-found (provider-specific; user fixes via /model)
- *   - max_output_tokens (model output cap — different model has the same cap)
+ *   - fetch/connection/timeout/abort errors
+ *   - 400 invalid_request cases like prompt-too-long, PDFs, images, and
+ *     tool_use mismatches
+ *   - 404 model-not-found
+ *   - max_output_tokens
  */
 
 const FALLBACK_ELIGIBLE_API_ERRORS = new Set<string>([
-  'rate_limit',
+  'authentication_failed',
   'billing_error',
+  'rate_limit',
+  'server_error',
 ])
 
+const FALLBACK_ELIGIBLE_STATUSES = new Set<number>([
+  401,
+  402,
+  403,
+  429,
+  529,
+])
+
+function isFallbackStatus(status: number): boolean {
+  return (
+    FALLBACK_ELIGIBLE_STATUSES.has(status) ||
+    (status >= 500 && status < 600)
+  )
+}
+
+function hasOperationalFailureText(text: string): boolean {
+  return (
+    /\b(?:fetch failed|failed to fetch)\b/i.test(text) ||
+    /\b(?:network|connection|timeout|timed out|abort(?:ed|error)?)\b/i.test(
+      text,
+    ) ||
+    /\b(?:ECONNRESET|EPIPE|ECONNREFUSED|ENOTFOUND|ETIMEDOUT)\b/i.test(text) ||
+    /\bMCP\b/i.test(text) ||
+    /\b(?:operation failed|failed operation)\b/i.test(text) ||
+    /\btool[_\s-]?(?:use|result)\b/i.test(text) ||
+    /\b(?:prompt is too long|request too large|image|pdf)\b/i.test(text)
+  )
+}
+
+function hasProviderAuthContext(text: string): boolean {
+  return /\b(?:api|provider|model|credential|credentials|token|api key|account|organization|project|workspace)\b/i.test(
+    text,
+  )
+}
+
+function extractFallbackStatusFromText(text: string): number | null {
+  const patterns = [
+    /\bAPI\s+(?:error|Error)\s*(?:[:#]|\s)\s*(\d{3})\b/i,
+    /\bHTTP\s+(?:status\s*)?(?:code\s*)?(?:[:#]|\s)\s*(\d{3})\b/i,
+    /\bstatus\s*(?:code\s*)?(?:[:#=]|\s)\s*(\d{3})\b/i,
+    /\brequest failed\s*\((\d{3})\)/i,
+  ]
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (match?.[1]) {
+      return Number.parseInt(match[1], 10)
+    }
+  }
+  return null
+}
+
+function hasProviderLimitOrAuthText(text: string): boolean {
+  return (
+    /\brate[-_\s]?limit(?:ed|s)?\b/i.test(text) ||
+    /\bratelimit(?:ed|s)?\b/i.test(text) ||
+    /\bquota\b/i.test(text) ||
+    /\busage[-_\s]?(?:quota|limit|limits|cap)\b/i.test(text) ||
+    /\bextra usage\b/i.test(text) ||
+    /\bbilling\b/i.test(text) ||
+    /\bcredit balance\b/i.test(text) ||
+    /\binsufficient[_\s-]?(?:quota|balance|credits?)\b/i.test(text) ||
+    /\bpayment required\b/i.test(text) ||
+    /\binvalid api key\b/i.test(text) ||
+    /\bapi key\b.*\b(?:invalid|expired)\b/i.test(text) ||
+    /\boauth token\b.*\b(?:revoked|expired|invalid)\b/i.test(text) ||
+    (hasProviderAuthContext(text) &&
+      /\b(?:auth(?:entication|orization)? failed|unauthorized|permission denied)\b/i.test(
+        text,
+      ))
+  )
+}
+
 /**
- * Match strict server-side overload / 5xx patterns in the surfaced error text
- * (when we don't have the raw thrown error object — i.e. for synthetic
- * AssistantMessages with `error: 'unknown'`).
+ * Match provider-side overload / 5xx / account-limit patterns in surfaced
+ * error text. This covers third-party providers that throw plain Error objects
+ * and later become synthetic AssistantMessages with `error: 'unknown'`.
  */
-function hasServerOverloadText(text: string): boolean {
-  if (!text) return false
+function hasFallbackEligibleProviderText(text: string): boolean {
+  if (!text || hasOperationalFailureText(text)) {
+    return false
+  }
+  const status = extractFallbackStatusFromText(text)
+  if (status !== null && isFallbackStatus(status)) {
+    return true
+  }
   return (
     /\boverloaded_error\b/i.test(text) ||
     /\binternal_server_error\b/i.test(text) ||
-    /\bAPI\s+Error:\s*5\d{2}\b/i.test(text) ||
     /\bRepeated\s+529\b/i.test(text) ||
-    /\bcapacity[-_\s]?off[-_\s]?switch\b/i.test(text)
+    /\bcapacity[-_\s]?off[-_\s]?switch\b/i.test(text) ||
+    hasProviderLimitOrAuthText(text)
+  )
+}
+
+function hasLaneProviderErrorPrefix(text: string): boolean {
+  return /^(?:openrouter|ollama|cline|kilo|kiro|iflow|kilocode|deepseek|groq|mistral|nim|copilot|generic)\s+API\s+error\s+\d{3}\b/i.test(
+    text.trim(),
+  )
+}
+
+function hasKnownLaneAccountLimitText(text: string): boolean {
+  const normalized = text.trim()
+  return (
+    /^GitHub Copilot rejected this request because the current account has no quota left\b/i.test(
+      normalized,
+    ) ||
+    /^Error:\s*Named models unavailable\s+Free plans can only use Auto\./i.test(
+      normalized.replace(/\s+/g, ' '),
+    ) ||
+    (/^Cursor request failed\s*\(\d{3}\)\.?$/i.test(normalized) &&
+      hasFallbackEligibleProviderText(normalized))
   )
 }
 
@@ -56,11 +152,29 @@ function getAssistantErrorText(message: AssistantMessage): string {
 }
 
 /**
+ * Native third-party lanes emit provider HTTP failures as ordinary assistant
+ * text blocks, not createAssistantAPIErrorMessage(). Keep this narrow: only
+ * lane-owned error prefixes and known account-limit messages may enter the
+ * fallback path.
+ */
+export function isFallbackEligibleLaneProviderErrorMessage(
+  message: AssistantMessage,
+): boolean {
+  if (!message || message.isApiErrorMessage === true) {
+    return false
+  }
+  const text = getAssistantErrorText(message)
+  if (!text) {
+    return false
+  }
+  if (hasLaneProviderErrorPrefix(text)) {
+    return hasFallbackEligibleProviderText(text)
+  }
+  return hasKnownLaneAccountLimitText(text)
+}
+
+/**
  * Should this assistant API error message trigger the configured fallback chain?
- *
- * Strict gate: only the `error` field values explicitly tied to quota/billing,
- * plus a narrow text match for server overload errors that come back as
- * `error: 'unknown'` from the SDK's catchall branch.
  */
 export function isFallbackEligibleAPIErrorMessage(
   message: AssistantMessage,
@@ -74,44 +188,32 @@ export function isFallbackEligibleAPIErrorMessage(
   }
   if (errorKind === 'unknown') {
     const text = getAssistantErrorText(message) || message.errorDetails || ''
-    return hasServerOverloadText(text)
+    return hasFallbackEligibleProviderText(text)
   }
   return false
 }
 
 /**
  * Should this thrown error trigger the configured fallback chain? Used in the
- * outer try/catch when an API error escapes streaming as a thrown exception.
- *
- * Only triggers on:
- *   - APIError with status 402 (payment required), 429 (rate limit), or 5xx
- *   - "credit balance is too low" / "Extra usage is required" verbiage
- *
- * Plain `Error` (fetch failed, AbortError, generic) is REJECTED — those are
- * transport / agent-side issues that don't get fixed by switching models.
+ * outer try/catch when a provider-side error escapes streaming as a thrown
+ * exception.
  */
 export function isFallbackEligibleThrownError(error: unknown): boolean {
   if (error instanceof APIError) {
     const status = error.status
-    if (typeof status === 'number') {
-      if (status === 402 || status === 429) return true
-      if (status >= 500 && status < 600) return true
-    }
-    const msg = String(error.message ?? '')
-    if (
-      /\bcredit balance is too low\b/i.test(msg) ||
-      /\bExtra usage is required\b/i.test(msg) ||
-      /\boverloaded_error\b/i.test(msg)
-    ) {
+    if (typeof status === 'number' && isFallbackStatus(status)) {
       return true
     }
-    return false
+    return hasFallbackEligibleProviderText(String(error.message ?? ''))
+  }
+  if (error instanceof Error) {
+    return hasFallbackEligibleProviderText(error.message)
   }
   return false
 }
 
 /**
- * Truncate the surfaced error text so the confirmation banner stays compact.
+ * Truncate surfaced error text so fallback system messages stay compact.
  */
 export function truncateFallbackErrorMessage(message: string): string {
   const normalized = String(message ?? '').replace(/\s+/g, ' ').trim()
