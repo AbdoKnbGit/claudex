@@ -78,6 +78,59 @@ function buildResumeInputFromSuggestion(suggestion: SuggestionItem): string {
   } | undefined;
   return metadata?.sessionId ? `/resume ${metadata.sessionId}` : `/resume ${suggestion.displayText}`;
 }
+type ReportFormat = 'markdown' | 'pdf' | 'html';
+type ReportFormatSuggestionMetadata = {
+  type: 'report-format';
+  value: ReportFormat;
+};
+const REPORT_FORMAT_SUGGESTIONS: Array<{
+  value: ReportFormat;
+  displayText: string;
+  description: string;
+}> = [{
+  value: 'markdown',
+  displayText: 'Md',
+  description: 'Generate a Markdown report'
+}, {
+  value: 'pdf',
+  displayText: 'PDF',
+  description: 'Generate a PDF report'
+}, {
+  value: 'html',
+  displayText: 'HTML',
+  description: 'Generate an HTML report'
+}];
+function isReportFormatMetadata(metadata: unknown): metadata is ReportFormatSuggestionMetadata {
+  return typeof metadata === 'object' && metadata !== null && 'type' in metadata && metadata.type === 'report-format' && 'value' in metadata && (metadata.value === 'markdown' || metadata.value === 'pdf' || metadata.value === 'html');
+}
+function getReportFormatSuggestions(args: string): SuggestionItem[] {
+  const formatToken = args.trimStart();
+  if (formatToken.length > 0 && /\s/.test(formatToken)) {
+    return [];
+  }
+  const partial = formatToken.toLowerCase();
+  return REPORT_FORMAT_SUGGESTIONS.filter(format => partial === '' || format.value.startsWith(partial) || format.displayText.toLowerCase().startsWith(partial)).map(format => ({
+    id: `report-format-${format.value}`,
+    displayText: format.displayText,
+    description: format.description,
+    metadata: {
+      type: 'report-format',
+      value: format.value
+    } satisfies ReportFormatSuggestionMetadata
+  }));
+}
+function applyReportFormatSuggestion(suggestion: SuggestionItem, shouldExecute: boolean, onInputChange: (value: string) => void, setCursorOffset: (offset: number) => void, onSubmit: (value: string, isSubmittingSlashCommand?: boolean) => void): boolean {
+  if (!isReportFormatMetadata(suggestion.metadata)) {
+    return false;
+  }
+  const newInput = `/report ${suggestion.metadata.value}${shouldExecute ? '' : ' '}`;
+  onInputChange(newInput);
+  setCursorOffset(newInput.length);
+  if (shouldExecute) {
+    onSubmit(newInput, /* isSubmittingSlashCommand */true);
+  }
+  return true;
+}
 type Props = {
   onInputChange: (value: string) => void;
   onSubmit: (value: string, isSubmittingSlashCommand?: boolean) => void;
@@ -724,6 +777,20 @@ export function useTypeahead({
         clearSuggestions();
         return;
       }
+
+      if (parsedCommand && parsedCommand.commandName === 'report' && value.includes(' ')) {
+        const reportSuggestions = getReportFormatSuggestions(parsedCommand.args);
+        if (reportSuggestions.length > 0) {
+          setSuggestionsState(prev => ({
+            suggestions: reportSuggestions,
+            selectedSuggestion: getPreservedSelection(prev.suggestions, prev.selectedSuggestion, reportSuggestions),
+            commandArgumentHint: undefined
+          }));
+          setSuggestionType('command-argument');
+          setMaxColumnWidth(undefined);
+          return;
+        }
+      }
     }
 
     // Determine whether to display the argument hint and command suggestions.
@@ -803,6 +870,9 @@ export function useTypeahead({
     if (suggestionType === 'custom-title') {
       // If we had custom-title suggestions but the input is no longer /resume
       // we need to clear the suggestions.
+      clearSuggestions();
+    }
+    if (suggestionType === 'command-argument') {
       clearSuggestions();
     }
     if (suggestionType === 'agent' && suggestionsRef.current.some((s: SuggestionItem) => s.id?.startsWith('dm-'))) {
@@ -946,6 +1016,10 @@ export function useTypeahead({
           applyCommandSuggestion(suggestion, false,
           // don't execute on tab
           commands, onInputChange, setCursorOffset, onSubmit);
+          clearSuggestions();
+        }
+      } else if (suggestionType === 'command-argument' && suggestions.length > 0) {
+        if (suggestion && applyReportFormatSuggestion(suggestion, false, onInputChange, setCursorOffset, onSubmit)) {
           clearSuggestions();
         }
       } else if (suggestionType === 'custom-title' && suggestions.length > 0) {
@@ -1142,6 +1216,11 @@ export function useTypeahead({
         applyCommandSuggestion(suggestion, true,
         // execute on return
         commands, onInputChange, setCursorOffset, onSubmit);
+        debouncedFetchFileSuggestions.cancel();
+        clearSuggestions();
+      }
+    } else if (suggestionType === 'command-argument' && selectedSuggestion < suggestions.length) {
+      if (suggestion && applyReportFormatSuggestion(suggestion, true, onInputChange, setCursorOffset, onSubmit)) {
         debouncedFetchFileSuggestions.cancel();
         clearSuggestions();
       }

@@ -14,7 +14,7 @@ export type SuggestionItem = {
   metadata?: unknown;
   color?: keyof Theme;
 };
-export type SuggestionType = 'command' | 'file' | 'directory' | 'agent' | 'shell' | 'custom-title' | 'slack-channel' | 'none';
+export type SuggestionType = 'command' | 'command-argument' | 'file' | 'directory' | 'agent' | 'shell' | 'custom-title' | 'slack-channel' | 'none';
 export const OVERLAY_MAX_ITEMS = 5;
 
 /**

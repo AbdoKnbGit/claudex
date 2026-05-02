@@ -89,6 +89,7 @@
     "lru-cache": "^11.0.2",
     "marked": "^15.0.7",
     "p-map": "^7.0.3",
+    "pdfkit": "^0.18.0",
     "picomatch": "^4.0.2",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4",
@@ -120,6 +121,7 @@
   "devDependencies": {
     "@types/bun": "^1.2.10",
     "@types/node": "^22.14.0",
+    "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.1.0",
     "esbuild": "^0.24.2",
     "typescript": "^5.7.3"

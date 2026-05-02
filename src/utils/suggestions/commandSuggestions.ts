@@ -496,6 +496,9 @@ export function applyCommandSuggestion(
 
   // Execute command if requested and it takes no arguments
   if (shouldExecute && commandObj) {
+    if (commandName === 'report') {
+      return
+    }
     if (
       commandObj.type !== 'prompt' ||
       (commandObj.argNames ?? []).length === 0
