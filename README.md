@@ -1,3 +1,5 @@
+![Logo](Logo.webp)
+
 # Tau
 
 ---
@@ -78,8 +80,6 @@ Automatic recovery when a model fails mid-session. Configure a fallback and neve
 ### `/usage` — Watch the meter
 
 Tracks usage across every provider you're logged into. Quotas, remaining credit, request counts — see what each one has left before you hit a wall.
-
-https://github.com/user-attachments/assets/ff7d0ec7-fffd-4248-a011-41ed6e9a0eea
 
 ---
 
