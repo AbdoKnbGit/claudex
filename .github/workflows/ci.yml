@@ -47,8 +47,8 @@ jobs:
       - name: Pack + global install (exercises postinstall.mjs)
         shell: bash
         run: |
-          npm pack --quiet
-          npm install -g ./abdoknbgit-tau-*.tgz
+          TARBALL="$(npm pack --quiet | tail -n 1)"
+          npm install -g "./$TARBALL"
 
       - name: Smoke test - global Tau binary runs
         run: tau --version
@@ -107,6 +107,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Pack + global install
+        shell: pwsh
+        run: |
+          $tarball = (npm pack --quiet | Select-Object -Last 1).Trim()
+          npm install -g "./$tarball"
+
       - name: Smoke test - no git-bash on PATH
         shell: pwsh
         run: |
@@ -121,7 +127,7 @@ jobs:
           $bashLookup = & where.exe bash 2>&1
           Write-Host "bash lookup result: $bashLookup"
           # Main assertion: Tau must exit 0 despite no bash.
-          node dist/cli.mjs --version
+          tau --version
 
   # Alternate build path (Bun)
   # Contributors who prefer Bun shouldn't be surprised by the build path
