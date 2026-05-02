@@ -20,7 +20,7 @@ function MemoryCommand({
 }): React.ReactNode {
   const handleSelectMemoryFile = async (memoryPath: string) => {
     try {
-      // Create claude directory if it doesn't exist (idempotent with recursive)
+      // Create tau directory if it doesn't exist (idempotent with recursive)
       if (memoryPath.includes(getClaudeConfigHomeDir())) {
         await mkdir(getClaudeConfigHomeDir(), {
           recursive: true

@@ -17,7 +17,7 @@ import { lt } from '../utils/semver.js'
  * Runtime check for bridge mode entitlement.
  *
  * Remote Control requires a claude.ai subscription (the bridge auths to CCR
- * with the claude.ai OAuth token). isClaudeAISubscriber() excludes
+ * with the claude.ai OAuth token). isTauAISubscriber() excludes
  * Bedrock/Vertex/Foundry, apiKeyHelper/gateway deployments, env-var API keys,
  * and Console API logins — none of which have the OAuth token CCR needs.
  * See github.com/deshaw/anthropic-issues/issues/24.
@@ -70,13 +70,13 @@ export async function isBridgeEnabledBlocking(): Promise<boolean> {
 export async function getBridgeDisabledReason(): Promise<string | null> {
   if (feature('BRIDGE_MODE')) {
     if (!isClaudeAISubscriber()) {
-      return 'Remote Control requires a claude.ai subscription. Run `claude auth login` to sign in with your claude.ai account.'
+      return 'Remote Control requires a claude.ai subscription. Run `tau auth login` to sign in with your claude.ai account.'
     }
     if (!hasProfileScope()) {
-      return 'Remote Control requires a full-scope login token. Long-lived tokens (from `claude setup-token` or CLAUDE_CODE_OAUTH_TOKEN) are limited to inference-only for security reasons. Run `claude auth login` to use Remote Control.'
+      return 'Remote Control requires a full-scope login token. Long-lived tokens (from `tau setup-token` or CLAUDE_CODE_OAUTH_TOKEN) are limited to inference-only for security reasons. Run `tau auth login` to use Remote Control.'
     }
     if (!getOauthAccountInfo()?.organizationUuid) {
-      return 'Unable to determine your organization for Remote Control eligibility. Run `claude auth login` to refresh your account information.'
+      return 'Unable to determine your organization for Remote Control eligibility. Run `tau auth login` to refresh your account information.'
     }
     if (!(await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bridge'))) {
       return 'Remote Control is not yet enabled for your account.'
@@ -87,7 +87,7 @@ export async function getBridgeDisabledReason(): Promise<string | null> {
 }
 
 // try/catch: main.tsx:5698 calls isBridgeEnabled() while defining the Commander
-// program, before enableConfigs() runs. isClaudeAISubscriber() → getGlobalConfig()
+// program, before enableConfigs() runs. isTauAISubscriber() → getGlobalConfig()
 // throws "Config accessed before allowed" there. Pre-config, no OAuth token can
 // exist anyway — false is correct. Same swallow getFeatureValue_CACHED_MAY_BE_STALE
 // already does at growthbook.ts:775-780.
@@ -166,7 +166,7 @@ export function checkBridgeMinVersion(): string | null {
       minVersion: string
     }>('tengu_bridge_min_version', { minVersion: '0.0.0' })
     if (config.minVersion && lt(MACRO.VERSION, config.minVersion)) {
-      return `Your version of Claudex (${MACRO.VERSION}) is too old for Remote Control.\nVersion ${config.minVersion} or higher is required. Run \`claude update\` to update.`
+      return `Your version of Tau (${MACRO.VERSION}) is too old for Remote Control.\nVersion ${config.minVersion} or higher is required. Run \`tau update\` to update.`
     }
   }
   return null

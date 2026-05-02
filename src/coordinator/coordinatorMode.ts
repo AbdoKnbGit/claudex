@@ -113,7 +113,7 @@ export function getCoordinatorSystemPrompt(): string {
     ? 'Workers have access to Bash, Read, and Edit tools, plus MCP tools from configured MCP servers.'
     : 'Workers have access to standard tools, MCP tools from configured MCP servers, and project skills via the Skill tool. Delegate skill invocations (e.g. /commit, /verify) to workers.'
 
-  return `You are Claudex, an AI assistant that orchestrates software engineering tasks across multiple workers.
+  return `You are Tau, an AI assistant that orchestrates software engineering tasks across multiple workers.
 
 ## 1. Your Role
 

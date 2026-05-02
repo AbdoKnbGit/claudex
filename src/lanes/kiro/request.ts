@@ -388,7 +388,7 @@ function _buildKiroToolSelectionGuide(
     pick('AskUserQuestion', 'ask the user a clarifying question'),
     pick('Skill', 'invoke a slash-command skill'),
     pick('SendUserMessage', 'send a message back to the user'),
-    pick('Config', 'read or change Claudex settings'),
+    pick('Config', 'read or change Tau settings'),
   ))
 
   addCategory('Agents', collect(

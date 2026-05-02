@@ -41,7 +41,7 @@ export function AssistantThinkingMessage(t0) {
     const t4 = addMargin ? 1 : 0;
     let t5;
     if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-      t5 = <Text dimColor={true} italic={true}>{"\u25C8 Claudex thinking"} <CtrlOToExpand /></Text>;
+      t5 = <Text dimColor={true} italic={true}>{"\u25C8 Tau thinking"} <CtrlOToExpand /></Text>;
       $[0] = t5;
     } else {
       t5 = $[0];
@@ -59,7 +59,7 @@ export function AssistantThinkingMessage(t0) {
   const t4 = addMargin ? 1 : 0;
   let t5;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-    t5 = <Text dimColor={true} italic={true}>{"\u25C8 Claudex thinking"}…</Text>;
+    t5 = <Text dimColor={true} italic={true}>{"\u25C8 Tau thinking"}…</Text>;
     $[3] = t5;
   } else {
     t5 = $[3];

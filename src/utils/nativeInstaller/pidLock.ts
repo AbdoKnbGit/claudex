@@ -1,7 +1,7 @@
 /**
  * PID-Based Version Locking
  *
- * This module provides PID-based locking for running Claude Code versions.
+ * This module provides PID-based locking for running Tau versions.
  * Unlike mtime-based locking (which can hold locks for 30 days after a crash),
  * PID-based locking can immediately detect when a process is no longer running.
  *

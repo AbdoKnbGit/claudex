@@ -2,7 +2,7 @@
  * DeepSeek V4 thinking-mode toggle.
  *
  * V4 (deepseek-v4-flash, deepseek-v4-pro) defaults `thinking: enabled`
- * server-side. Without an explicit toggle Claudex inherits that default
+ * server-side. Without an explicit toggle Tau inherits that default
  * and later tool turns 400 on missing reasoning_content.
  *
  * The model picker writes the user's choice here; the deepseek transformer

@@ -95,7 +95,7 @@ export function ThemePicker({
     ...(feature('AUTO_THEME')
       ? [{ label: 'Auto (match terminal)', value: 'auto' as const }]
       : []),
-    { label: 'Dark mode', value: 'dark' },
+    { label: 'Tau dark (red/brown glow)', value: 'dark' },
     { label: 'Light mode', value: 'light' },
     {
       label: 'Dark mode (colorblind-friendly)',
@@ -130,14 +130,14 @@ export function ThemePicker({
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column" gap={1}>
         {showIntroText ? (
-          <Text>Configure Claudex.</Text>
+          <Text>Configure Tau.</Text>
         ) : (
           <Text bold color="permission">
             Theme
           </Text>
         )}
         <Box flexDirection="column">
-          <Text bold>Choose the terminal theme for Claudex</Text>
+          <Text bold>Choose the terminal theme for Tau</Text>
           {helpText && !showHelpTextBelow && <Text dimColor>{helpText}</Text>}
         </Box>
         <Select
@@ -184,10 +184,10 @@ export function ThemePicker({
                 oldLines: 4,
                 newLines: 4,
                 lines: [
-                  ' const project = "claudex"',
+                  ' const project = "tau"',
                   ' function previewTheme() {',
                   '-  console.log("default theme")',
-                  '+  console.log("selected theme")',
+                  '+  console.log("selected tau theme")',
                   ' }',
                 ],
               }}

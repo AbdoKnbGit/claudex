@@ -9,11 +9,11 @@ const SWEEP_DURATION_MS = 1500
 const SWEEP_COUNT = 2
 const TOTAL_ANIMATION_MS = SWEEP_DURATION_MS * SWEEP_COUNT
 
-// Settled color: soft green matching Claudex theme
+// Settled color: soft green matching Tau theme
 const SETTLED_COLOR = toRGBColor({ r: 140, g: 200, b: 140 })
 
 /**
- * Claudex gradient: purple -> blue -> green
+ * Tau gradient: purple -> blue -> green
  * Maps a 0-1 progress value to an RGB color along the gradient.
  */
 function claudexGradient(t: number): { r: number; g: number; b: number } {

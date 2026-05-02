@@ -231,8 +231,8 @@ function getActiveProvider() {
 
 async function collectControlCenterState() {
   const configured = vscode.workspace.getConfiguration('claudex');
-  const launchCommand = configured.get('launchCommand', 'claudex');
-  const terminalName = configured.get('terminalName', 'Claudex');
+  const launchCommand = configured.get('launchCommand', 'tau');
+  const terminalName = configured.get('terminalName', 'Tau');
   const activeProvider = getActiveProvider();
   const executable = getExecutableFromCommand(launchCommand);
   const launchWorkspace = resolveLaunchWorkspace();
@@ -289,11 +289,11 @@ async function collectControlCenterState() {
   };
 }
 
-async function launchClaudex(options = {}) {
+async function launchTau(options = {}) {
   const { requireWorkspace = false, companion = null } = options;
   const configured = vscode.workspace.getConfiguration('claudex');
-  const launchCommand = configured.get('launchCommand', 'claudex');
-  const terminalName = configured.get('terminalName', 'Claudex');
+  const launchCommand = configured.get('launchCommand', 'tau');
+  const terminalName = configured.get('terminalName', 'Tau');
   const activeProvider = getActiveProvider();
   const executable = getExecutableFromCommand(launchCommand);
   const launchWorkspace = resolveLaunchWorkspace();
@@ -318,7 +318,7 @@ async function launchClaudex(options = {}) {
 
   if (!installed) {
     const action = await vscode.window.showErrorMessage(
-      `Claudex command not found: ${executable}. Install it with: npm install -g claudex`,
+      `Tau command not found: ${executable}. Install it with: npm install -g @abdoknbgit/tau`,
       'Open Setup Guide',
       'Open Repository',
     );
@@ -393,7 +393,7 @@ async function switchProvider(statusBarItem) {
   });
 
   const picked = await vscode.window.showQuickPick(items, {
-    placeHolder: 'Select LLM provider for Claudex',
+    placeHolder: 'Select LLM provider for Tau',
     title: 'Switch Provider',
   });
 
@@ -405,7 +405,7 @@ async function switchProvider(statusBarItem) {
     );
     updateStatusBar(statusBarItem);
     vscode.window.showInformationMessage(
-      `Claudex provider set to: ${picked.providerId || 'Auto-detect'}`,
+      `Tau provider set to: ${picked.providerId || 'Auto-detect'}`,
     );
   }
 }
@@ -414,8 +414,8 @@ async function switchProvider(statusBarItem) {
 function updateStatusBar(statusBarItem) {
   const provider = getActiveProvider();
   const label = PROVIDER_LABELS[provider] || 'Auto';
-  statusBarItem.text = `$(zap) Claudex: ${label}`;
-  statusBarItem.tooltip = `Claudex Provider: ${label}\nClick to switch`;
+  statusBarItem.text = `$(zap) Tau: ${label}`;
+  statusBarItem.tooltip = `Tau Provider: ${label}\nClick to switch`;
 }
 
 function getToneClass(tone) {
@@ -515,7 +515,7 @@ function getWorkspaceRootActionDetail(status, fallbackDetail) {
   }
 
   if (status.launchActionsShareTargetReason === 'relative-launch-command') {
-    return `Same workspace-root target as Launch Claudex because the relative command resolves from the workspace root · ${status.workspaceRootCwdLabel}`;
+    return `Same workspace-root target as Launch Tau because the relative command resolves from the workspace root · ${status.workspaceRootCwdLabel}`;
   }
 
   return `Always starts at the workspace root · ${status.workspaceRootCwdLabel}`;
@@ -976,7 +976,7 @@ function renderControlCenterHtml(status, options = {}) {
         <div class="hero-top">
           <div class="brand">
             <div class="eyebrow">${escapeHtml(viewModel.header.eyebrow)}</div>
-            <div class="wordmark" aria-label="Claudex wordmark"><span class="ghost-mascot">&#x1F47B;</span>Claud<span class="wordmark-accent">ex</span></div>
+            <div class="wordmark" aria-label="Tau wordmark">Tau</div>
             <div class="headline">
               <h1 class="headline-title" id="control-center-title">${escapeHtml(viewModel.header.title)}</h1>
               <p class="headline-subtitle">${escapeHtml(viewModel.header.subtitle)}</p>
@@ -1023,11 +1023,11 @@ function renderControlCenterHtml(status, options = {}) {
             </button>
             <button class="support-link" id="repo" type="button">
               <span class="support-link-label">Open Repository</span>
-              <span class="summary-detail">Browse the upstream Claudex project.</span>
+              <span class="summary-detail">Browse the upstream Tau project.</span>
             </button>
             <button class="support-link" id="commands" type="button">
               <span class="support-link-label">Open Command Palette</span>
-              <span class="summary-detail">Access VS Code and Claudex commands quickly.</span>
+              <span class="summary-detail">Access VS Code and Tau commands quickly.</span>
             </button>
           </div>
         </section>
@@ -1088,10 +1088,10 @@ class ClaudexControlCenterProvider {
       const companion = this._getCompanion();
       switch (message?.type) {
         case 'launch':
-          await launchClaudex({ companion });
+          await launchTau({ companion });
           break;
         case 'launchRoot':
-          await launchClaudex({ requireWorkspace: true, companion });
+          await launchTau({ requireWorkspace: true, companion });
           break;
         case 'openProfile':
           await openWorkspaceProfile();
@@ -1228,7 +1228,7 @@ async function startCompanion(context) {
   } = require('./companion/handlers/diff');
   const { createGetDiagnosticsHandler } = require('./companion/handlers/diagnostics');
 
-  const output = vscode.window.createOutputChannel('Claudex Companion');
+  const output = vscode.window.createOutputChannel('Tau Companion');
   context.subscriptions.push(output);
   companionLog = msg => {
     try {
@@ -1300,7 +1300,7 @@ async function startCompanion(context) {
       handler: diffHandlers.close_tab,
     },
     closeAllDiffTabs: {
-      description: 'Close every Claudex-owned diff tab in the IDE.',
+      description: 'Close every Tau-owned diff tab in the IDE.',
       inputSchema: { type: 'object', properties: {} },
       handler: diffHandlers.closeAllDiffTabs,
     },
@@ -1404,13 +1404,13 @@ function activate(context) {
   };
 
   const startCommand = vscode.commands.registerCommand('claudex.start', async () => {
-    await launchClaudex({ companion: getCompanionRef() });
+    await launchTau({ companion: getCompanionRef() });
   });
 
   const startInWorkspaceRootCommand = vscode.commands.registerCommand(
     'claudex.startInWorkspaceRoot',
     async () => {
-      await launchClaudex({ requireWorkspace: true, companion: getCompanionRef() });
+      await launchTau({ requireWorkspace: true, companion: getCompanionRef() });
     },
   );
 

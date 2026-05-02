@@ -397,7 +397,7 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
  *
  * This handles the common case where a previous claudex session crashed
  * and left a stale callback server behind, or the real Codex CLI is
- * occupying the port.  Claudex is a standalone tool and should not
+ * occupying the port.  Tau is a standalone tool and should not
  * require users to hunt down stale listeners manually.
  */
 async function _tryFreePort(port: number): Promise<boolean> {
@@ -613,7 +613,7 @@ function renderSuccessPage(): string {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Signed in - Claudex</title>
+  <title>Signed in - Tau</title>
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -648,7 +648,7 @@ function renderSuccessPage(): string {
   <main class="card">
     <div class="check">&#10003;</div>
     <h1>Signed in</h1>
-    <p>You can close this window and return to Claudex.</p>
+    <p>You can close this window and return to Tau.</p>
   </main>
   <script>setTimeout(function(){ try { window.close() } catch (_) {} }, 1500);</script>
 </body>
@@ -660,7 +660,7 @@ function renderErrorPage(msg: string): string {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Authentication failed - Claudex</title>
+  <title>Authentication failed - Tau</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
@@ -675,7 +675,7 @@ function renderErrorPage(msg: string): string {
 <body>
   <h1>Authentication failed</h1>
   <p>${escapeHtml(msg)}</p>
-  <p>Return to Claudex and run <code>/login</code> to try again.</p>
+  <p>Return to Tau and run <code>/login</code> to try again.</p>
 </body>
 </html>`
 }

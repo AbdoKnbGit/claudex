@@ -21,7 +21,7 @@ function hold(pose: ClawdPose, offset: number, frames: number): Frame[] {
   }))
 }
 
-// Ghost animations with tentacle movement for a more polished feel.
+// Tau sigil animations with a subtle aura shimmer.
 // Jump: crouch, spring up with arms-up. Twice.
 const GHOST_JUMP: readonly Frame[] = [
   ...hold('default', 1, 3), // crouch
@@ -41,7 +41,7 @@ const GHOST_LOOK: readonly Frame[] = [
   ...hold('default', 0, 2),
 ]
 
-// Ghost float: gentle bobbing motion (unique to ghost mascot)
+// Tau float: gentle bobbing motion for the compact sigil.
 const GHOST_FLOAT: readonly Frame[] = [
   ...hold('default', 0, 4),
   ...hold('default', 1, 3), // dip down slightly
@@ -63,14 +63,14 @@ const IDLE: Frame = {
   tentacleFrame: 0,
 }
 const FRAME_MS = 70
-// Idle swim: ten tentacle paths cycle while the body only bobs occasionally.
+// Idle shimmer: cycle the aura while the sigil only bobs occasionally.
 const IDLE_SWIM_MS = 420
-// Height accommodates the refined Clawd avatar plus one cell of headroom for
+// Height accommodates the Tau sigil plus one cell of headroom for
 // the bob animation so the row above never clips.
-const CLAWD_HEIGHT = 7
+const CLAWD_HEIGHT = 8
 
 /**
- * Claudex ghost with click-triggered animations (jump, look-around, float)
+ * Tau sigil with click-triggered animations (jump, look-around, float)
  * plus a subtle idle hover when at rest.
  * Container height is fixed at CLAWD_HEIGHT so surrounding layout never shifts.
  */

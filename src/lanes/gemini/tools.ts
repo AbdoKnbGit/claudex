@@ -2,7 +2,7 @@
  * Gemini Lane — Native Tool Registry
  *
  * Maps Gemini CLI's native tool names (what the model was post-trained on)
- * to ClaudeX's shared tool implementations.
+ * to Tau's shared tool implementations.
  *
  * The model sees these exact names and schemas. They come from:
  *   google-gemini/gemini-cli packages/core/src/tools/definitions/
@@ -431,7 +431,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
   },
 
   // ── list_directory ─────────────────────────────────────────────
-  // Gemini-specific tool — no direct ClaudeX equivalent. Maps to Bash ls.
+  // Gemini-specific tool — no direct Tau equivalent. Maps to Bash ls.
   {
     nativeName: 'list_directory',
     implId: 'Bash',

@@ -336,7 +336,7 @@ function describeSavedProfile(profile) {
 }
 
 function describeProviderState({ shimEnabled, env, profile, activeProvider }) {
-  // If an explicit provider is set via Claudex settings, report it
+  // If an explicit provider is set via Tau settings, report it
   if (activeProvider) {
     const providerLabels = {
       anthropic: 'Anthropic',
@@ -349,7 +349,7 @@ function describeProviderState({ shimEnabled, env, profile, activeProvider }) {
       ollama: 'Ollama',
     };
     const label = providerLabels[activeProvider] || activeProvider;
-    return buildProviderState(label, 'Claudex setting', 'env');
+    return buildProviderState(label, 'Tau setting', 'env');
   }
 
   if (profile) {
@@ -403,7 +403,7 @@ function describeProviderState({ shimEnabled, env, profile, activeProvider }) {
   if (shimEnabled) {
     return buildProviderState(
       'Provider not set',
-      'select a provider in Claudex settings',
+      'select a provider in Tau settings',
       'shim',
     );
   }

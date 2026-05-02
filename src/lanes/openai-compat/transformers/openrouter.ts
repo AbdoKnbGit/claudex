@@ -2,7 +2,7 @@
  * OpenRouter transformer.
  *
  * - Injects `HTTP-Referer` + `X-Title` headers so OpenRouter's
- *   analytics credit ClaudeX.
+ *   analytics credit Tau.
  * - cache_control is PASSED THROUGH for Anthropic/Gemini models (they
  *   natively support it); stripped for everything else so OpenRouter
  *   doesn't surface it as an unknown-field warning.
@@ -35,7 +35,7 @@ export const openrouterTransformer: Transformer = {
   buildHeaders(_apiKey: string): Record<string, string> {
     return {
       'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
-      'X-Title': 'ClaudeX',
+      'X-Title': 'Tau',
     }
   },
 

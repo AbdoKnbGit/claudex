@@ -115,7 +115,7 @@ export type ThemeSetting = (typeof THEME_SETTINGS)[number]
 const lightTheme: Theme = {
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(255,0,135)', // Vibrant pink
-  claude: 'rgb(120,190,120)', // Claudex soft green
+  claude: 'rgb(120,190,120)', // Tau soft green
   claudeShimmer: 'rgb(160,220,160)', // Lighter green shimmer
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(130,165,210)', // Beanie blue for spinner
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(160,195,235)', // Lighter beanie blue shimmer
@@ -158,7 +158,7 @@ const lightTheme: Theme = {
   // Chrome colors
   chromeYellow: 'rgb(251,188,4)', // Chrome yellow
   // TUI V2 colors
-  clawd_body: 'rgb(140,200,140)', // Claudex ghost green
+  clawd_body: 'rgb(140,200,140)', // Tau ghost green
   clawd_background: 'rgb(50,50,60)', // Dark purple-gray for ghost eyes
   userMessageBackground: 'rgb(240, 242, 238)', // Warm light gray with green tint
   userMessageBackgroundHover: 'rgb(248, 250, 246)',
@@ -173,7 +173,7 @@ const lightTheme: Theme = {
   fastModeShimmer: 'rgb(160,195,235)', // Lighter beanie blue
   // Brief/assistant mode
   briefLabelYou: 'rgb(130,165,210)', // Beanie blue
-  briefLabelClaude: 'rgb(120,190,120)', // Claudex green
+  briefLabelClaude: 'rgb(120,190,120)', // Tau green
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -359,7 +359,7 @@ const darkAnsiTheme: Theme = {
 const lightDaltonizedTheme: Theme = {
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(0,102,204)', // Blue instead of pink
-  claude: 'rgb(100,180,100)', // Claudex green (daltonized-safe)
+  claude: 'rgb(100,180,100)', // Tau green (daltonized-safe)
   claudeShimmer: 'rgb(140,210,140)', // Lighter green shimmer
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(51,102,255)', // Bright blue for system spinner
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(101,152,255)', // Lighter bright blue shimmer
@@ -416,7 +416,7 @@ const lightDaltonizedTheme: Theme = {
   fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelClaude: 'rgb(100,180,100)', // Claudex green (daltonized)
+  briefLabelClaude: 'rgb(100,180,100)', // Tau green (daltonized)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -440,7 +440,7 @@ const lightDaltonizedTheme: Theme = {
 const darkTheme: Theme = {
   autoAccept: 'rgb(190,130,255)', // Electric violet (saturated)
   bashBorder: 'rgb(255,95,205)', // Hot magenta neon
-  claude: 'rgb(120,255,220)', // Electric cyan-mint (Claudex signature)
+  claude: 'rgb(120,255,220)', // Electric cyan-mint (Tau signature)
   claudeShimmer: 'rgb(170,255,235)', // Brighter electric cyan shimmer
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(140,180,255)', // Electric cobalt for spinner hat
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(185,215,255)', // Bright electric blue shimmer
@@ -515,13 +515,91 @@ const darkTheme: Theme = {
 }
 
 /**
+ * Tau dark theme: black base with ember red, smoked brown, and warm text.
+ * This intentionally replaces the old RGB-heavy dark palette while keeping
+ * the same theme setting name for existing users.
+ */
+const tauDarkTheme: Theme = {
+  ...darkTheme,
+  autoAccept: 'rgb(224,56,48)',
+  bashBorder: 'rgb(120,50,35)',
+  claude: 'rgb(255,86,66)',
+  claudeShimmer: 'rgb(255,148,116)',
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(204,82,54)',
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(255,130,92)',
+  permission: 'rgb(176,70,48)',
+  permissionShimmer: 'rgb(235,108,76)',
+  planMode: 'rgb(155,74,50)',
+  ide: 'rgb(190,92,62)',
+  promptBorder: 'rgb(115,62,45)',
+  promptBorderShimmer: 'rgb(210,92,62)',
+  text: 'rgb(246,238,226)',
+  inverseText: 'rgb(10,6,5)',
+  inactive: 'rgb(150,112,94)',
+  inactiveShimmer: 'rgb(205,158,132)',
+  subtle: 'rgb(58,36,30)',
+  suggestion: 'rgb(225,116,72)',
+  remember: 'rgb(204,86,60)',
+  background: 'rgb(45,24,20)',
+  success: 'rgb(138,176,116)',
+  error: 'rgb(255,82,72)',
+  warning: 'rgb(232,158,82)',
+  merged: 'rgb(188,82,50)',
+  warningShimmer: 'rgb(255,196,118)',
+  diffAdded: 'rgb(36,68,48)',
+  diffRemoved: 'rgb(92,26,24)',
+  diffAddedDimmed: 'rgb(47,62,49)',
+  diffRemovedDimmed: 'rgb(67,38,34)',
+  diffAddedWord: 'rgb(125,172,102)',
+  diffRemovedWord: 'rgb(238,83,68)',
+  red_FOR_SUBAGENTS_ONLY: 'rgb(244,72,62)',
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(166,103,92)',
+  green_FOR_SUBAGENTS_ONLY: 'rgb(145,170,112)',
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(232,170,82)',
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(175,92,112)',
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(220,104,58)',
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(228,96,116)',
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(155,132,110)',
+  professionalBlue: 'rgb(148,116,108)',
+  chromeYellow: 'rgb(232,174,82)',
+  clawd_body: 'rgb(255,86,66)',
+  clawd_background: 'rgb(10,6,5)',
+  userMessageBackground: 'rgb(31,20,17)',
+  userMessageBackgroundHover: 'rgb(44,27,23)',
+  messageActionsBackground: 'rgb(50,29,24)',
+  selectionBg: 'rgb(105,38,31)',
+  bashMessageBackgroundColor: 'rgb(24,17,15)',
+  memoryBackgroundColor: 'rgb(42,24,21)',
+  rate_limit_fill: 'rgb(220,92,58)',
+  rate_limit_empty: 'rgb(66,42,35)',
+  fastMode: 'rgb(255,102,76)',
+  fastModeShimmer: 'rgb(255,154,116)',
+  briefLabelYou: 'rgb(226,132,86)',
+  briefLabelClaude: 'rgb(255,86,66)',
+  rainbow_red: 'rgb(255,72,62)',
+  rainbow_orange: 'rgb(225,116,72)',
+  rainbow_yellow: 'rgb(232,170,82)',
+  rainbow_green: 'rgb(160,120,88)',
+  rainbow_blue: 'rgb(128,82,68)',
+  rainbow_indigo: 'rgb(165,76,72)',
+  rainbow_violet: 'rgb(210,82,88)',
+  rainbow_red_shimmer: 'rgb(255,136,118)',
+  rainbow_orange_shimmer: 'rgb(255,166,112)',
+  rainbow_yellow_shimmer: 'rgb(255,204,126)',
+  rainbow_green_shimmer: 'rgb(206,158,116)',
+  rainbow_blue_shimmer: 'rgb(176,122,104)',
+  rainbow_indigo_shimmer: 'rgb(214,118,112)',
+  rainbow_violet_shimmer: 'rgb(244,132,140)',
+}
+
+/**
  * Dark daltonized theme (color-blind friendly) using explicit RGB values
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const darkDaltonizedTheme: Theme = {
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(51,153,255)', // Bright blue
-  claude: 'rgb(130,200,130)', // Claudex green (dark daltonized)
+  claude: 'rgb(130,200,130)', // Tau green (dark daltonized)
   claudeShimmer: 'rgb(170,230,170)', // Lighter green shimmer
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(153,204,255)', // Light blue for system spinner
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(183,224,255)', // Lighter blue shimmer
@@ -578,7 +656,7 @@ const darkDaltonizedTheme: Theme = {
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelClaude: 'rgb(100,180,100)', // Claudex green (daltonized)
+  briefLabelClaude: 'rgb(100,180,100)', // Tau green (daltonized)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -597,6 +675,8 @@ const darkDaltonizedTheme: Theme = {
 
 export function getTheme(themeName: ThemeName): Theme {
   switch (themeName) {
+    case 'dark':
+      return tauDarkTheme
     case 'light':
       return lightTheme
     case 'light-ansi':
@@ -608,7 +688,7 @@ export function getTheme(themeName: ThemeName): Theme {
     case 'dark-daltonized':
       return darkDaltonizedTheme
     default:
-      return darkTheme
+      return tauDarkTheme
   }
 }
 

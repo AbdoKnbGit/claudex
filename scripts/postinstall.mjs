@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Claudex postinstall — downloads the platform-correct ripgrep binary
+ * Tau postinstall — downloads the platform-correct ripgrep binary
  * and pre-pulls the approved Ollama cloud model aliases.
  *
- * Runs automatically after `npm install -g @abdoknbgit/claudex`.
+ * Runs automatically after `npm install -g @abdoknbgit/tau`.
  * Skips silently on any error so a network hiccup never breaks the install.
  * The CLI falls back to a system `rg` if the vendored binary is absent,
  * and first-launch code will retry any missed Ollama pulls.
@@ -56,7 +56,7 @@ async function main() {
   const info = PLATFORM_MAP[key];
 
   if (!info) {
-    console.log(`[claudex] ripgrep: unsupported platform ${key}, skipping download (system rg will be used)`);
+    console.log(`[tau] ripgrep: unsupported platform ${key}, skipping download (system rg will be used)`);
     return;
   }
 
@@ -72,7 +72,7 @@ async function main() {
   const url = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${archiveName}`;
   const tmpArchive = join(tmpdir(), archiveName);
 
-  console.log(`[claudex] Downloading ripgrep ${RG_VERSION} for ${key}...`);
+  console.log(`[tau] Downloading ripgrep ${RG_VERSION} for ${key}...`);
 
   try {
     await download(url, tmpArchive);
@@ -81,9 +81,9 @@ async function main() {
     if (process.platform !== 'win32') {
       await chmod(destBinary, 0o755);
     }
-    console.log(`[claudex] ripgrep installed at ${destBinary}`);
+    console.log(`[tau] ripgrep installed at ${destBinary}`);
   } catch (err) {
-    console.warn(`[claudex] ripgrep download failed (${err.message}). The Grep tool will fall back to system rg.`);
+    console.warn(`[tau] ripgrep download failed (${err.message}). The Grep tool will fall back to system rg.`);
   } finally {
     try { if (existsSync(tmpArchive)) unlinkSync(tmpArchive); } catch { /* ignore */ }
   }
@@ -94,7 +94,7 @@ function download(url, dest) {
   return new Promise((resolve, reject) => {
     function get(currentUrl, redirects = 0) {
       if (redirects > 5) return reject(new Error('Too many redirects'));
-      https.get(currentUrl, { headers: { 'User-Agent': 'claudex-postinstall' } }, (res) => {
+      https.get(currentUrl, { headers: { 'User-Agent': 'tau-postinstall' } }, (res) => {
         if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
           res.resume(); // drain so the connection is freed
           return get(res.headers.location, redirects + 1);
@@ -212,7 +212,7 @@ function primeOllamaCloudModels() {
   const probe = spawnSync('ollama', ['--version'], { stdio: 'ignore', timeout: 5000 });
   if (probe.status !== 0) return;
 
-  console.log(`[claudex] Pre-pulling ${OLLAMA_CLOUD_MODELS.length} Ollama cloud aliases...`);
+  console.log(`[tau] Pre-pulling ${OLLAMA_CLOUD_MODELS.length} Ollama cloud aliases...`);
   let ok = 0;
   let fail = 0;
   for (const model of OLLAMA_CLOUD_MODELS) {
@@ -222,7 +222,7 @@ function primeOllamaCloudModels() {
     });
     if (res.status === 0) ok += 1; else fail += 1;
   }
-  console.log(`[claudex] Ollama pre-pull: ${ok} ok, ${fail} skipped/failed (first launch will retry).`);
+  console.log(`[tau] Ollama pre-pull: ${ok} ok, ${fail} skipped/failed (first launch will retry).`);
 }
 
 main()

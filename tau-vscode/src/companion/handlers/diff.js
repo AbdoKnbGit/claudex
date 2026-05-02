@@ -67,7 +67,7 @@ class DiffManager {
    * Opens a diff view and returns a Promise that resolves once the user either
    * accepts (returns the modified content) or rejects (returns null).
    *
-   * Tool-call args from the CLI side (Claude Code naming):
+   * Tool-call args from the CLI side (Tau naming):
    *   { old_file_path, new_file_path, new_file_contents, tab_name }
    */
   async openDiff(args) {
@@ -80,7 +80,7 @@ class DiffManager {
         : '';
     const tabName =
       (args && args.tab_name) ||
-      `${path.basename(newPath || 'untitled')} ↔ Claudex`;
+      `${path.basename(newPath || 'untitled')} ↔ Tau`;
 
     if (!oldPath && !newPath) {
       throw new Error('openDiff requires old_file_path or new_file_path');

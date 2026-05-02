@@ -3,7 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 /**
- * Path the Claudex/Claude Code CLI scans for IDE lockfiles.
+ * Path the Tau/Tau CLI scans for IDE lockfiles.
  * Format: ~/.claude/ide/<port>.lock — JSON describing how to reach this VS Code window.
  * The CLI's lookup logic lives in src/utils/ide.ts (getIdeLockfilesPaths).
  */

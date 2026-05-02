@@ -72,7 +72,7 @@ export async function setup(
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.error(
       chalk.bold.red(
-        'Error: Claudex requires Node.js version 18 or higher.',
+        'Error: Tau requires Node.js version 18 or higher.',
       ),
     )
     process.exit(1)
@@ -419,7 +419,7 @@ export async function setup(
       // (trusted Anthropic-managed launcher intentionally pre-approving everything).
       // Precedent: permissionSetup.ts:861, applySettingsChange.ts:55 (PR #19116)
       process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent' &&
-      // Same for CCD (Claude Code in Desktop) — apps#29127 passes the flag
+      // Same for CCD (Tau in Desktop) — apps#29127 passes the flag
       // unconditionally to unlock mid-session bypass switching
       process.env.CLAUDE_CODE_ENTRYPOINT !== 'claude-desktop'
     ) {

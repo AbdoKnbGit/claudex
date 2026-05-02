@@ -43,7 +43,7 @@ export type AttributedCounter = {
 }
 
 /**
- * Stub for upstream's REPL bridge (inter-Claude messaging). Claudex does
+ * Stub for upstream's REPL bridge (inter-Tau messaging). Tau does
  * not implement this feature — always returns false so callers fall
  * back to the non-bridged code path. Kept so strict-ESM bundlers
  * (esbuild) resolve the import at build time.
@@ -976,7 +976,7 @@ export function setMeter(
     description: 'Number of git commits created',
   })
   STATE.costCounter = createCounter('claude_code.cost.usage', {
-    description: 'Cost of the Claudex session',
+    description: 'Cost of the Tau session',
     unit: 'USD',
   })
   STATE.tokenCounter = createCounter('claude_code.token.usage', {

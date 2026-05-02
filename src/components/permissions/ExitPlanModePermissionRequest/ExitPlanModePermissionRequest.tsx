@@ -600,7 +600,7 @@ export function ExitPlanModePermissionRequest({
     }
     return <PermissionDialog color="planMode" title="Exit plan mode?" workerBadge={workerBadge}>
         <Box flexDirection="column" paddingX={1} marginTop={1}>
-          <Text>Claude wants to exit plan mode</Text>
+          <Text>Tau wants to exit plan mode</Text>
           <Box marginTop={1}>
             <Select options={[{
             label: 'Yes',
@@ -627,7 +627,7 @@ export function ExitPlanModePermissionRequest({
       <PermissionDialog color="planMode" title="Ready to code?" innerPaddingX={0} workerBadge={workerBadge}>
         <Box flexDirection="column" marginTop={1}>
           <Box paddingX={1} flexDirection="column">
-            <Text>Here is Claude&apos;s plan:</Text>
+            <Text>Here is Tau&apos;s plan:</Text>
           </Box>
           <Box borderColor="subtle" borderStyle="dashed" flexDirection="column" borderLeft={false} borderRight={false} paddingX={1} marginBottom={1}
         // Necessary for Windows Terminal to render properly
@@ -644,7 +644,7 @@ export function ExitPlanModePermissionRequest({
                 </Box>}
             {!useStickyFooter && <>
                 <Text dimColor>
-                  Claude has written up a plan and is ready to execute. Would
+                  Tau has written up a plan and is ready to execute. Would
                   you like to proceed?
                 </Text>
                 <Box marginTop={1}>
@@ -730,7 +730,7 @@ export function buildPlanApprovalOptions({
   });
   if (showUltraplan) {
     options.push({
-      label: 'No, refine with Ultraplan on Claudex on the web',
+      label: 'No, refine with Ultraplan on Tau on the web',
       value: 'ultraplan'
     });
   }
@@ -738,7 +738,7 @@ export function buildPlanApprovalOptions({
     type: 'input',
     label: 'No, keep planning',
     value: 'no',
-    placeholder: 'Tell Claude what to change',
+    placeholder: 'Tell Tau what to change',
     description: 'shift+tab to approve with this feedback',
     onChange: onFeedbackChange
   });

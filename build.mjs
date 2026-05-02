@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Claudex Build Script (Node + esbuild)
+ * Tau Build Script (Node + esbuild)
  *
  * Bundles the CLI from TypeScript source into a single distributable JS
  * file that runs on Node.js >=20. Mirrors the original Bun-based build
@@ -103,8 +103,8 @@ export default proxy;
 
 // ─── esbuild bundle ────────────────────────────────────────────────
 
-const claudexPlugin = {
-  name: 'claudex-build',
+const tauPlugin = {
+  name: 'tau-build',
   setup(build) {
     // Shim bun:bundle — feature() returns false for all features in
     // external builds (removes ant-internal code paths).
@@ -238,7 +238,7 @@ const result = await build({
     ),
     'process.env.USER_TYPE': JSON.stringify('external'),
   },
-  plugins: [claudexPlugin],
+  plugins: [tauPlugin],
   logLevel: 'warning',
 })
 
@@ -264,7 +264,7 @@ if (!code.startsWith('#!')) {
   // the `&& …` chain short-circuits to false either way.
   patched = patched.replace(/!configReadingAllowed\s*&&\s*/g, 'false && ')
 
-  // Disable remote version check — Claudex has its own versioning
+  // Disable remote version check — Tau has its own versioning
   patched = patched.replace(
     /async function assertMinVersion\(\)\s*\{/,
     'async function assertMinVersion() { return;',

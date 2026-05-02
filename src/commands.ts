@@ -196,7 +196,7 @@ import stats from './commands/stats/index.js'
 const usageReport: Command = {
   type: 'prompt',
   name: 'insights',
-  description: 'Generate a report analyzing your Claudex sessions',
+  description: 'Generate a report analyzing your Tau sessions',
   contentLength: 0,
   progressMessage: 'analyzing your sessions',
   source: 'builtin',

@@ -33,7 +33,7 @@ function buildActionModel({ canLaunchInWorkspaceRoot, workspaceProfilePath } = {
   return {
     primary: {
       id: 'launch',
-      label: 'Launch Claudex',
+      label: 'Launch Tau',
       detail: 'Use the resolved project-aware launch directory',
       tone: 'accent',
       disabled: false,
@@ -108,7 +108,7 @@ function buildControlCenterViewModel(status = {}) {
 
   return {
     header: {
-      eyebrow: 'Claudex Control Center',
+      eyebrow: 'Tau Control Center',
       title: 'Multi-provider AI coding companion',
       subtitle:
         'Provider status, predictable launch behavior, and quick access to the workflows you actually use.',
@@ -176,7 +176,7 @@ function buildControlCenterViewModel(status = {}) {
         rows: [
           {
             key: 'runtime',
-            label: 'Claudex executable',
+            label: 'Tau executable',
             summary: runtimeSummary,
             detail: runtimeDetail,
             tone: getRuntimeTone(status.installed),

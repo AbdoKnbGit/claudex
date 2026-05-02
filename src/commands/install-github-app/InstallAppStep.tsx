@@ -26,14 +26,14 @@ export function InstallAppStep(t0) {
   useKeybinding("confirm:yes", onSubmit, t1);
   let t2;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Box flexDirection="column" marginBottom={1}><Text bold={true}>Install the Claude GitHub App</Text></Box>;
+    t2 = <Box flexDirection="column" marginBottom={1}><Text bold={true}>Install the Tau GitHub App</Text></Box>;
     $[1] = t2;
   } else {
     t2 = $[1];
   }
   let t3;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = <Box marginBottom={1}><Text>Opening browser to install the Claude GitHub App…</Text></Box>;
+    t3 = <Box marginBottom={1}><Text>Opening browser to install the Tau GitHub App…</Text></Box>;
     $[2] = t3;
   } else {
     t3 = $[2];

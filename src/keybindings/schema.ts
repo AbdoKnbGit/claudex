@@ -224,7 +224,7 @@ export const KeybindingsSchema = lazySchema(() =>
         .describe('Array of keybinding blocks by context'),
     })
     .describe(
-      'Claudex keybindings configuration. Customize keyboard shortcuts by context.',
+      'Tau keybindings configuration. Customize keyboard shortcuts by context.',
     ),
 )
 

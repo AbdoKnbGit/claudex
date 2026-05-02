@@ -54,8 +54,8 @@ export function completeOnboarding(): void {
 function assertTerminalWritable(): void {
   if (process.stdout.destroyed || !process.stdout.writable) {
     process.stderr.write(
-      'claudex: stdout is not writable.\n' +
-      'Run claudex in a real terminal, or use -p/--print for headless mode.\n',
+      'Tau: stdout is not writable.\n' +
+      'Run Tau in a real terminal, or use -p/--print for headless mode.\n',
     )
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
@@ -77,9 +77,9 @@ function assertTerminalWritable(): void {
 
   if (!looksLikeTerminal) {
     process.stderr.write(
-      'claudex: no interactive terminal detected.\n' +
+      'Tau: no interactive terminal detected.\n' +
       'Use -p/--print for non-interactive/scripted use,\n' +
-      'or run claudex inside a real terminal session.\n',
+      'or run Tau inside a real terminal session.\n',
     )
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
@@ -268,12 +268,12 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
   // Defer to next tick so the OTel dynamic import resolves after first render
   // instead of during the pre-render microtask queue.
   setImmediate(() => initializeTelemetryAfterTrust());
-  trace('skipping grove check (disabled in Claudex)');
+  trace('skipping grove check (disabled in Tau)');
 
   trace('after grove check');
   // Check for custom API key
   // On homespace, ANTHROPIC_API_KEY is preserved in process.env for child
-  // processes but ignored by Claude Code itself (see auth.ts).
+  // processes but ignored by Tau itself (see auth.ts).
   if (process.env.ANTHROPIC_API_KEY && !isRunningOnHomespace()) {
     const customApiKeyTruncated = normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY);
     const keyStatus = getCustomApiKeyStatus(customApiKeyTruncated);

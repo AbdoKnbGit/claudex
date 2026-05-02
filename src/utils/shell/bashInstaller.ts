@@ -103,7 +103,7 @@ export function runBashInstall(plan: InstallPlan): InstallResult {
     return {
       ok: false,
       message:
-        `Command completed, but claudex still cannot find a current bash. ` +
+        `Command completed, but Tau still cannot find a current bash. ` +
         `Detected: ${status.versionLine ?? 'none'}. You can run \`${plan.command}\` manually to retry.`,
       command: plan.command,
     }
@@ -141,7 +141,7 @@ function planWindows(status: BashStatus): InstallPlan {
     command: '',
     manualUrl: 'https://git-scm.com/download/win',
     manualNote:
-      'winget not available. Download Git for Windows from https://git-scm.com/download/win and run claudex again.',
+      'winget not available. Download Git for Windows from https://git-scm.com/download/win and run Tau again.',
   }
 }
 
@@ -163,7 +163,7 @@ function planMacOS(status: BashStatus): InstallPlan {
     command: '',
     manualUrl: 'https://brew.sh',
     manualNote:
-      'Homebrew not detected. Install it from https://brew.sh and re-run claudex; macOS ships only bash 3.2 and brew is the standard upgrade path.',
+      'Homebrew not detected. Install it from https://brew.sh and re-run Tau; macOS ships only bash 3.2 and brew is the standard upgrade path.',
   }
 }
 

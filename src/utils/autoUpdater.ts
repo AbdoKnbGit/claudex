@@ -61,7 +61,7 @@ export type MaxVersionConfig = {
  *
  * Versioning approach:
  * 1. For version requirements/compatibility (assertMinVersion), we use semver comparison that ignores build metadata
- * 2. For updates ('claudex update'), we use exact string comparison to detect any change, including SHA
+ * 2. For updates ('tau update'), we use exact string comparison to detect any change, including SHA
  *    - This ensures users always get the latest build, even when only the SHA changes
  *    - The UI clearly shows both versions including build metadata
  *
@@ -83,11 +83,11 @@ export async function assertMinVersion(): Promise<void> {
     ) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.error(`
-It looks like your version of Claude Code (${MACRO.VERSION}) needs an update.
+It looks like your version of Tau (${MACRO.VERSION}) needs an update.
 A newer version (${versionConfig.minVersion} or higher) is required to continue.
 
 To update, please run:
-    claudex update
+    tau update
 
 This will ensure you have access to the latest features and improvements.
 `)
@@ -457,7 +457,7 @@ export async function installGlobalPackage(
   specificVersion?: string | null,
 ): Promise<InstallStatus> {
   const isAnthropicPackage = MACRO.PACKAGE_URL.startsWith('@anthropic-ai/')
-  const productName = isAnthropicPackage ? 'Claude Code' : 'Claudex'
+  const productName = isAnthropicPackage ? 'Tau' : 'Tau'
 
   if (!(await acquireLock())) {
     logError(

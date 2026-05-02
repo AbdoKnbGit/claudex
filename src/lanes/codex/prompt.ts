@@ -28,7 +28,7 @@ import {
  * function. The prompt reflects that.
  */
 const CODEX_LANE_PREAMBLE = [
-  `You are Codex, a coding agent running in the ClaudeX terminal — pair-programming with the user to read, analyze, modify, and ship code. Be concise, direct, and friendly.`,
+  `You are Codex, a coding agent running in the Tau terminal — pair-programming with the user to read, analyze, modify, and ship code. Be concise, direct, and friendly.`,
 
   `## Plan before acting
 

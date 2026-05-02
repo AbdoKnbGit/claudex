@@ -1,6 +1,6 @@
 // VS Code's diagnostic severity values are 0–3 (Error, Warning, Info, Hint).
 // We translate to short strings so the CLI's prompt formatter stays
-// implementation-agnostic — matches Claude Code's own getDiagnostics shape.
+// implementation-agnostic — matches Tau's own getDiagnostics shape.
 const SEVERITY_LABELS = ['Error', 'Warning', 'Information', 'Hint'];
 
 function severityLabel(severity) {
@@ -33,7 +33,7 @@ function diagnosticToWire(diag) {
  * Build the getDiagnostics handler. `vscodeApi` is injected so the unit tests
  * can run without spinning up a VS Code extension host.
  *
- * Args contract (matches Claude Code's MCP IDE tool):
+ * Args contract (matches Tau's MCP IDE tool):
  *   { uri?: string }  — file URI to scope to. Omit for all workspace diagnostics.
  *
  * Return shape: a single text content block whose JSON body is an array of

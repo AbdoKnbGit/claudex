@@ -11,7 +11,7 @@
  * No user will type this in normal use — auto-routing already does the
  * right thing. Kept around for: debugging weird dispatch, probing a new
  * model's routing at install time, temporarily steering around a
- * degraded lane without restarting claudex.
+ * degraded lane without restarting Tau.
  */
 
 import type { LocalCommandCall } from '../../types/command.js'
@@ -131,7 +131,7 @@ function renderWhy(model: string): string {
     `Reason: ${route.reason}`,
     route.lane ? `Closest lane: ${route.lane}` : '',
     '',
-    'This model falls through to the legacy provider path. Anthropic / Claude',
+    'This model falls through to the legacy provider path. Anthropic / Tau',
     'models always take this path — that IS the native Anthropic Messages API',
     'path (see services/api/claude.ts).',
   ].filter(Boolean).join('\n')
@@ -148,7 +148,7 @@ function renderToggle(name: string, enable: boolean): string {
   }
   const setter = (lane as { setHealthy?: (b: boolean) => void }).setHealthy
   if (typeof setter !== 'function') {
-    return `Lane "${name}" does not expose setHealthy(). Rebuild claudex or report this.`
+    return `Lane "${name}" does not expose setHealthy(). Rebuild Tau or report this.`
   }
   setter.call(lane, enable)
   return enable

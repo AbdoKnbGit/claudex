@@ -94,7 +94,7 @@ export function FirstRunProviderSetup({ onDone }: Props): React.ReactNode {
       <Text bold>Connect an AI provider</Text>
       <Box flexDirection="column" width={70}>
         <Text dimColor>
-          Claudex works with multiple AI providers. Pick one to get started —
+          Tau works with multiple AI providers. Pick one to get started —
           we&apos;ll store the credentials locally so you never have to set
           environment variables.
         </Text>

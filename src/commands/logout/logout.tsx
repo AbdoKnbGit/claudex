@@ -39,7 +39,7 @@ import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutH
  * - For third-party providers: deletes only that provider's stored keys/tokens.
  *
  * If no provider is passed, defaults to the currently active provider — this
- * keeps the legacy CLI subcommand (`claude auth logout`) working unchanged.
+ * keeps the legacy CLI subcommand (`tau auth logout`) working unchanged.
  */
 export async function performLogout({
   clearOnboarding = false,

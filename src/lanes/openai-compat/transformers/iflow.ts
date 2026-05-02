@@ -25,12 +25,12 @@ export const iflowTransformer: Transformer = {
 
   buildHeaders(_apiKey: string): Record<string, string> {
     // Bearer is added by the generic header path. Extras identify the
-    // session as a ClaudeX IDE request (matches iflow's expected
+    // session as a Tau IDE request (matches iflow's expected
     // User-Agent shape for chat endpoints).
     return {
-      'User-Agent': 'ClaudeX/0.4.0 (+https://github.com/AbdoKnbGit/claudex)',
+      'User-Agent': 'Tau/0.4.0 (+https://github.com/AbdoKnbGit/claudex)',
       'X-Source': 'claudex',
-      'X-Title': 'ClaudeX',
+      'X-Title': 'Tau',
     }
   },
 

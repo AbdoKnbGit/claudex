@@ -3,13 +3,13 @@ import { registerBundledSkill } from '../bundledSkills.js'
 // Prompt text contains `ps` commands as instructions for Claude to run,
 // not commands this file executes.
 // eslint-disable-next-line custom-rules/no-direct-ps-commands
-const STUCK_PROMPT = `# /stuck — diagnose frozen/slow Claudex sessions
+const STUCK_PROMPT = `# /stuck — diagnose frozen/slow Tau sessions
 
-The user thinks another Claudex session on this machine is frozen, stuck, or very slow. Investigate and post a report to #claude-code-feedback.
+The user thinks another Tau session on this machine is frozen, stuck, or very slow. Investigate and post a report to #claude-code-feedback.
 
 ## What to look for
 
-Scan for other Claudex processes (excluding the current one — PID is in \`process.pid\` but for shell commands just exclude the PID you see running this prompt). Process names are typically \`claude\` (installed) or \`cli\` (native dev build).
+Scan for other Tau processes (excluding the current one — PID is in \`process.pid\` but for shell commands just exclude the PID you see running this prompt). Process names are typically \`claude\` (installed) or \`cli\` (native dev build).
 
 Signs of a stuck session:
 - **High CPU (≥90%) sustained** — likely an infinite loop. Sample twice, 1-2s apart, to confirm it's not a transient spike.
@@ -21,7 +21,7 @@ Signs of a stuck session:
 
 ## Investigation steps
 
-1. **List all Claudex processes** (macOS/Linux):
+1. **List all Tau processes** (macOS/Linux):
    \`\`\`
    ps -axo pid=,pcpu=,rss=,etime=,state=,comm=,command= | grep -E '(claude|cli)' | grep -v grep
    \`\`\`
@@ -45,7 +45,7 @@ If you did find a stuck/slow session, post to **#claude-code-feedback** (channel
 
 **Use a two-message structure** to keep the channel scannable:
 
-1. **Top-level message** — one short line: hostname, Claudex version, and a terse symptom (e.g. "session PID 12345 pegged at 100% CPU for 10min" or "git subprocess hung in D state"). No code blocks, no details.
+1. **Top-level message** — one short line: hostname, Tau version, and a terse symptom (e.g. "session PID 12345 pegged at 100% CPU for 10min" or "git subprocess hung in D state"). No code blocks, no details.
 2. **Thread reply** — the full diagnostic dump. Pass the top-level message's \`ts\` as \`thread_ts\`. Include:
    - PID, CPU%, RSS, state, uptime, command line, child processes
    - Your diagnosis of what's likely wrong
@@ -66,7 +66,7 @@ export function registerStuckSkill(): void {
   registerBundledSkill({
     name: 'stuck',
     description:
-      '[ANT-ONLY] Investigate frozen/stuck/slow Claudex sessions on this machine and post a diagnostic report to #claude-code-feedback.',
+      '[ANT-ONLY] Investigate frozen/stuck/slow Tau sessions on this machine and post a diagnostic report to #claude-code-feedback.',
     userInvocable: true,
     async getPromptForCommand(args) {
       let prompt = STUCK_PROMPT

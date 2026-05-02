@@ -1,5 +1,5 @@
 /**
- * Claudex Build Script
+ * Tau Build Script
  *
  * Uses Bun's bundler to compile the CLI from TypeScript source into a
  * single distributable JS file that runs on Node.js >=20.
@@ -111,7 +111,7 @@ const result = await Bun.build({
 
   plugins: [
     {
-      name: 'claudex-build',
+      name: 'tau-build',
       setup(build) {
         // Shim bun:bundle — feature() returns false for all features
         // in external builds (removes ant-internal code paths)
@@ -207,7 +207,7 @@ if (!result.success) {
   process.exit(1);
 }
 
-// Prepend shebang so `claudex` works as a direct executable
+// Prepend shebang so `tau` works as a direct executable
 const outPath = './dist/cli.mjs';
 const code = readFileSync(outPath, 'utf8');
 if (!code.startsWith('#!')) {
@@ -221,7 +221,7 @@ if (!code.startsWith('#!')) {
     'false'
   );
 
-  // Disable remote version check — Claudex has its own versioning
+  // Disable remote version check — Tau has its own versioning
   patched = patched.replace(
     /async function assertMinVersion\(\)\s*\{/,
     'async function assertMinVersion() { return;'

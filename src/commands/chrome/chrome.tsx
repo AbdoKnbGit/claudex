@@ -197,14 +197,14 @@ function ClaudeInChromeMenu(t0) {
   }
   let t6;
   if ($[20] === Symbol.for("react.memo_cache_sentinel")) {
-    t6 = <Text>Claude in Chrome works with the Chrome extension to let you control your browser directly from Claudex. Navigate websites, fill forms, capture screenshots, record GIFs, and debug with console logs and network requests.</Text>;
+    t6 = <Text>Tau in Chrome works with the Chrome extension to let you control your browser directly from Tau. Navigate websites, fill forms, capture screenshots, record GIFs, and debug with console logs and network requests.</Text>;
     $[20] = t6;
   } else {
     t6 = $[20];
   }
   let t7;
   if ($[21] !== isWSL) {
-    t7 = isWSL && <Text color="error">Claude in Chrome is not supported in WSL at this time.</Text>;
+    t7 = isWSL && <Text color="error">Tau in Chrome is not supported in WSL at this time.</Text>;
     $[21] = isWSL;
     $[22] = t7;
   } else {
@@ -212,7 +212,7 @@ function ClaudeInChromeMenu(t0) {
   }
   let t8;
   if ($[23] !== isClaudeAISubscriber) {
-    t8 = true && !isClaudeAISubscriber && <Text color="error">Claude in Chrome requires a claude.ai subscription.</Text>;
+    t8 = true && !isTauAISubscriber && <Text color="error">Tau in Chrome requires a claude.ai subscription.</Text>;
     $[23] = isClaudeAISubscriber;
     $[24] = t8;
   } else {
@@ -220,7 +220,7 @@ function ClaudeInChromeMenu(t0) {
   }
   let t9;
   if ($[25] !== handleAction || $[26] !== isConnected || $[27] !== isDisabled || $[28] !== isExtensionInstalled || $[29] !== options || $[30] !== selectKey || $[31] !== showInstallHint) {
-    t9 = !isDisabled && <>{!isHomespace && <Box flexDirection="column"><Text>Status:{" "}{isConnected ? <Text color="success">Enabled</Text> : <Text color="inactive">Disabled</Text>}</Text><Text>Extension:{" "}{isExtensionInstalled ? <Text color="success">Installed</Text> : <Text color="warning">Not detected</Text>}</Text></Box>}<Select key={selectKey} options={options} onChange={handleAction} hideIndexes={true} />{showInstallHint && <Text color="warning">Once installed, select {"\"Reconnect extension\""} to connect.</Text>}<Text><Text dimColor={true}>Usage: </Text><Text>claude --chrome</Text><Text dimColor={true}> or </Text><Text>claude --no-chrome</Text></Text><Text dimColor={true}>Site-level permissions are inherited from the Chrome extension. Manage permissions in the Chrome extension settings to control which sites Claude can browse, click, and type on.</Text></>;
+    t9 = !isDisabled && <>{!isHomespace && <Box flexDirection="column"><Text>Status:{" "}{isConnected ? <Text color="success">Enabled</Text> : <Text color="inactive">Disabled</Text>}</Text><Text>Extension:{" "}{isExtensionInstalled ? <Text color="success">Installed</Text> : <Text color="warning">Not detected</Text>}</Text></Box>}<Select key={selectKey} options={options} onChange={handleAction} hideIndexes={true} />{showInstallHint && <Text color="warning">Once installed, select {"\"Reconnect extension\""} to connect.</Text>}<Text><Text dimColor={true}>Usage: </Text><Text>tau --chrome</Text><Text dimColor={true}> or </Text><Text>tau --no-chrome</Text></Text><Text dimColor={true}>Site-level permissions are inherited from the Chrome extension. Manage permissions in the Chrome extension settings to control which sites Tau can browse, click, and type on.</Text></>;
     $[25] = handleAction;
     $[26] = isConnected;
     $[27] = isDisabled;
@@ -251,7 +251,7 @@ function ClaudeInChromeMenu(t0) {
   }
   let t12;
   if ($[38] !== t11 || $[39] !== t5) {
-    t12 = <Dialog title="Claude in Chrome (Beta)" onCancel={t5} color="chromeYellow">{t11}</Dialog>;
+    t12 = <Dialog title="Tau in Chrome (Beta)" onCancel={t5} color="chromeYellow">{t11}</Dialog>;
     $[38] = t11;
     $[39] = t5;
     $[40] = t12;

@@ -28,7 +28,7 @@ export const kilocodeTransformer: Transformer = {
     const orgId = getKiloCodeOrgId()
     const headers: Record<string, string> = {
       'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
-      'X-Title': 'ClaudeX',
+      'X-Title': 'Tau',
       'X-Kilocode-Version': '0.4.0',
     }
     if (orgId) headers['X-Kilocode-OrganizationID'] = orgId

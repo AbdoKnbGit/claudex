@@ -76,24 +76,24 @@ test('parseProfileFile returns null when env is not an object', () => {
 
 test('resolveCommandCheckPath resolves workspace-relative executables', () => {
   assert.equal(
-    resolveCommandCheckPath('./node_modules/.bin/claudex', '/repo'),
-    require('node:path').resolve('/repo', './node_modules/.bin/claudex'),
+    resolveCommandCheckPath('./node_modules/.bin/tau', '/repo'),
+    require('node:path').resolve('/repo', './node_modules/.bin/tau'),
   );
 });
 
 test('resolveCommandCheckPath leaves bare commands alone', () => {
-  assert.equal(resolveCommandCheckPath('claudex', '/repo'), null);
+  assert.equal(resolveCommandCheckPath('tau', '/repo'), null);
 });
 
 test('findCommandPath treats shell-like input as a literal executable name', t => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudex-command-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tau-command-'));
   t.after(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   const commandName = process.platform === 'win32'
-    ? 'claudex & whoami'
-    : 'claudex && whoami';
+    ? 'tau & whoami'
+    : 'tau && whoami';
   const executableName = process.platform === 'win32'
     ? `${commandName}.cmd`
     : commandName;
@@ -186,7 +186,7 @@ test('describeProviderState reports not-set when only the shim is enabled', () =
     }),
     {
       label: 'Provider not set',
-      detail: 'select a provider in Claudex settings',
+      detail: 'select a provider in Tau settings',
       source: 'shim',
     },
   );
@@ -217,7 +217,7 @@ test('describeProviderState respects activeProvider setting', () => {
     }),
     {
       label: 'Groq',
-      detail: 'Claudex setting',
+      detail: 'Tau setting',
       source: 'env',
     },
   );

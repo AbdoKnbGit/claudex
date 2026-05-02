@@ -16,7 +16,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { getDoctorDiagnostic } from 'src/utils/doctorDiagnostic.js'
 import { gracefulShutdown } from 'src/utils/gracefulShutdown.js'
 import {
-  installOrUpdateClaudePackage,
+  installOrUpdateTauPackage,
   localInstallationExists,
 } from 'src/utils/localInstaller.js'
 import {
@@ -28,20 +28,20 @@ import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
 import { getInitialSettings } from 'src/utils/settings/settings.js'
 
-function isClaudexNpmPackage(): boolean {
-  return MACRO.PACKAGE_URL === '@abdoknbgit/claudex'
+function isTauNpmPackage(): boolean {
+  return MACRO.PACKAGE_URL === '@abdoknbgit/tau'
 }
 
-async function updateClaudexFromNpm(): Promise<void> {
-  writeToStdout('Checking npm for latest Claudex version...\n')
+async function updateTauFromNpm(): Promise<void> {
+  writeToStdout('Checking npm for latest Tau version...\n')
 
   const latestVersion = await getLatestVersion('latest')
   logForDebugging(
-    `update: Latest Claudex version from npm: ${latestVersion || 'FAILED'}`,
+    `update: Latest Tau version from npm: ${latestVersion || 'FAILED'}`,
   )
 
   if (!latestVersion) {
-    process.stderr.write(chalk.red('Failed to check for Claudex updates') + '\n')
+    process.stderr.write(chalk.red('Failed to check for Tau updates') + '\n')
     process.stderr.write('Unable to fetch latest version from npm registry\n')
     process.stderr.write('\n')
     process.stderr.write('Try:\n')
@@ -54,24 +54,24 @@ async function updateClaudexFromNpm(): Promise<void> {
 
   if (latestVersion === MACRO.VERSION || gte(MACRO.VERSION, latestVersion)) {
     writeToStdout(
-      chalk.green(`Claudex is up to date (${MACRO.VERSION})`) + '\n',
+      chalk.green(`Tau is up to date (${MACRO.VERSION})`) + '\n',
     )
     await gracefulShutdown(0)
   }
 
   writeToStdout(
-    `New Claudex version available: ${latestVersion} (current: ${MACRO.VERSION}) - run claudex update\n`,
+    `New Tau version available: ${latestVersion} (current: ${MACRO.VERSION}) - run tau update\n`,
   )
   writeToStdout(`Installing ${MACRO.PACKAGE_URL}@${latestVersion} globally...\n`)
 
   const status = await installGlobalPackage(latestVersion)
-  logForDebugging(`update: Claudex npm installation status: ${status}`)
+  logForDebugging(`update: Tau npm installation status: ${status}`)
 
   switch (status) {
     case 'success':
       writeToStdout(
         chalk.green(
-          `Successfully updated Claudex from ${MACRO.VERSION} to ${latestVersion}`,
+          `Successfully updated Tau from ${MACRO.VERSION} to ${latestVersion}`,
         ) + '\n',
       )
       await regenerateCompletionCache()
@@ -79,14 +79,14 @@ async function updateClaudexFromNpm(): Promise<void> {
       break
     case 'no_permissions':
       process.stderr.write(
-        'Error: Insufficient permissions to install Claudex update\n',
+        'Error: Insufficient permissions to install Tau update\n',
       )
       process.stderr.write('Try manually updating with:\n')
       process.stderr.write(`  npm install -g ${MACRO.PACKAGE_URL}@latest\n`)
       await gracefulShutdown(1)
       break
     case 'install_failed':
-      process.stderr.write('Error: Failed to install Claudex update\n')
+      process.stderr.write('Error: Failed to install Tau update\n')
       process.stderr.write('Try manually updating with:\n')
       process.stderr.write(`  npm install -g ${MACRO.PACKAGE_URL}@latest\n`)
       await gracefulShutdown(1)
@@ -105,8 +105,8 @@ export async function update() {
   logEvent('tengu_update_check', {})
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
 
-  if (isClaudexNpmPackage()) {
-    await updateClaudexFromNpm()
+  if (isTauNpmPackage()) {
+    await updateTauFromNpm()
     return
   }
 
@@ -200,7 +200,7 @@ export async function update() {
     writeToStdout('\n')
 
     if (packageManager === 'homebrew') {
-      writeToStdout('Claude is managed by Homebrew.\n')
+      writeToStdout('Tau is managed by Homebrew.\n')
       const latest = await getLatestVersion(channel)
       if (latest && !gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
@@ -208,10 +208,10 @@ export async function update() {
         writeToStdout('To update, run:\n')
         writeToStdout(chalk.bold('  brew upgrade claude-code') + '\n')
       } else {
-        writeToStdout('Claude is up to date!\n')
+        writeToStdout('Tau is up to date!\n')
       }
     } else if (packageManager === 'winget') {
-      writeToStdout('Claude is managed by winget.\n')
+      writeToStdout('Tau is managed by winget.\n')
       const latest = await getLatestVersion(channel)
       if (latest && !gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
@@ -221,10 +221,10 @@ export async function update() {
           chalk.bold('  winget upgrade Anthropic.ClaudeCode') + '\n',
         )
       } else {
-        writeToStdout('Claude is up to date!\n')
+        writeToStdout('Tau is up to date!\n')
       }
     } else if (packageManager === 'apk') {
-      writeToStdout('Claude is managed by apk.\n')
+      writeToStdout('Tau is managed by apk.\n')
       const latest = await getLatestVersion(channel)
       if (latest && !gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
@@ -232,13 +232,13 @@ export async function update() {
         writeToStdout('To update, run:\n')
         writeToStdout(chalk.bold('  apk upgrade claude-code') + '\n')
       } else {
-        writeToStdout('Claude is up to date!\n')
+        writeToStdout('Tau is up to date!\n')
       }
     } else {
       // pacman, deb, and rpm don't get specific commands because they each have
       // multiple frontends (pacman: yay/paru/makepkg, deb: apt/apt-get/aptitude/nala,
       // rpm: dnf/yum/zypper)
-      writeToStdout('Claude is managed by a package manager.\n')
+      writeToStdout('Tau is managed by a package manager.\n')
       writeToStdout('Please use your package manager to update.\n')
     }
 
@@ -305,7 +305,7 @@ export async function update() {
           : ''
         writeToStdout(
           chalk.yellow(
-            `Another Claude process${pidInfo} is currently running. Please try again in a moment.`,
+            `Another Tau process${pidInfo} is currently running. Please try again in a moment.`,
           ) + '\n',
         )
         await gracefulShutdown(0)
@@ -318,7 +318,7 @@ export async function update() {
 
       if (result.latestVersion === MACRO.VERSION) {
         writeToStdout(
-          chalk.green(`Claudex is up to date (${MACRO.VERSION})`) + '\n',
+          chalk.green(`Tau is up to date (${MACRO.VERSION})`) + '\n',
         )
       } else {
         writeToStdout(
@@ -332,7 +332,7 @@ export async function update() {
     } catch (error) {
       process.stderr.write('Error: Failed to install native update\n')
       process.stderr.write(String(error) + '\n')
-      process.stderr.write('Try running "claude doctor" for diagnostics\n')
+      process.stderr.write('Try running "tau doctor" for diagnostics\n')
       await gracefulShutdown(1)
     }
   }
@@ -388,13 +388,13 @@ export async function update() {
   // Check if versions match exactly, including any build metadata (like SHA)
   if (latestVersion === MACRO.VERSION) {
     writeToStdout(
-      chalk.green(`Claudex is up to date (${MACRO.VERSION})`) + '\n',
+      chalk.green(`Tau is up to date (${MACRO.VERSION})`) + '\n',
     )
     await gracefulShutdown(0)
   }
 
   writeToStdout(
-    `New version available: ${latestVersion} (current: ${MACRO.VERSION}) - run claudex update\n`,
+    `New version available: ${latestVersion} (current: ${MACRO.VERSION}) - run tau update\n`,
   )
   writeToStdout('Installing update...\n')
 
@@ -440,9 +440,9 @@ export async function update() {
 
   if (useLocalUpdate) {
     logForDebugging(
-      'update: Calling installOrUpdateClaudePackage() for local update',
+      'update: Calling installOrUpdateTauPackage() for local update',
     )
-    status = await installOrUpdateClaudePackage(channel)
+    status = await installOrUpdateTauPackage(channel)
   } else {
     logForDebugging('update: Calling installGlobalPackage() for global update')
     status = await installGlobalPackage()
@@ -471,7 +471,7 @@ export async function update() {
       } else {
         process.stderr.write('Try running with sudo or fix npm permissions\n')
         process.stderr.write(
-          'Or consider using native installation with: claude install\n',
+          'Or consider using native installation with: tau install\n',
         )
       }
       await gracefulShutdown(1)
@@ -485,7 +485,7 @@ export async function update() {
         )
       } else {
         process.stderr.write(
-          'Or consider using native installation with: claude install\n',
+          'Or consider using native installation with: tau install\n',
         )
       }
       await gracefulShutdown(1)

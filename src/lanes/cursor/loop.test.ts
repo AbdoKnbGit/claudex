@@ -249,5 +249,25 @@ test('Cursor prefers top-level title/detail errors for auth failures', () => {
   )
 })
 
+test('Cursor preserves usage-limit title/detail text for fallback detection', () => {
+  const message = formatCursorApiError(
+    402,
+    JSON.stringify({
+      details: {
+        title: "You've hit your usage limit",
+        detail: 'Get Cursor Pro for more Agent usage, unlimited Tab, and more.',
+      },
+    }),
+    'default',
+  )
+  assert(
+    message === [
+      "You've hit your usage limit",
+      'Get Cursor Pro for more Agent usage, unlimited Tab, and more.',
+    ].join('\n'),
+    `wrong usage-limit detail message: ${JSON.stringify(message)}`,
+  )
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

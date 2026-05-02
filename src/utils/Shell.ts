@@ -189,8 +189,8 @@ const resolveProvider: Record<ShellType, () => Promise<ShellProvider>> = {
     if (config) return config.provider
     throw new Error(
       getPlatform() === 'windows'
-        ? 'Git Bash is required for Bash commands. Install Git for Windows and restart claudex.'
-        : 'No suitable shell found. Install bash and restart claudex.',
+        ? 'Git Bash is required for Bash commands. Install Git for Windows and restart Tau.'
+        : 'No suitable shell found. Install bash and restart Tau.',
     )
   },
   powershell: getPsProvider,

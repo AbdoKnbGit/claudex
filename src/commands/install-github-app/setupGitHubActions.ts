@@ -86,7 +86,7 @@ async function createWorkflowFile(
         ...context,
       })
       throw new Error(
-        `Failed to create workflow file ${workflowPath}: A Claude workflow file already exists in this repository. Please remove it first or update it manually.`,
+        `Failed to create workflow file ${workflowPath}: A Tau workflow file already exists in this repository. Please remove it first or update it manually.`,
       )
     }
 
@@ -225,7 +225,7 @@ export async function setupGitHubActions(
         workflows.push({
           path: '.github/workflows/claude.yml',
           content: WORKFLOW_CONTENT,
-          message: 'Claude PR Assistant workflow',
+          message: 'Tau PR Assistant workflow',
         })
       }
 
@@ -233,7 +233,7 @@ export async function setupGitHubActions(
         workflows.push({
           path: '.github/workflows/claude-code-review.yml',
           content: CODE_REVIEW_PLUGIN_WORKFLOW_CONTENT,
-          message: 'Claudex Review workflow',
+          message: 'Tau Review workflow',
         })
       }
 

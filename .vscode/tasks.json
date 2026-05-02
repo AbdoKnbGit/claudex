@@ -21,7 +21,7 @@
     {
       "label": "Test VS Code Extension",
       "type": "shell",
-      "command": "cd claudex-vscode && npm test",
+      "command": "cd tau-vscode && npm test",
       "group": {
         "kind": "test",
         "isDefault": true

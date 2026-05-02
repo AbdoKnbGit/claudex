@@ -112,7 +112,7 @@ export function OAuthFlowStep({
         timersRef.current.add(timer_0);
       }, {
         loginWithClaudeAi: true,
-        // Always use Claude AI for subscription tokens
+        // Always use Tau AI for subscription tokens
         inferenceOnly: true,
         expiresIn: 365 * 24 * 60 * 60 // 1 year
       });
@@ -207,7 +207,7 @@ export function OAuthFlowStep({
             {!showPastePrompt && <Box>
                 <Spinner />
                 <Text>
-                  Opening browser to sign in with your Claude account…
+                  Opening browser to sign in with your Tau account…
                 </Text>
               </Box>}
 

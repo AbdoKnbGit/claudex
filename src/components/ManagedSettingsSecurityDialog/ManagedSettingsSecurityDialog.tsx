@@ -96,7 +96,7 @@ export function ManagedSettingsSecurityDialog(t0) {
       label: "Yes, I trust these settings",
       value: "accept"
     }, {
-      label: "No, exit Claudex",
+      label: "No, exit Tau",
       value: "exit"
     }];
     $[11] = t15;

@@ -102,9 +102,9 @@ export function MCPRemoteServerMenu({
       if (success) {
         onComplete?.(`Authentication successful. Connected to ${server.name}.`);
       } else if (result.client.type === 'needs-auth') {
-        onComplete?.('Authentication successful, but server still requires authentication. You may need to manually restart Claudex.');
+        onComplete?.('Authentication successful, but server still requires authentication. You may need to manually restart Tau.');
       } else {
-        onComplete?.('Authentication successful, but server reconnection failed. You may need to manually restart Claudex for the changes to take effect.');
+      onComplete?.('Authentication successful, but server reconnection failed. You may need to manually restart Tau for the changes to take effect.');
       }
     } catch (err) {
       logEvent('tengu_claudeai_mcp_auth_completed', {
@@ -157,7 +157,7 @@ export function MCPRemoteServerMenu({
     isActive: isAuthenticating
   });
 
-  // Escape to cancel Claude AI authentication
+  // Escape to cancel Tau AI authentication
   useKeybinding('confirm:no', () => {
     setIsClaudeAIAuthenticating(false);
     setClaudeAIAuthUrl(null);
@@ -166,7 +166,7 @@ export function MCPRemoteServerMenu({
     isActive: isClaudeAIAuthenticating
   });
 
-  // Escape to cancel Claude AI clear auth
+  // Escape to cancel Tau AI clear auth
   useKeybinding('confirm:no', () => {
     setIsClaudeAIClearingAuth(false);
     setClaudeAIClearAuthUrl(null);
@@ -281,11 +281,11 @@ export function MCPRemoteServerMenu({
           const message = isEffectivelyAuthenticated ? `Authentication successful. Reconnected to ${server.name}.` : `Authentication successful. Connected to ${server.name}.`;
           onComplete?.(message);
         } else if (result_0.client.type === 'needs-auth') {
-          onComplete?.('Authentication successful, but server still requires authentication. You may need to manually restart Claudex.');
+          onComplete?.('Authentication successful, but server still requires authentication. You may need to manually restart Tau.');
         } else {
           // result.client.type === 'failed'
           logMCPDebug(server.name, `Reconnection failed after authentication`);
-          onComplete?.('Authentication successful, but server reconnection failed. You may need to manually restart Claudex for the changes to take effect.');
+      onComplete?.('Authentication successful, but server reconnection failed. You may need to manually restart Tau for the changes to take effect.');
         }
       }
     } catch (err_1) {

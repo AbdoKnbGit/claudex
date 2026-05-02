@@ -7,7 +7,7 @@ const feedback = {
   aliases: ['bug'],
   type: 'local-jsx',
   name: 'feedback',
-  description: `Submit feedback about Claudex`,
+  description: `Submit feedback about Tau`,
   argumentHint: '[report]',
   isEnabled: () =>
     !(

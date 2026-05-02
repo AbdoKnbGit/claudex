@@ -8,7 +8,7 @@
  *   Ollama runtime, so the CLI workflow is identical once the reference has
  *   been pulled once (the pull just registers the cloud-side alias).
  * - Local models have heterogeneous capabilities. Some support tool-calling,
- *   some do not. Claude Code issues tool-use requests that break on models
+ *   some do not. Tau issues tool-use requests that break on models
  *   without tool support, so we hide those from the picker.
  * - Some cloud models support `enable_thinking` — a per-request parameter
  *   that toggles reasoning output. The UI exposes this as a toggle, but it
@@ -120,7 +120,7 @@ export interface OllamaModelInfo extends ModelInfo {
   category: OllamaModelCategory
   /** True when the model is already pulled in the local Ollama install. */
   pulled: boolean
-  /** True when the model can accept Claude Code tool definitions. */
+  /** True when the model can accept Tau tool definitions. */
   supportsTools: boolean
   /** True when the model supports the thinking/reasoning toggle. */
   supportsThinking: boolean

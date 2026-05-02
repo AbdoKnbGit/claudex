@@ -1,7 +1,7 @@
 /**
  * Antigravity gray-area TOS disclosure.
  *
- * Non-negotiable per the ClaudeX spec: before the first Antigravity
+ * Non-negotiable per the Tau spec: before the first Antigravity
  * OAuth flow on any machine, the user sees the six-line TOS risk
  * banner and has to explicitly acknowledge it. The ack is persisted
  * at ~/.claudex/antigravity-acknowledged.json with the SHA-256 of
@@ -40,14 +40,14 @@ Antigravity OAuth — Terms-of-Service disclosure
 
 Antigravity is Google's IDE OAuth that resells Gemini 3.x Pro and Claude 4.6
 through a single token. Using this credential from a non-IDE client
-(including ClaudeX) is a GRAY-AREA use of Google's Terms of Service.
+(including Tau) is a GRAY-AREA use of Google's Terms of Service.
 Google has suspended accounts that rely on this pathway in the past.
 
 By continuing you acknowledge:
  • This is not an endorsed or supported integration.
  • Your Google account may be rate-limited, suspended, or permanently banned
    without prior notice.
- • You assume all risk. ClaudeX has no recourse and no refund channel.
+ • You assume all risk. Tau has no recourse and no refund channel.
 
 If you do not accept this risk, cancel now and use a Gemini API key instead.
 See https://antigravity.google.com/terms for Google's current position.

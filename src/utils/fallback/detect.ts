@@ -127,12 +127,16 @@ function hasLaneProviderErrorPrefix(text: string): boolean {
 
 function hasKnownLaneAccountLimitText(text: string): boolean {
   const normalized = text.trim()
+  const compact = normalized.replace(/\s+/g, ' ')
   return (
     /^GitHub Copilot rejected this request because the current account has no quota left\b/i.test(
       normalized,
     ) ||
     /^Error:\s*Named models unavailable\s+Free plans can only use Auto\./i.test(
-      normalized.replace(/\s+/g, ' '),
+      compact,
+    ) ||
+    /^You've hit your usage limit\b.*\bGet Cursor Pro\b.*\bAgent usage\b/i.test(
+      compact,
     ) ||
     (/^Cursor request failed\s*\(\d{3}\)\.?$/i.test(normalized) &&
       hasFallbackEligibleProviderText(normalized))

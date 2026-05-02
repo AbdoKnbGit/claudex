@@ -205,7 +205,7 @@ async function main(): Promise<void> {
   if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
     // MACRO.VERSION is inlined at build time
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`${MACRO.VERSION} (Claudex)`);
+    console.log(`${MACRO.VERSION} (Tau)`);
     return;
   }
 
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Pre-Ink RGB gradient logo. Prints directly to stdout so the user gets
+  // Pre-Ink Tau ember logo. Prints directly to stdout so the user gets
   // immediate feedback before the heavier imports load. Internally gated for
   // non-TTY / NO_COLOR / -p so scripted and CI runs stay silent.
   const { printStartupScreen } = await import('../components/StartupScreen.js');

@@ -5,9 +5,9 @@ const Module = require('node:module');
 function createStatus(overrides = {}) {
   return {
     installed: true,
-    executable: 'claudex',
-    launchCommand: 'claudex --project-aware',
-    terminalName: 'Claudex',
+    executable: 'tau',
+    launchCommand: 'tau --project-aware',
+    terminalName: 'Tau',
     activeProvider: '',
     workspaceFolder: '/workspace/claudex/very/long/path/example-project',
     workspaceSourceLabel: 'active editor workspace',
@@ -53,11 +53,11 @@ function loadExtension() {
   }
 }
 
-test('renderControlCenterHtml uses the Claudex wordmark, status rail, and warm action hierarchy', () => {
+test('renderControlCenterHtml uses the Tau wordmark, status rail, and warm action hierarchy', () => {
   const { renderControlCenterHtml } = loadExtension();
   const html = renderControlCenterHtml(createStatus(), { nonce: 'test-nonce', platform: 'win32' });
 
-  assert.match(html, /Claud<span class="wordmark-accent">ex<\/span>/);
+  assert.match(html, /<div class="wordmark" aria-label="Tau wordmark">Tau<\/div>/);
   assert.match(html, /class="status-rail"/);
   assert.match(html, /class="action-button primary" id="launch"/);
   assert.match(html, /class="action-button secondary" id="launchRoot"/);
@@ -92,7 +92,7 @@ test('renderControlCenterHtml shows explicit disabled and empty states when work
   assert.doesNotMatch(html, /id="openProfile"/);
 });
 
-test('ClaudexControlCenterProvider.getHtml supplies a nonce to the redesigned renderer', () => {
+test('TauControlCenterProvider.getHtml supplies a nonce to the redesigned renderer', () => {
   const { ClaudexControlCenterProvider } = loadExtension();
   const provider = new ClaudexControlCenterProvider();
 
@@ -131,7 +131,7 @@ test('resolveLaunchTargets anchors relative launch commands to the workspace roo
 
   assert.deepEqual(
     resolveLaunchTargets({
-      executable: './node_modules/.bin/claudex',
+      executable: './node_modules/.bin/tau',
       activeFilePath: '/workspace/claudex/src/panels/control-center.js',
       workspacePath: '/workspace/claudex',
       workspaceSourceLabel: 'active editor workspace',
@@ -153,7 +153,7 @@ test('resolveLaunchTargets ignores active files outside the selected workspace',
 
   assert.deepEqual(
     resolveLaunchTargets({
-      executable: 'claudex',
+      executable: 'tau',
       activeFilePath: '/tmp/notes/scratch.js',
       workspacePath: '/workspace/claudex',
       workspaceSourceLabel: 'first workspace folder',
@@ -215,7 +215,7 @@ test('renderControlCenterHtml makes shared workspace-root launches explicit for 
   );
 
   assert.match(html, /Project-aware launch is anchored to the workspace root by the relative command · \/workspace\/claudex/);
-  assert.match(html, /Same workspace-root target as Launch Claudex because the relative command resolves from the workspace root · \/workspace\/claudex/);
+  assert.match(html, /Same workspace-root target as Launch Tau because the relative command resolves from the workspace root · \/workspace\/claudex/);
 });
 
 test('renderControlCenterHtml escapes hostile text and title values', () => {

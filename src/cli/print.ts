@@ -3561,7 +3561,7 @@ function runHeadlessStreaming(
               // installOAuthTokens: performLogout (clear stale state) →
               // store profile → saveOAuthTokensIfNeeded → clearOAuthTokenCache
               // → clearAuthRelatedCaches. After this resolves, the memoized
-              // getClaudeAIOAuthTokens in this process is invalidated; the
+              // getTauAIOAuthTokens in this process is invalidated; the
               // next API call re-reads keychain/file and works. No respawn.
               await installOAuthTokens(tokens)
               logEvent('tengu_oauth_success', {
@@ -5039,7 +5039,7 @@ async function loadInitialMessages(
       )
       if (!parsedSessionId) {
         let errorMessage =
-          'Error: --resume requires a valid session ID when used with --print. Usage: claude -p --resume <session-id>'
+          'Error: --resume requires a valid session ID when used with --print. Usage: tau -p --resume <session-id>'
         if (typeof options.resume === 'string') {
           errorMessage += `. Session IDs must be in UUID format (e.g., 550e8400-e29b-41d4-a716-446655440000). Provided value "${options.resume}" is not a valid UUID`
         }

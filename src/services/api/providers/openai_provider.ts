@@ -7,7 +7,7 @@
  * Uses native fetch (no openai SDK dependency) for maximum portability.
  *
  * Payload optimization (enabled for all 3P providers):
- * Claudex sends a massive system prompt (~8K tokens) + 40+ tool definitions
+ * Tau sends a massive system prompt (~8K tokens) + 40+ tool definitions
  * (~5K tokens) designed for Claude. Smaller open-source models choke on this,
  * causing 2-3 minute response times for trivial messages.
  *

@@ -5,8 +5,8 @@
  * dedicated lane module" exercise is genuinely simpler to defer: the
  * existing `src/services/api/claude.ts` already speaks the Anthropic
  * Messages API natively (cache markers, streaming, tool_use IR shape,
- * thinking blocks — all of it) exactly as Claude Code upstream does.
- * Claude Code WAS the native Claude lane; the legacy path IS the
+ * thinking blocks — all of it) exactly as Tau upstream does.
+ * Tau WAS the native Claude lane; the legacy path IS the
  * native path.
  *
  * This module exists for three specific reasons:

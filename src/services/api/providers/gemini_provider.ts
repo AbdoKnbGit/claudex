@@ -381,7 +381,7 @@ function _enrichGeminiModelName(id: string, displayName: string): string {
 
 // ─── Gemini Payload Optimization ─────────────────────────────────
 //
-// Token usage is the #1 cost driver. The full Claude Code payload
+// Token usage is the #1 cost driver. The full Tau payload
 // (system prompt + 40 tools + growing history) can hit 100K+ input
 // tokens per request — burning free-tier quotas in minutes.
 //

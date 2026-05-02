@@ -89,7 +89,7 @@ function _buildCursorToolHint(
     .filter(name => CURSOR_NATIVE_TOOL_HINT_NAMES.has(name))
   return [
     '[Cursor Tool Surface]',
-    'You are running inside Claudex through the native Cursor provider. The tools advertised in this request are active and callable; do not claim that workspace, shell, MCP, skill, task, or agent tools are unavailable when their names are listed.',
+    'You are running inside Tau through the native Cursor provider. The tools advertised in this request are active and callable; do not claim that workspace, shell, MCP, skill, task, or agent tools are unavailable when their names are listed.',
     `Available tool names include: ${shownToolNames.join(', ')}${toolNames.length > shownToolNames.length ? `, and ${toolNames.length - shownToolNames.length} more` : ''}.`,
     ...(nativeNames.length > 0
       ? [`Use Cursor-native tool names when calling these tools: ${nativeNames.join(', ')}.`]
@@ -97,7 +97,7 @@ function _buildCursorToolHint(
     ...(_buildCursorAliasGuide(originalTools)
       ? [_buildCursorAliasGuide(originalTools)]
       : []),
-    'Claudex tools without a Cursor-native alias keep their advertised names, including Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, EnterWorktree, ExitWorktree, and mcp__server__tool MCP names.',
+    'Tau tools without a Cursor-native alias keep their advertised names, including Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, EnterWorktree, ExitWorktree, and mcp__server__tool MCP names.',
     _buildCursorToolSelectionGuide(originalTools, encodedTools),
     _buildCursorPreconditionGuide(originalTools),
   ].join('\n')
@@ -167,7 +167,7 @@ function _buildCursorToolSelectionGuide(
   addCategory('Agents', add([
     hasEncoded('task') ? 'task (spawn a subagent for delegated work)' : null,
     hasEncoded('task_v2') ? 'task_v2 (spawn a subagent for delegated work)' : null,
-    hasOriginal('Skill') ? 'Skill (run a Claudex skill / slash-command skill)' : null,
+    hasOriginal('Skill') ? 'Skill (run a Tau skill / slash-command skill)' : null,
     hasOriginal('EnterWorktree') ? 'EnterWorktree (enter an isolated git worktree)' : null,
     hasOriginal('ExitWorktree') ? 'ExitWorktree (leave the current worktree)' : null,
   ]))
@@ -361,7 +361,7 @@ function _buildCursorAliasGuide(originalTools: ProviderTool[]): string {
 
   if (aliases.length === 0) return ''
   return (
-    'If other Claudex instructions mention shared tool ids, treat them as aliases for the callable Cursor names in this session: '
+    'If other Tau instructions mention shared tool ids, treat them as aliases for the callable Cursor names in this session: '
     + aliases.join(', ')
     + '.'
   )

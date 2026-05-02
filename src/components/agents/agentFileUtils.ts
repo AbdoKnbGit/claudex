@@ -62,7 +62,7 @@ function getAgentDirectoryPath(location: SettingSource): string {
     case 'flagSettings':
       throw new Error(`Cannot get directory path for ${location} agents`)
     case 'userSettings':
-      return join(getClaudeConfigHomeDir(), AGENT_PATHS.AGENTS_DIR)
+      return join(getTauConfigHomeDir(), AGENT_PATHS.AGENTS_DIR)
     case 'projectSettings':
       return join(getCwd(), AGENT_PATHS.FOLDER_NAME, AGENT_PATHS.AGENTS_DIR)
     case 'policySettings':

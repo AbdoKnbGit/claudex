@@ -47,7 +47,7 @@ export interface AnthropicMessage {
     /**
      * Optional cache accounting fields. Third-party providers that
      * support prompt caching (currently Gemini 2.5+ via cachedContents)
-     * populate these so ClaudeX's existing cost tracker treats them
+     * populate these so Tau's existing cost tracker treats them
      * like Anthropic cache hits.
      */
     cache_read_input_tokens?: number

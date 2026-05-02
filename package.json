@@ -1,7 +1,7 @@
 {
-  "name": "@abdoknbgit/claudex",
-  "version": "0.5.9",
-  "description": "Claudex — multi-provider AI coding CLI. Drop-in replacement for Claude Code with OpenAI, Gemini, Groq, DeepSeek, Ollama and more.",
+  "name": "@abdoknbgit/tau",
+  "version": "0.6.0",
+  "description": "Tau - multi-provider AI coding CLI with OpenAI, Gemini, Groq, DeepSeek, Ollama and more.",
   "author": "AbdoKnbGit",
   "repository": {
     "type": "git",
@@ -13,6 +13,7 @@
   },
   "type": "module",
   "bin": {
+    "tau": "./dist/cli.mjs",
     "claudex": "./dist/cli.mjs"
   },
   "files": [
@@ -30,8 +31,7 @@
     "prepublishOnly": "node build.mjs"
   },
   "keywords": [
-    "claudex",
-    "claude",
+    "tau",
     "ai",
     "cli",
     "multi-provider",

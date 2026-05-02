@@ -42,7 +42,7 @@ type LoadingStateProps = {
  * <LoadingState
  *   message="Loading sessions"
  *   bold
- *   subtitle="Fetching your Claudex sessions..."
+ *   subtitle="Fetching your Tau sessions..."
  * />
  */
 export function LoadingState(t0) {

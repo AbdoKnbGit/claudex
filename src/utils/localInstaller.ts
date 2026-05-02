@@ -22,6 +22,9 @@ function getLocalInstallDir(): string {
 export function getLocalClaudePath(): string {
   return join(getLocalInstallDir(), 'claude')
 }
+export function getLocalTauPath(): string {
+  return join(getLocalInstallDir(), 'tau')
+}
 
 /**
  * Check if we're running from our managed local installation
@@ -65,20 +68,20 @@ export async function ensureLocalPackageEnvironment(): Promise<boolean> {
     await writeIfMissing(
       join(localInstallDir, 'package.json'),
       jsonStringify(
-        { name: 'claude-local', version: '0.0.1', private: true },
+        { name: 'tau-local', version: '0.0.1', private: true },
         null,
         2,
       ),
     )
 
-    // Create the wrapper script if it doesn't exist
-    const wrapperPath = join(localInstallDir, 'claude')
-    const created = await writeIfMissing(
-      wrapperPath,
-      `#!/bin/sh\nexec "${localInstallDir}/node_modules/.bin/claude" "$@"`,
-      0o755,
-    )
-    if (created) {
+    // Keep both wrappers so old local aliases still land on the Tau binary.
+    for (const wrapperName of ['tau', 'claude']) {
+      const wrapperPath = join(localInstallDir, wrapperName)
+      await writeFile(
+        wrapperPath,
+        `#!/bin/sh\nexec "${localInstallDir}/node_modules/.bin/tau" "$@"`,
+        { encoding: 'utf8', mode: 0o755 },
+      )
       // Mode in writeFile is masked by umask; chmod to ensure executable bit.
       await chmod(wrapperPath, 0o755)
     }
@@ -91,11 +94,11 @@ export async function ensureLocalPackageEnvironment(): Promise<boolean> {
 }
 
 /**
- * Install or update Claude CLI package in the local directory
+ * Install or update Tau CLI package in the local directory
  * @param channel - Release channel to use (latest or stable)
  * @param specificVersion - Optional specific version to install (overrides channel)
  */
-export async function installOrUpdateClaudePackage(
+export async function installOrUpdateTauPackage(
   channel: ReleaseChannel,
   specificVersion?: string | null,
 ): Promise<'in_progress' | 'success' | 'install_failed'> {
@@ -119,7 +122,7 @@ export async function installOrUpdateClaudePackage(
 
     if (result.code !== 0) {
       const error = new Error(
-        `Failed to install Claude CLI package: ${result.stderr}`,
+        `Failed to install Tau CLI package: ${result.stderr}`,
       )
       logError(error)
       return result.code === 190 ? 'in_progress' : 'install_failed'
@@ -144,7 +147,12 @@ export async function installOrUpdateClaudePackage(
  */
 export async function localInstallationExists(): Promise<boolean> {
   try {
-    await access(join(getLocalInstallDir(), 'node_modules', '.bin', 'claude'))
+    try {
+      await access(join(getLocalInstallDir(), 'node_modules', '.bin', 'tau'))
+      return true
+    } catch {
+      await access(join(getLocalInstallDir(), 'node_modules', '.bin', 'claude'))
+    }
     return true
   } catch {
     return false

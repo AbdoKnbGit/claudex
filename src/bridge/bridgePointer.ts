@@ -24,7 +24,7 @@ const MAX_WORKTREE_FANOUT = 50
  * Written immediately after a bridge session is created, periodically
  * refreshed during the session, and cleared on clean shutdown. If the
  * process dies unclean (crash, kill -9, terminal closed), the pointer
- * persists. On next startup, `claude remote-control` detects it and offers
+ * persists. On next startup, `tau remote-control` detects it and offers
  * to resume via the --session-id flow from #20460.
  *
  * Staleness is checked against the file's mtime (not an embedded timestamp)
@@ -115,7 +115,7 @@ export async function readBridgePointer(
 /**
  * Worktree-aware read for `--continue`. The REPL bridge writes its pointer
  * to `getOriginalCwd()` which EnterWorktreeTool/activeWorktreeSession can
- * mutate to a worktree path — but `claude remote-control --continue` runs
+ * mutate to a worktree path — but `tau remote-control --continue` runs
  * with `resolve('.')` = shell CWD. This fans out across git worktree
  * siblings to find the freshest pointer, matching /resume's semantics.
  *

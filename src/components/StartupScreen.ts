@@ -1,12 +1,6 @@
 /**
- * Claudex startup screen — block-text logo with a full-RGB rainbow gradient.
+ * Tau startup screen: dark terminal base with ember red and brown glow.
  * Called once at CLI startup before the Ink UI renders.
- * Writes directly to process.stdout so the user sees immediate visual feedback.
- *
- * The previous version used a blue-only gradient. We upgrade to a fluid
- * rainbow that sweeps horizontally across the letters AND vertically across
- * the rows, so every cell gets its own colour. On a wide-gamut terminal this
- * reads as "full RGB", not "blue".
  */
 
 declare const MACRO: { VERSION: string }
@@ -19,6 +13,8 @@ const DIM = `${ESC}2m`
 type RGB = [number, number, number]
 const rgb = (r: number, g: number, b: number): string =>
   `${ESC}38;2;${r};${g};${b}m`
+const bg = (r: number, g: number, b: number): string =>
+  `${ESC}48;2;${r};${g};${b}m`
 
 function lerp(a: RGB, b: RGB, t: number): RGB {
   return [
@@ -36,12 +32,6 @@ function gradAt(stops: readonly RGB[], t: number): RGB {
   return lerp(stops[i]!, stops[i + 1]!, s - i)
 }
 
-/**
- * Paint a line with a diagonal rainbow:
- *  - lineT selects where this row sits in the vertical rainbow
- *  - each character advances the horizontal rainbow offset
- * The sum of the two is taken mod 1, so every cell samples a unique hue.
- */
 function paintLineDiagonal(
   text: string,
   stops: readonly RGB[],
@@ -50,68 +40,46 @@ function paintLineDiagonal(
   let out = ''
   for (let i = 0; i < text.length; i++) {
     const horizontal = text.length > 1 ? i / (text.length - 1) : 0
-    const t = ((lineT * 0.35) + (horizontal * 0.65)) % 1
+    const t = lineT * 0.42 + horizontal * 0.58
     const [r, g, b] = gradAt(stops, t)
-    out += `${rgb(r, g, b)}${text[i]}`
+    out += `${bg(...BASE)}${rgb(r, g, b)}${text[i]}`
   }
   return out + RESET
 }
 
-// ─── Colours ──────────────────────────────────────────────────────────────────
-//
-// Full-spectrum rainbow, tuned for visibility on both dark and light terminals.
-// The stops are roughly: red → orange → yellow → green → teal → blue → violet
-// → magenta → back to red (the wraparound keeps the gradient seamless when we
-// take the character offset modulo 1).
-
-const RAINBOW: readonly RGB[] = [
-  [255,  80,  95],  // coral red
-  [255, 145,  60],  // orange
-  [255, 210,  70],  // yellow
-  [110, 230, 120],  // green
-  [ 70, 210, 210],  // teal
-  [ 80, 150, 255],  // sky blue
-  [150, 110, 255],  // indigo
-  [215,  95, 230],  // magenta
-  [255,  80,  95],  // wrap → coral red
+const BASE: RGB = [9, 5, 4]
+const TAU_GLOW: readonly RGB[] = [
+  [255, 96, 72],
+  [238, 58, 48],
+  [184, 70, 42],
+  [112, 54, 36],
+  [190, 75, 42],
+  [255, 122, 76],
 ]
 
-const ACCENT: RGB = [150, 220, 255]
-const CREAM:  RGB = [235, 235, 245]
-const DIMCOL: RGB = [120, 120, 145]
-const BORDER: RGB = [ 90, 110, 170]
-
-// ─── Block Text Logo ─────────────────────────────────────────────────────────
-//
-// 6-row block-text "CLAUDEX" in the ANSI Shadow figlet font. Each row is 57
-// cells wide + 2 leading spaces = 59 cells of monospace output. Letters are
-// concatenated with no inter-letter gap, same as the standard figlet output.
+const ACCENT: RGB = [255, 86, 66]
+const CREAM: RGB = [246, 238, 226]
+const DIMCOL: RGB = [143, 102, 84]
+const BORDER: RGB = [111, 50, 36]
+const AMBER: RGB = [225, 136, 70]
 
 const LOGO: readonly string[] = [
-  `   ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗██╗  ██╗`,
-  `  ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝╚██╗██╔╝`,
-  `  ██║     ██║     ███████║██║   ██║██║  ██║█████╗   ╚███╔╝ `,
-  `  ██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝   ██╔██╗ `,
-  `  ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗██╔╝ ██╗`,
-  `   ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝`,
+  '       ████████╗ █████╗ ██╗   ██╗',
+  '       ╚══██╔══╝██╔══██╗██║   ██║',
+  '          ██║   ███████║██║   ██║',
+  '          ██║   ██╔══██║██║   ██║',
+  '          ██║   ██║  ██║╚██████╔╝',
+  '          ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ',
 ]
-
-// ─── Box drawing ──────────────────────────────────────────────────────────────
 
 function boxRow(content: string, width: number, rawLen: number): string {
   const pad = Math.max(0, width - 2 - rawLen)
   return `${rgb(...BORDER)}\u2502${RESET}${content}${' '.repeat(pad)}${rgb(...BORDER)}\u2502${RESET}`
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
 export function printStartupScreen(): void {
-  // Skip in non-interactive / CI / print mode — nothing to show there.
   if (process.env.CI || !process.stdout.isTTY) return
   if (process.argv.includes('-p') || process.argv.includes('--print')) return
-
-  // Respect NO_COLOR / dumb terminals — they can't render 24-bit colour so
-  // a gradient degrades to nothing useful.
   if (process.env.NO_COLOR || process.env.TERM === 'dumb') return
 
   const W = 58
@@ -119,53 +87,42 @@ export function printStartupScreen(): void {
 
   out.push('')
 
-  // Paint the logo with the diagonal rainbow sweep.
-  const total = LOGO.length
-  for (let i = 0; i < total; i++) {
-    const lineT = total > 1 ? i / (total - 1) : 0
-    out.push(paintLineDiagonal(LOGO[i]!, RAINBOW, lineT))
+  for (let i = 0; i < LOGO.length; i++) {
+    const lineT = LOGO.length > 1 ? i / (LOGO.length - 1) : 0
+    out.push(paintLineDiagonal(LOGO[i]!, TAU_GLOW, lineT))
   }
 
   out.push('')
 
-  // Tagline with sparkle accents and rainbow-tinted punctuation.
-  const sparkle = `${rgb(...ACCENT)}\u2726${RESET}`
-  const dot = `${rgb(215, 95, 230)}\u2022${RESET}`
+  const ember = `${rgb(...ACCENT)}\u25c6${RESET}`
+  const dot = `${rgb(...BORDER)}\u2022${RESET}`
   const taglineParts = [
-    `${rgb(255, 145, 60)}multi-provider${RESET}`,
-    `${rgb(110, 230, 120)}local`,
-    `${rgb(70, 210, 210)}\u00b7`,
-    `${rgb(80, 150, 255)}cloud`,
-    `${rgb(150, 110, 255)}\u00b7`,
-    `${rgb(215, 95, 230)}claude${RESET}`,
-    `${rgb(255, 210, 70)}AI coding CLI${RESET}`,
+    `${rgb(...ACCENT)}Tau${RESET}`,
+    `${rgb(...AMBER)}dark terminal${RESET}`,
+    `${rgb(188, 82, 50)}multi-provider${RESET}`,
+    `${rgb(...CREAM)}AI coding CLI${RESET}`,
   ]
   out.push(
-    `  ${sparkle} ${BOLD}${taglineParts.slice(0, 1).join(' ')}${RESET} ${dot} ` +
-      `${BOLD}${taglineParts.slice(1, 6).join(' ')}${RESET} ${dot} ` +
-      `${BOLD}${taglineParts.slice(6).join(' ')}${RESET} ${sparkle}`,
+    `  ${ember} ${BOLD}${taglineParts[0]}${RESET} ${dot} ` +
+      `${BOLD}${taglineParts[1]}${RESET} ${dot} ` +
+      `${BOLD}${taglineParts[2]} ${taglineParts[3]}${RESET} ${ember}`,
   )
 
   out.push('')
-
-  // Info box — "Ready" status line with version on the right.
   out.push(`${rgb(...BORDER)}\u2554${'\u2550'.repeat(W - 2)}\u2557${RESET}`)
 
   const leftContent =
-    ` ${rgb(110, 230, 120)}\u25cf${RESET} ${rgb(...CREAM)}Ready${RESET} ` +
-    `${DIM}${rgb(...DIMCOL)}\u2014 type${RESET} ${rgb(...ACCENT)}/help${RESET} ` +
+    ` ${rgb(...ACCENT)}\u25cf${RESET} ${rgb(...CREAM)}Ready${RESET} ` +
+    `${DIM}${rgb(...DIMCOL)}- type${RESET} ${rgb(...AMBER)}/help${RESET} ` +
     `${DIM}${rgb(...DIMCOL)}to begin${RESET}`
-  const leftLen = ' \u25cf Ready \u2014 type /help to begin'.length
+  const leftLen = ' \u25cf Ready - type /help to begin'.length
   out.push(boxRow(leftContent, W, leftLen))
 
   out.push(`${rgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
-
-  // Version footer, RGB-accented.
   out.push(
-    `  ${DIM}${rgb(...DIMCOL)}claudex${RESET} ` +
-      `${rgb(255, 145, 60)}v${rgb(255, 210, 70)}${MACRO.VERSION}${RESET}`,
+    `  ${DIM}${rgb(...DIMCOL)}tau${RESET} ` +
+      `${rgb(...ACCENT)}v${rgb(...AMBER)}${MACRO.VERSION}${RESET}`,
   )
-
   out.push('')
 
   process.stdout.write(out.join('\n') + '\n')

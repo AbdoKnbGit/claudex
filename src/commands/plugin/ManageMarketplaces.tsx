@@ -658,7 +658,7 @@ export function ManageMarketplaces({
         {/* Show explanatory text at the bottom when auto-update is enabled */}
         {!isUpdating && !shouldSkipPluginAutoupdate() && selectedMarketplace.autoUpdate && <Box marginTop={1}>
               <Text dimColor>
-                Auto-update enabled. Claudex will automatically update this
+                Auto-update enabled. Tau will automatically update this
                 marketplace and its installed plugins.
               </Text>
             </Box>}

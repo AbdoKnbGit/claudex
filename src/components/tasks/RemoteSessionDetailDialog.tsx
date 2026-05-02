@@ -44,7 +44,7 @@ type Props = {
 export function formatToolUseSummary(name: string, input: unknown): string {
   // plan_ready phase is only reached via ExitPlanMode tool
   if (name === EXIT_PLAN_MODE_V2_TOOL_NAME) {
-    return 'Review the plan in Claudex on the web';
+    return 'Review the plan in Tau on the web';
   }
   if (!input || typeof input !== 'object') return name;
   // AskUserQuestion: show the question text as a CTA, not the tool name.
@@ -168,7 +168,7 @@ function UltraplanSessionDetail(t0) {
     }
     let t7;
     if ($[12] === Symbol.for("react.memo_cache_sentinel")) {
-      t7 = <Text dimColor={true}>This will terminate the Claudex on the web session.</Text>;
+      t7 = <Text dimColor={true}>This will terminate the Tau on the web session.</Text>;
       $[12] = t7;
     } else {
       t7 = $[12];
@@ -311,7 +311,7 @@ function UltraplanSessionDetail(t0) {
   let t19;
   if ($[47] === Symbol.for("react.memo_cache_sentinel")) {
     t19 = {
-      label: "Review in Claudex on the web",
+      label: "Review in Tau on the web",
       value: "open" as const
     };
     $[47] = t19;
@@ -595,13 +595,13 @@ function ReviewSessionDetail(t0) {
   let t3;
   if ($[11] !== completed || $[12] !== onKill || $[13] !== running) {
     t3 = completed ? [{
-      label: "Open in Claudex on the web",
+      label: "Open in Tau on the web",
       value: "open"
     }, {
       label: "Dismiss",
       value: "dismiss"
     }] : [{
-      label: "Open in Claudex on the web",
+      label: "Open in Tau on the web",
       value: "open"
     }, ...(onKill && running ? [{
       label: "Stop ultrareview",

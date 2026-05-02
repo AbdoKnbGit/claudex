@@ -4,7 +4,7 @@ const status = {
   type: 'local-jsx',
   name: 'status',
   description:
-    'Show Claudex status including version, model, account, API connectivity, and tool statuses',
+    'Show Tau status including version, model, account, API connectivity, and tool statuses',
   immediate: true,
   load: () => import('./status.js'),
 } satisfies Command

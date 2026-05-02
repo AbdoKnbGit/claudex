@@ -7,7 +7,7 @@
  * {type:'function', function:{name,description,parameters}}).
  *
  * Tool names match qwen-code reference where available; adaptInput /
- * adaptOutput bridge the native parameter shape to ClaudeX's shared
+ * adaptOutput bridge the native parameter shape to Tau's shared
  * tool implementations.
  */
 

@@ -66,7 +66,7 @@ export type Output = z.infer<OutputSchema>
 
 export const ConfigTool = buildTool({
   name: CONFIG_TOOL_NAME,
-  searchHint: 'get or set Claudex settings (theme, model)',
+  searchHint: 'get or set Tau settings (theme, model)',
   maxResultSizeChars: 100_000,
   async description() {
     return DESCRIPTION

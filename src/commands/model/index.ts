@@ -13,7 +13,7 @@ export default {
     if (isSurfEnabled()) {
       return 'Disabled while /surf is on — router picks the model per phase'
     }
-    return `Set the AI model for Claudex (currently ${renderModelName(getMainLoopModel())})`
+    return `Set the AI model for Tau (currently ${renderModelName(getMainLoopModel())})`
   },
   argumentHint: '[model]',
   get immediate() {

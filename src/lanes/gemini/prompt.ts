@@ -11,7 +11,7 @@
  *   4. Tool Usage — how to use each tool effectively
  *   5. Operational Guidelines — tone, style, conventions
  *   6. Git Repository — git workflow if applicable
- *   7. Memory/Context — injected from ClaudeX shared layer
+ *   7. Memory/Context — injected from Tau shared layer
  *   8. Environment — volatile per-turn info (cwd, date, git status)
  *
  * Sections 1-6 are STABLE (cacheable). Sections 7-8 are VOLATILE.

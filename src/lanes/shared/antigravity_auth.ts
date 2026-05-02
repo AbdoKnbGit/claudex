@@ -172,7 +172,7 @@ export async function awaitAuthorizationCode(port = 51121, timeoutMs = 5 * 60_00
         return
       }
       res.writeHead(200, { 'Content-Type': 'text/html' })
-        .end('<!doctype html><html><body style="font-family:system-ui;padding:40px"><h1>ClaudeX · Antigravity</h1><p>Authentication complete. You can close this tab.</p></body></html>')
+        .end('<!doctype html><html><body style="font-family:system-ui;padding:40px"><h1>Tau · Antigravity</h1><p>Authentication complete. You can close this tab.</p></body></html>')
       server.close()
       resolve({ code, state })
     })
@@ -385,7 +385,7 @@ export function resolveAntigravityModel(id: string): { family: ModelFamily; upst
 // ─── ToS Disclosure ─────────────────────────────────────────────
 
 export const TOS_DISCLOSURE = `
-ClaudeX · Antigravity OAuth · Important disclosure
+Tau · Antigravity OAuth · Important disclosure
 
 Antigravity authentication uses Google's Antigravity IDE endpoints to
 access Gemini 3.x Pro and (repackaged) Claude 4.6 models. This sits in a
@@ -393,7 +393,7 @@ gray area of Google's Terms of Service — the endpoints are intended for
 use inside Google's Antigravity IDE, not third-party CLIs.
 
 Using this path may violate Google's ToS for Antigravity. Google could
-revoke your access, rate-limit your account, or ban it entirely. ClaudeX
+revoke your access, rate-limit your account, or ban it entirely. Tau
 provides this path for convenience; the risk is yours to accept.
 
 Alternatives that are officially supported:

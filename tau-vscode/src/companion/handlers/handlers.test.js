@@ -165,7 +165,7 @@ test('DiffManager.closeTab resolves pending RPCs without leaking entries', async
   const manager = new DiffManager(fakeVscode, provider, () => {});
 
   // Fake the openDiff prelude: register an entry directly so we can test close.
-  const tabName = 'foo.ts ↔ Claudex';
+  const tabName = 'foo.ts ↔ Tau';
   const rightUri = fakeVscode.Uri.from({
     scheme: 'claudex-diff',
     path: '/work/foo.ts',

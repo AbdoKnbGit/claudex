@@ -3,7 +3,7 @@
  *
  * Modeled on OpenCode's Drizzle schema (packages/opencode/src/session/session.sql.ts).
  * Kept dependency-free by using Bun's built-in bun:sqlite (which is the
- * target runtime for ClaudeX). On non-Bun runtimes the module no-ops
+ * target runtime for Tau). On non-Bun runtimes the module no-ops
  * gracefully — callers treat write failures as non-fatal.
  *
  * Tables (normalized for fast per-session lookup):

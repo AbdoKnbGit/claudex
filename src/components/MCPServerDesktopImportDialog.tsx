@@ -129,7 +129,7 @@ export function MCPServerDesktopImportDialog(t0) {
   } else {
     t9 = $[15];
   }
-  const t10 = `Found ${t8} MCP ${t9} in Claude Desktop.`;
+  const t10 = `Found ${t8} MCP ${t9} in Tau Desktop.`;
   let t11;
   if ($[16] !== collisions.length) {
     t11 = collisions.length > 0 && <Text color="warning">Note: Some servers already exist with the same name. If selected, they will be imported with a numbered suffix.</Text>;
@@ -174,7 +174,7 @@ export function MCPServerDesktopImportDialog(t0) {
   }
   let t16;
   if ($[28] !== handleEscCancel || $[29] !== t10 || $[30] !== t11 || $[31] !== t15) {
-    t16 = <Dialog title="Import MCP Servers from Claude Desktop" subtitle={t10} color="success" onCancel={handleEscCancel} hideInputGuide={true}>{t11}{t12}{t15}</Dialog>;
+    t16 = <Dialog title="Import MCP Servers from Tau Desktop" subtitle={t10} color="success" onCancel={handleEscCancel} hideInputGuide={true}>{t11}{t12}{t15}</Dialog>;
     $[28] = handleEscCancel;
     $[29] = t10;
     $[30] = t11;

@@ -56,7 +56,7 @@ import { Login as AnthropicLogin } from '../login/login.js'
  * Providers the user can connect via /provider.
  *
  * Anthropic (firstParty) delegates to /login so the OAuth choices stay
- * Claude Code-compatible.
+ * Tau-compatible.
  *
  * Excluded on purpose:
  *   - bedrock/vertex/foundry  → env/IAM-based, no credentials to manage here
@@ -69,14 +69,14 @@ import { Login as AnthropicLogin } from '../login/login.js'
  * OpenAI OAuth — not listed as separate rows.
  */
 // `groq` is intentionally hidden — the free / on-demand TPM budget is
-// too tight for claudex's tool suite. `iflow` is hidden from user-facing
+// too tight for Tau's tool suite. `iflow` is hidden from user-facing
 // provider management after the iFlow CLI shutdown announcement on
 // April 17, 2026. No provider code was removed; auth and routing stay wired.
 const MANAGEABLE_PROVIDERS = [
   // Anthropic surfaces here alongside the third-party providers. The
   // configure view hands Anthropic off to the shared /login OAuth flow
   // (subscription / console / 3rd-party platform) instead of a deactivate
-  // prompt, so the credentials path stays Claude Code-compatible.
+  // prompt, so the credentials path stays Tau-compatible.
   'firstParty',
   'openai',
   'gemini',
@@ -106,7 +106,7 @@ type KeyedProvider = Exclude<ManageableProvider, 'ollama' | 'firstParty'>
 type AuthState = 'oauth' | 'api_key' | 'inactive'
 
 function getFirstPartyAuthState(): AuthState {
-  if (getClaudeAIOAuthTokens()?.accessToken) return 'oauth'
+  if (getTauAIOAuthTokens()?.accessToken) return 'oauth'
   if (hasAnthropicApiKeyAuth()) return 'api_key'
   return 'inactive'
 }
@@ -604,7 +604,7 @@ function ProviderManager({
       <Box flexDirection="column" paddingLeft={1}>
         {header}
         <Text dimColor>
-          Connect the AI accounts you want ClaudeX to use. Multiple providers
+          Connect the AI accounts you want Tau to use. Multiple providers
           can be active at once.
         </Text>
         <Box marginTop={1} flexDirection="column">

@@ -26,7 +26,7 @@ type Decision = 'satisfied' | 'installed' | 'declined' | 'manual'
  * when:
  *   - bash is missing entirely (Windows without Git Bash, exotic Linux), or
  *   - Windows has only WSL/generic bash, which the native shell provider does not use, or
- *   - the detected bash is too old for claudex's bash features.
+ *   - the detected bash is too old for Tau's bash features.
  *
  * The result (approved/declined/manual) is stored in GlobalConfig for
  * diagnostics. Detection remains authoritative, so we keep prompting until
@@ -133,13 +133,13 @@ export function BashSetupDialog({ initialStatus, onDone }: Props): React.ReactNo
 
   return (
     <Dialog
-      title="Set up bash for claudex"
+      title="Set up bash for Tau"
       onCancel={() => finish('declined')}
     >
       <Box flexDirection="column" gap={1}>
         <Text>{why}</Text>
         <Text>
-          claudex requires a current bash for shell commands. I can {plan.action} it for you using{' '}
+          Tau requires a current bash for shell commands. I can {plan.action} it for you using{' '}
           <Text bold>{plan.canInstall ? plan.label : 'a manual download'}</Text>.
           <Newline />
           Command:{' '}
@@ -199,16 +199,16 @@ function describeReason(status: BashStatus): string {
     return 'No bash detected.'
   }
   if (process.platform === 'win32' && status.source === 'wsl') {
-    return 'WSL bash was detected, but claudex on Windows needs Git Bash for native shell commands.'
+    return 'WSL bash was detected, but Tau on Windows needs Git Bash for native shell commands.'
   }
   if (process.platform === 'win32' && status.source !== 'git-for-windows') {
     return 'No Git Bash detected on this machine.'
   }
   if (status.isAppleStock) {
-    return `macOS only ships bash ${status.versionLine ?? '3.2'} at /bin/bash. claudex still works, but a current bash via Homebrew is recommended for full feature support.`
+    return `macOS only ships bash ${status.versionLine ?? '3.2'} at /bin/bash. Tau still works, but a current bash via Homebrew is recommended for full feature support.`
   }
   if (status.isOutdated) {
-    return `Detected ${status.versionLine ?? 'an old bash'}, which is too old for claudex shell support.`
+    return `Detected ${status.versionLine ?? 'an old bash'}, which is too old for Tau shell support.`
   }
   return 'bash is available, but an upgrade is recommended.'
 }

@@ -1,8 +1,8 @@
 {
-  "name": "claudex-vscode",
-  "displayName": "Claudex",
-  "description": "Claudex companion for VS Code: one-click launch with full IDE awareness — diagnostics, inline diffs, selection context, and provider switching.",
-  "version": "0.5.6",
+  "name": "tau-vscode",
+  "displayName": "Tau",
+  "description": "Tau companion for VS Code: one-click launch with full IDE awareness - diagnostics, inline diffs, selection context, and provider switching.",
+  "version": "0.6.0",
   "publisher": "devnull-bootloader",
   "engines": {
     "vscode": "^1.95.0"
@@ -30,49 +30,49 @@
     "commands": [
       {
         "command": "claudex.start",
-        "title": "Claudex: Launch in Terminal",
-        "category": "Claudex"
+        "title": "Tau: Launch in Terminal",
+        "category": "Tau"
       },
       {
         "command": "claudex.startInWorkspaceRoot",
-        "title": "Claudex: Launch in Workspace Root",
-        "category": "Claudex"
+        "title": "Tau: Launch in Workspace Root",
+        "category": "Tau"
       },
       {
         "command": "claudex.openDocs",
-        "title": "Claudex: Open Repository",
-        "category": "Claudex"
+        "title": "Tau: Open Repository",
+        "category": "Tau"
       },
       {
         "command": "claudex.openSetupDocs",
-        "title": "Claudex: Open Setup Guide",
-        "category": "Claudex"
+        "title": "Tau: Open Setup Guide",
+        "category": "Tau"
       },
       {
         "command": "claudex.openWorkspaceProfile",
-        "title": "Claudex: Open Workspace Profile",
-        "category": "Claudex"
+        "title": "Tau: Open Workspace Profile",
+        "category": "Tau"
       },
       {
         "command": "claudex.openControlCenter",
-        "title": "Claudex: Open Control Center",
-        "category": "Claudex"
+        "title": "Tau: Open Control Center",
+        "category": "Tau"
       },
       {
         "command": "claudex.switchProvider",
-        "title": "Claudex: Switch Provider",
-        "category": "Claudex"
+        "title": "Tau: Switch Provider",
+        "category": "Tau"
       },
       {
         "command": "claudex.acceptDiff",
-        "title": "Claudex: Accept Diff",
-        "category": "Claudex",
+        "title": "Tau: Accept Diff",
+        "category": "Tau",
         "icon": "$(check)"
       },
       {
         "command": "claudex.rejectDiff",
-        "title": "Claudex: Reject Diff",
-        "category": "Claudex",
+        "title": "Tau: Reject Diff",
+        "category": "Tau",
         "icon": "$(close)"
       }
     ],
@@ -94,7 +94,7 @@
       "activitybar": [
         {
           "id": "claudex",
-          "title": "Claudex",
+          "title": "Tau",
           "icon": "media/claudex.svg"
         }
       ]
@@ -109,17 +109,17 @@
       ]
     },
     "configuration": {
-      "title": "Claudex",
+      "title": "Tau",
       "properties": {
         "claudex.launchCommand": {
           "type": "string",
-          "default": "claudex",
-          "description": "Command run in the integrated terminal when launching Claudex."
+          "default": "tau",
+          "description": "Command run in the integrated terminal when launching Tau."
         },
         "claudex.terminalName": {
           "type": "string",
-          "default": "Claudex",
-          "description": "Integrated terminal tab name for Claudex sessions."
+          "default": "Tau",
+          "description": "Integrated terminal tab name for Tau sessions."
         },
         "claudex.activeProvider": {
           "type": "string",
@@ -142,12 +142,12 @@
     },
     "themes": [
       {
-        "label": "Claudex Dark",
+        "label": "Tau Dark",
         "uiTheme": "vs-dark",
         "path": "./themes/claudex-dark.json"
       },
       {
-        "label": "Claudex Light",
+        "label": "Tau Light",
         "uiTheme": "vs",
         "path": "./themes/claudex-light.json"
       }
@@ -162,7 +162,7 @@
     "ws": "^8.18.0"
   },
   "keywords": [
-    "claudex",
+    "tau",
     "multi-provider",
     "terminal",
     "theme",

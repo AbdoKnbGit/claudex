@@ -50,7 +50,7 @@ test('buildActionModel hides workspace-profile action when no profile exists', (
 
   assert.deepEqual(model.primary, {
     id: 'launch',
-    label: 'Launch Claudex',
+    label: 'Launch Tau',
     detail: 'Use the resolved project-aware launch directory',
     tone: 'accent',
     disabled: false,
@@ -78,9 +78,9 @@ test('buildActionModel includes workspace-profile action when a profile exists',
 function createStatus(overrides = {}) {
   return {
     installed: true,
-    executable: 'claudex',
-    launchCommand: 'claudex --project-aware',
-    terminalName: 'Claudex',
+    executable: 'tau',
+    launchCommand: 'tau --project-aware',
+    terminalName: 'Tau',
     shimEnabled: false,
     workspaceFolder: '/workspace/claudex',
     workspaceSourceLabel: 'active editor workspace',
@@ -183,9 +183,9 @@ test('buildControlCenterViewModel uses a concise project summary before full pat
       rows: [
         {
           key: 'runtime',
-          label: 'Claudex executable',
+          label: 'Tau executable',
           summary: 'Installed',
-          detail: 'claudex',
+          detail: 'tau',
           tone: 'positive',
         },
         {
@@ -208,8 +208,8 @@ test('buildControlCenterViewModel keeps launch command only in summary cards', (
   assert.deepEqual(viewModel.summaryCards.find(card => card.key === 'launchCommand'), {
     key: 'launchCommand',
     label: 'Launch command',
-    value: 'claudex --project-aware',
-    detail: 'Integrated terminal: Claudex',
+    value: 'tau --project-aware',
+    detail: 'Integrated terminal: Tau',
   });
 
   assert.equal(

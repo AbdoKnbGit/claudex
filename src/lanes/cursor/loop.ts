@@ -434,7 +434,7 @@ async function* _streamCursorAttempt(params: {
   // Per-tool accumulation. Cursor re-emits the same toolCallId across
   // frames and appends raw-args chunks. We buffer arguments so Cursor-native
   // schemas (read_file, replace, run_shell_command, ...) can be adapted back
-  // to Claudex executor schemas before the shared tool runner sees them.
+  // to Tau executor schemas before the shared tool runner sees them.
   interface ToolEntry {
     anthropicIndex: number
     nativeName: string

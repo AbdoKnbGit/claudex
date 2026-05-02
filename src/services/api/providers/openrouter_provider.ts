@@ -27,7 +27,7 @@ export class OpenRouterProvider extends OpenAIProvider {
       extraHeaders: {
         // OpenRouter uses these for model rankings and attribution
         'HTTP-Referer': process.env.OPENROUTER_REFERER ?? 'https://github.com/claude-code-multi-provider',
-        'X-Title': process.env.OPENROUTER_TITLE ?? 'Claudex (Multi-Provider)',
+        'X-Title': process.env.OPENROUTER_TITLE ?? 'Tau (Multi-Provider)',
         ...(config.extraHeaders ?? {}),
       },
     })

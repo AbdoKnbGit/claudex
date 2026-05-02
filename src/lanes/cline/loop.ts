@@ -466,7 +466,7 @@ export class ClineLane implements Lane {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
       'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
-      'X-Title': 'ClaudeX',
+      'X-Title': 'Tau',
     }
 
     const workosToken = `workos:${auth.token}`
