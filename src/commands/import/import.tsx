@@ -21,6 +21,7 @@ import type {
 import { logError } from '../../utils/log.js'
 import { parseJSONL } from '../../utils/json.js'
 import {
+  getFirstMeaningfulUserMessageTextContent,
   getProjectDir,
   getTranscriptPathForSession,
   isTranscriptMessage,
@@ -51,21 +52,13 @@ function expandHome(p: string): string {
   return p
 }
 
-function deriveFirstPrompt(
-  firstUserMessage: Extract<SerializedMessage, { type: 'user' }> | undefined,
+function deriveFirstPrompt<T extends SerializedMessage>(
+  transcript: T[],
 ): string {
-  const content = firstUserMessage?.message?.content
-  if (!content) return 'Imported conversation'
-  const raw =
-    typeof content === 'string'
-      ? content
-      : content.find(
-          (block): block is { type: 'text'; text: string } =>
-            block.type === 'text',
-        )?.text
-  if (!raw) return 'Imported conversation'
+  const text = getFirstMeaningfulUserMessageTextContent(transcript)
+  if (!text) return 'Imported conversation'
   return (
-    raw.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Imported conversation'
+    text.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Imported conversation'
   )
 }
 
@@ -78,13 +71,10 @@ async function inspectSource(filePath: string): Promise<ParsedImport | null> {
       (e): e is TranscriptMessage => isTranscriptMessage(e) && !e.isSidechain,
     )
     if (transcript.length === 0) return null
-    const firstUser = transcript.find(
-      (m): m is TranscriptMessage & { type: 'user' } => m.type === 'user',
-    )
     return {
       sourceSessionId: (transcript[0]?.sessionId as UUID | undefined) ?? null,
       messageCount: transcript.length,
-      firstPrompt: deriveFirstPrompt(firstUser),
+      firstPrompt: deriveFirstPrompt(transcript),
     }
   } catch {
     return null
@@ -177,9 +167,7 @@ async function performImport(sourcePath: string): Promise<{
     mode: 0o600,
   })
 
-  const firstPrompt = deriveFirstPrompt(
-    serializedMessages.find(m => m.type === 'user'),
-  )
+  const firstPrompt = deriveFirstPrompt(serializedMessages)
   const effectiveTitle = await getUniqueImportName(firstPrompt)
   await saveCustomTitle(importSessionId, effectiveTitle, importPath)
 

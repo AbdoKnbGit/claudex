@@ -13,6 +13,7 @@ import type {
 } from '../../types/logs.js'
 import { parseJSONL } from '../../utils/json.js'
 import {
+  getFirstMeaningfulUserMessageTextContent,
   getProjectDir,
   getTranscriptPath,
   getTranscriptPathForSession,
@@ -31,26 +32,15 @@ type TranscriptEntry = TranscriptMessage & {
 }
 
 /**
- * Derive a single-line title base from the first user message — same shape
- * as branch.ts's deriveFirstPrompt so naming behaves consistently between
- * /branch and /clone.
+ * Derive a single-line title base by walking the transcript for the first
+ * meaningful user prompt. Skips local-command-caveat wrappers, IDE metadata
+ * tags, and built-in slash command echoes — that keeps clone titles
+ * recognizable instead of "<local-command-caveat>...".
  */
-function deriveFirstPrompt(
-  firstUserMessage: Extract<SerializedMessage, { type: 'user' }> | undefined,
-): string {
-  const content = firstUserMessage?.message?.content
-  if (!content) return 'Cloned conversation'
-  const raw =
-    typeof content === 'string'
-      ? content
-      : content.find(
-          (block): block is { type: 'text'; text: string } =>
-            block.type === 'text',
-        )?.text
-  if (!raw) return 'Cloned conversation'
-  return (
-    raw.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Cloned conversation'
-  )
+function deriveFirstPrompt(transcript: SerializedMessage[]): string {
+  const text = getFirstMeaningfulUserMessageTextContent(transcript)
+  if (!text) return 'Cloned conversation'
+  return text.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Cloned conversation'
 }
 
 /**
@@ -203,9 +193,7 @@ export async function call(
     } = await createClone(customSuffix)
 
     const now = new Date()
-    const firstPrompt = deriveFirstPrompt(
-      serializedMessages.find(m => m.type === 'user'),
-    )
+    const firstPrompt = deriveFirstPrompt(serializedMessages)
 
     // Naming policy:
     //   /clone           -> "<firstPrompt> (Clone)" (or " (Clone N)" on collision)

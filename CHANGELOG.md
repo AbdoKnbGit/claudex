@@ -12,6 +12,8 @@ Quick mental model: `/branch` already existed and creates a fork (a new conversa
 
 Nothing existing was changed: `/branch` (`/fork`), `/export`, `/rewind`, and `/resume` all behave exactly as before. The on-disk session format is identical, so you can roll back without migration.
 
+**Smarter naming for branches and clones.** When you opened `/branch` from a slash-command, the new conversation was getting titled with the command-launcher boilerplate ("`<local-command-caveat>...`") instead of your real first message — making `/tree` unreadable. Now `/branch`, `/clone`, and `/import` all skip the wrapper noise (slash-command echoes, IDE metadata tags, `<local-command-caveat>`, hook output) and pick the first thing you actually typed. Already-saved garbage titles are also auto-cleaned in the `/tree` view by falling back to the same skip-aware preview, so you don't have to rename old branches by hand.
+
 ## 0.6.0 - Claudex to Tau migration
 
 - Renamed the product surface from Claudex to Tau across the CLI, docs, terminal UI, and VS Code companion.

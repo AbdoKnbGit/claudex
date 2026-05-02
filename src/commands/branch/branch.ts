@@ -13,6 +13,7 @@ import type {
 } from '../../types/logs.js'
 import { parseJSONL } from '../../utils/json.js'
 import {
+  getFirstMeaningfulUserMessageTextContent,
   getProjectDir,
   getTranscriptPath,
   getTranscriptPathForSession,
@@ -31,25 +32,19 @@ type TranscriptEntry = TranscriptMessage & {
 }
 
 /**
- * Derive a single-line title base from the first user message.
- * Collapses whitespace — multiline first messages (pasted stacks, code)
- * otherwise flow into the saved title and break the resume hint.
+ * Derive a single-line title base by walking the transcript for the first
+ * meaningful user prompt. Skips local-command-caveat wrappers, IDE metadata
+ * tags, and built-in slash command echoes — without this skip, sessions
+ * launched from a slash command get titled with the caveat boilerplate
+ * ("<local-command-caveat>...") which is unreadable in /tree.
  */
 export function deriveFirstPrompt(
-  firstUserMessage: Extract<SerializedMessage, { type: 'user' }> | undefined,
+  transcript: SerializedMessage[],
 ): string {
-  const content = firstUserMessage?.message?.content
-  if (!content) return 'Branched conversation'
-  const raw =
-    typeof content === 'string'
-      ? content
-      : content.find(
-          (block): block is { type: 'text'; text: string } =>
-            block.type === 'text',
-        )?.text
-  if (!raw) return 'Branched conversation'
+  const text = getFirstMeaningfulUserMessageTextContent(transcript)
+  if (!text) return 'Branched conversation'
   return (
-    raw.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Branched conversation'
+    text.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Branched conversation'
   )
 }
 
@@ -239,9 +234,7 @@ export async function call(
 
     // Build LogOption for resume
     const now = new Date()
-    const firstPrompt = deriveFirstPrompt(
-      serializedMessages.find(m => m.type === 'user'),
-    )
+    const firstPrompt = deriveFirstPrompt(serializedMessages)
 
     // Save custom title - use provided title or firstPrompt as default
     // This ensures /status and /resume show the same session name

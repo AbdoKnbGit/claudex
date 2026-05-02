@@ -28,11 +28,46 @@ type Props = {
 
 const MAX_VISIBLE_ROWS = 14
 
+/**
+ * A title is "garbage" if it leads with junk that the user wouldn't
+ * recognize: a `<lowercase-tag>` (local-command-caveat, system-reminder,
+ * ide-context, etc.) or a `Caveat:` prefix. These come from older /branch
+ * runs that titled themselves with the slash-command wrapper instead of
+ * the user's first real prompt. firstPrompt (extracted by tau's lite-load
+ * path) skips the same junk, so it's the better fallback.
+ */
+function looksLikeJunkTitle(title: string | undefined): boolean {
+  if (!title) return true
+  const trimmed = title.trim()
+  if (trimmed.length === 0) return true
+  if (trimmed.startsWith('<')) return true
+  if (trimmed.toLowerCase().startsWith('caveat:')) return true
+  return false
+}
+
+function displayTitle(log: {
+  customTitle?: string
+  firstPrompt?: string
+}): string {
+  const custom = log.customTitle?.trim()
+  if (custom && !looksLikeJunkTitle(custom)) return custom
+  const first = log.firstPrompt?.trim()
+  if (first && !looksLikeJunkTitle(first)) {
+    // Preserve the suffix (e.g. " (Branch 2)") if the saved title had it,
+    // since that's how the user distinguishes siblings at a glance.
+    if (custom) {
+      const suffixMatch = custom.match(/\s\((Branch|Clone|Imported)[^)]*\)$/)
+      if (suffixMatch) return `${first}${suffixMatch[0]}`
+    }
+    return first
+  }
+  return custom || first || '(untitled)'
+}
+
 function rowText(row: FlatTreeNode): string {
   const log = row.node.log
-  const title = log.customTitle ?? log.firstPrompt ?? ''
   const tag = log.tag ?? ''
-  return `${title} ${tag} ${row.node.sessionId}`.toLowerCase()
+  return `${displayTitle(log)} ${tag} ${row.node.sessionId}`.toLowerCase()
 }
 
 function isPrintable(ch: string): boolean {
@@ -143,8 +178,7 @@ export function SessionTreeDialog({
 
   const renderRow = (row: FlatTreeNode, isCursor: boolean): React.ReactNode => {
     const log = row.node.log
-    const title =
-      log.customTitle?.trim() || log.firstPrompt?.trim() || '(untitled)'
+    const title = displayTitle(log)
     const meta = `${log.messageCount} msgs · ${formatRelativeTimeAgo(log.modified, { style: 'short' })}`
     const isActive = row.node.sessionId === activeSessionId
     const prefix = renderTreePrefix(row)
