@@ -14,6 +14,13 @@ Nothing existing was changed: `/branch` (`/fork`), `/export`, `/rewind`, and `/r
 
 **Smarter naming for branches and clones.** When you opened `/branch` from a slash-command, the new conversation was getting titled with the command-launcher boilerplate ("`<local-command-caveat>...`") instead of your real first message — making `/tree` unreadable. Now `/branch`, `/clone`, and `/import` all skip the wrapper noise (slash-command echoes, IDE metadata tags, `<local-command-caveat>`, hook output) and pick the first thing you actually typed. Already-saved garbage titles are also auto-cleaned in the `/tree` view by falling back to the same skip-aware preview, so you don't have to rename old branches by hand.
 
+**Distinguishable branch names.** Because `/branch` and `/clone` copy the entire conversation forward, every new branch was being titled after the root session — three branches off "hey" all read "hey (Branch)", "hey (Branch 2)", "hey (Branch 3)" in `/tree` with no way to tell them apart. Two changes fix this:
+
+- Auto-named branches now use the **latest** thing you said before branching as the seed (instead of the very first), so the title reflects where the branch diverged. For example: branching after asking "fix the auth bug" produces "fix the auth bug (Branch · 14:32)" instead of generic "hey (Branch)".
+- Every auto-named branch/clone/import now ends with a short **`HH:MM` time stamp** (`(Branch · 14:32)`, `(Clone · 14:35)`, `(Imported · 14:38)`). Even when two branches genuinely share the same seed text, the timestamp keeps them visually distinct in `/tree` and helps you connect each entry to "what I was doing around 2:32".
+
+If you pass an explicit name (`/branch fix-bug`, `/clone safe`), your label still wins — only the auto-generated default gets the timestamp treatment.
+
 ## 0.6.0 - Claudex to Tau migration
 
 - Renamed the product surface from Claudex to Tau across the CLI, docs, terminal UI, and VS Code companion.

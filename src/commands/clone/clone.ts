@@ -32,15 +32,24 @@ type TranscriptEntry = TranscriptMessage & {
 }
 
 /**
- * Derive a single-line title base by walking the transcript for the first
- * meaningful user prompt. Skips local-command-caveat wrappers, IDE metadata
- * tags, and built-in slash command echoes — that keeps clone titles
- * recognizable instead of "<local-command-caveat>...".
+ * Derive a title seed from the LATEST meaningful user prompt — see the
+ * detailed comment on branch.ts's deriveFirstPrompt for why "last" beats
+ * "first" when the transcript is a copy of an existing session.
  */
 function deriveFirstPrompt(transcript: SerializedMessage[]): string {
-  const text = getFirstMeaningfulUserMessageTextContent(transcript)
+  const reversed = [...transcript].reverse()
+  const text =
+    getFirstMeaningfulUserMessageTextContent(reversed) ??
+    getFirstMeaningfulUserMessageTextContent(transcript)
   if (!text) return 'Cloned conversation'
   return text.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Cloned conversation'
+}
+
+function autoSuffix(label: string): string {
+  const now = new Date()
+  const hh = now.getHours().toString().padStart(2, '0')
+  const mm = now.getMinutes().toString().padStart(2, '0')
+  return `(${label} · ${hh}:${mm})`
 }
 
 /**
@@ -196,13 +205,16 @@ export async function call(
     const firstPrompt = deriveFirstPrompt(serializedMessages)
 
     // Naming policy:
-    //   /clone           -> "<firstPrompt> (Clone)" (or " (Clone N)" on collision)
-    //   /clone safe-x    -> "<firstPrompt> (Clone safe-x)" — gives the user a way
-    //                       to mark *why* they cloned without losing the auto suffix.
+    //   /clone           -> "<lastPrompt> (Clone · HH:MM)" — time stamp keeps
+    //                       multiple clones of the same conversation distinct
+    //                       in /tree without forcing the user to remember
+    //                       arbitrary "(Clone 2)" / "(Clone 3)" suffixes.
+    //   /clone safe-x    -> "<lastPrompt> (Clone safe-x)" — explicit label
+    //                       wins; the user told us what to call it.
     const baseName = firstPrompt
     const effectiveTitle = customSuffix
       ? `${baseName} (Clone ${customSuffix})`
-      : await getUniqueCloneName(baseName)
+      : `${baseName} ${autoSuffix('Clone')}`
     await saveCustomTitle(sessionId, effectiveTitle, clonePath)
 
     logEvent('tengu_conversation_forked', {

@@ -26,10 +26,8 @@ import {
   getTranscriptPathForSession,
   isTranscriptMessage,
   saveCustomTitle,
-  searchSessionsByCustomTitle,
 } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import { escapeRegExp } from '../../utils/stringUtils.js'
 
 type TranscriptEntry = TranscriptMessage & {
   forkedFrom?: {
@@ -55,11 +53,25 @@ function expandHome(p: string): string {
 function deriveFirstPrompt<T extends SerializedMessage>(
   transcript: T[],
 ): string {
-  const text = getFirstMeaningfulUserMessageTextContent(transcript)
+  // Latest meaningful prompt — the import preserves the source's full
+  // history, so the FIRST prompt is the source's original opener and gives
+  // no clue about what the conversation became. The LAST prompt is what the
+  // sharer was working on when they gave you the file.
+  const reversed = [...transcript].reverse()
+  const text =
+    getFirstMeaningfulUserMessageTextContent(reversed) ??
+    getFirstMeaningfulUserMessageTextContent(transcript)
   if (!text) return 'Imported conversation'
   return (
     text.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Imported conversation'
   )
+}
+
+function autoSuffix(label: string): string {
+  const now = new Date()
+  const hh = now.getHours().toString().padStart(2, '0')
+  const mm = now.getMinutes().toString().padStart(2, '0')
+  return `(${label} · ${hh}:${mm})`
 }
 
 async function inspectSource(filePath: string): Promise<ParsedImport | null> {
@@ -79,27 +91,6 @@ async function inspectSource(filePath: string): Promise<ParsedImport | null> {
   } catch {
     return null
   }
-}
-
-async function getUniqueImportName(baseName: string): Promise<string> {
-  const candidate = `${baseName} (Imported)`
-  const exact = await searchSessionsByCustomTitle(candidate, { exact: true })
-  if (exact.length === 0) return candidate
-  const existing = await searchSessionsByCustomTitle(`${baseName} (Imported`)
-  const used = new Set<number>([1])
-  const re = new RegExp(
-    `^${escapeRegExp(baseName)} \\(Imported(?: (\\d+))?\\)$`,
-  )
-  for (const session of existing) {
-    const m = session.customTitle?.match(re)
-    if (m) {
-      if (m[1]) used.add(parseInt(m[1], 10))
-      else used.add(1)
-    }
-  }
-  let n = 2
-  while (used.has(n)) n++
-  return `${baseName} (Imported ${n})`
 }
 
 /**
@@ -168,7 +159,7 @@ async function performImport(sourcePath: string): Promise<{
   })
 
   const firstPrompt = deriveFirstPrompt(serializedMessages)
-  const effectiveTitle = await getUniqueImportName(firstPrompt)
+  const effectiveTitle = `${firstPrompt} ${autoSuffix('Imported')}`
   await saveCustomTitle(importSessionId, effectiveTitle, importPath)
 
   logEvent('tengu_conversation_forked', {

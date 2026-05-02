@@ -32,20 +32,36 @@ type TranscriptEntry = TranscriptMessage & {
 }
 
 /**
- * Derive a single-line title base by walking the transcript for the first
- * meaningful user prompt. Skips local-command-caveat wrappers, IDE metadata
- * tags, and built-in slash command echoes — without this skip, sessions
- * launched from a slash command get titled with the caveat boilerplate
- * ("<local-command-caveat>...") which is unreadable in /tree.
+ * Derive a single-line title base from the LATEST meaningful user prompt
+ * in the transcript. Because /branch copies the entire history forward,
+ * using the FIRST prompt would title every branch after the root session
+ * ("hey", "hey (Branch)", "hey (Branch 2)" — all unhelpful). The last
+ * meaningful prompt is the user's actual context at the moment they
+ * branched, which is what they remember when navigating /tree.
+ *
+ * The skip logic still removes local-command-caveat wrappers, IDE
+ * metadata tags, and built-in slash command echoes by reusing
+ * getFirstMeaningfulUserMessageTextContent on a reversed array.
  */
 export function deriveFirstPrompt(
   transcript: SerializedMessage[],
 ): string {
-  const text = getFirstMeaningfulUserMessageTextContent(transcript)
+  const reversed = [...transcript].reverse()
+  const text =
+    getFirstMeaningfulUserMessageTextContent(reversed) ??
+    getFirstMeaningfulUserMessageTextContent(transcript)
   if (!text) return 'Branched conversation'
   return (
     text.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Branched conversation'
   )
+}
+
+/** "(Branch · 14:32)" suffix — disambiguates siblings created from the same base. */
+function autoSuffix(label: string): string {
+  const now = new Date()
+  const hh = now.getHours().toString().padStart(2, '0')
+  const mm = now.getMinutes().toString().padStart(2, '0')
+  return `(${label} · ${hh}:${mm})`
 }
 
 /**
@@ -236,12 +252,17 @@ export async function call(
     const now = new Date()
     const firstPrompt = deriveFirstPrompt(serializedMessages)
 
-    // Save custom title - use provided title or firstPrompt as default
-    // This ensures /status and /resume show the same session name
-    // Always add " (Branch)" suffix to make it clear this is a branched session
-    // Handle collisions by adding a number suffix (e.g., " (Branch 2)", " (Branch 3)")
+    // Naming policy:
+    //   /branch          -> "<lastPrompt> (Branch · HH:MM)" — time stamp
+    //                       guarantees siblings are visually distinct in /tree
+    //                       even when they share the same conversation seed.
+    //   /branch <name>   -> "<name> (Branch)" with numeric collision handling
+    //                       (preserves the original behavior for users who
+    //                       explicitly name their branches).
     const baseName = title ?? firstPrompt
-    const effectiveTitle = await getUniqueForkName(baseName)
+    const effectiveTitle = title
+      ? await getUniqueForkName(baseName)
+      : `${baseName} ${autoSuffix('Branch')}`
     await saveCustomTitle(sessionId, effectiveTitle, forkPath)
 
     logEvent('tengu_conversation_forked', {
