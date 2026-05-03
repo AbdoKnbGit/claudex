@@ -9,3 +9,6 @@ debug.log
 # never committed to the repo.
 reference/
 tmp/
+
+# Local-only tests / scratch
+src/utils/fallback/detect.test.ts
