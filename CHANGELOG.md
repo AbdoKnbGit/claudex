@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- Allow /github release to inspect workflow runs via `gh run list`.
+
+### Added
 - Improved cache-hit notes in `/stats` with better formatting and detailed explanations.
 
 ### Changed
