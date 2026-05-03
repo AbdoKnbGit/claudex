@@ -4,16 +4,24 @@
 
 ## [v0.6.3] - 2026-05-03
 
-### Added
-- New `/github` command suite: issue creation with safe permissions, wrap-to-commit/push, and release publish flow.
-- Allow `/github release` to inspect workflow runs via `gh run list`.
+### /github issue
+- Inspect issues for the current repo, or inspect a specific issue by URL.
 
-### Changed
-- Refined `/github wrap` prompt with strict writing style and clearer task phases.
-- Updated `/github wrap` safety protocol and authorization rules.
+### /github pr
+- Inspect pull requests and drive gh-backed review actions from a guided prompt.
 
-### Fixed
-- `/github release` version input no longer auto-submits on every keystroke; partial semver now stops and asks for a full tag.
+### /github wrap
+- Wrap local work into stage → commit → changelog → push with explicit authorization rules.
+
+### /github changelog
+- Generate concentrated changelog bullets from commit history.
+
+### /github triage
+- Classify issues (labels/status) with a strict permission gate before any visible action.
+
+### /github release
+- Release workflow: inspect dirty working tree before publishing, check CI/CD workflow status, then tag/publish and list runs.
+- Fix: version input no longer auto-submits on every keystroke; partial semver stops and requests a full tag.
 
 ## 0.6.2
 

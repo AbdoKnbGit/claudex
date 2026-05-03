@@ -36,7 +36,7 @@ That's the point. Same experience. Different brain. Zero dependencies on the ori
 npm install -g @abdoknbgit/tau
 ```
 
-**Requirements:** Node.js >= 20.0.0, Bash
+**Requirements:** Node.js >= 20.0.0, Bash, gh for GitHub automation
 
 ---
 
@@ -103,6 +103,16 @@ Creates a clean content report for the session in Markdown, PDF, or HTML. This i
 **`/fallback` - Recover automatically**
 Automatic recovery when a model fails mid-session. Configure a fallback and keep working through provider outages.
 
+**`/github` - GitHub automation (gh required)**
+GitHub workflows inside Tau, powered by the GitHub CLI.
+
+- `issue` - Inspect issues for the current repo, or pass an issue URL to inspect that issue.
+- `pr` - Inspect pull requests (repo-local or via PR URL) and generate gh-backed actions.
+- `wrap` - Stage → commit → (optional changelog) → push, with one permission gate before network writes.
+- `changelog` - Generate/update changelog notes from commit history in a consistent style.
+- `triage` - Classify issues (labels/status) with explicit confirmation before visible changes.
+- `release` - Release flow: inspect dirty working tree, check CI/CD workflow status, then tag/publish and list runs.
+
 ---
 
 ## Supported Providers
@@ -150,8 +160,6 @@ Tau separates live usage, session statistics, and final reports, so you can moni
 ## Coming Soon
 
 **`/surf`** - Intelligent model routing. Tau reads the task and routes to the best available model automatically. Experimental, in progress.
-
-**`/github-me`** — A tool that handles the full development lifecycle: review, edit, CI/CD, testing, and automation of every GitHub action you'd otherwise do manually.
 
 **`tau-vscode`** - VS Code extension. Provider switching from the command palette, Control Center webview, and project-aware session launch. In progress.
 
