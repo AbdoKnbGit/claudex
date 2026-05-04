@@ -64,7 +64,7 @@ tau update
 
 **`/login` - Start here**
 Pick a provider, enter your credentials, and Tau saves the setup. No env variables, no config hunt.
-
+ **`/provider` - check the status of each one of them**
 ### Models
 
 **`/models` - Pick your model**
@@ -77,13 +77,6 @@ Live model browser. Fetches the real catalog from your provider API, lets you se
 /model kimi-k2-5            set a model directly
 ```
 
-### Voice
-
-**`/hey` - Start a voice conversation**
-Turns on voice conversation mode. Hold Space to talk, release to send, and Tau shows what it heard before submitting.
-
-**`/bye` - End the voice conversation**
-Turns voice conversation mode off and stops any spoken reply that is still playing.
 
 ### Session
 
@@ -124,6 +117,14 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 - `changelog` - Generate/update changelog notes from commit history in a consistent style.
 - `triage` - Classify issues (labels/status) with explicit confirmation before visible changes.
 - `release` - Release flow: inspect dirty working tree, check CI/CD workflow status, then tag/publish and list runs.
+- 
+### Voice
+
+**`/hey` - Start a voice conversation**
+Turns on voice conversation mode. Hold Space to talk, release to send, and Tau shows what it heard before submitting.
+
+**`/bye` - End the voice conversation**
+Turns voice conversation mode off and stops any spoken reply that is still playing.
 
 ---
 
