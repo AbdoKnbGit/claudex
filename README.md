@@ -64,6 +64,7 @@ tau update
 
 **`/login` - Start here**
 Pick a provider, enter your credentials, and Tau saves the setup. No env variables, no config hunt.
+
  **`/provider` - check the status of each one of them**
 ### Models
 
@@ -117,7 +118,7 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 - `changelog` - Generate/update changelog notes from commit history in a consistent style.
 - `triage` - Classify issues (labels/status) with explicit confirmation before visible changes.
 - `release` - Release flow: inspect dirty working tree, check CI/CD workflow status, then tag/publish and list runs.
-- 
+  
 ### Voice
 
 **`/hey` - Start a voice conversation**
@@ -134,7 +135,7 @@ Turns voice conversation mode off and stops any spoken reply that is still playi
 |---|---|
 | Anthropic | No comment |
 | OpenAI | Best in class, but GPT-5.5 is paywalled behind Plus/Pro |
-| Google Gemini | Use your own account — some server configs block certain regions-currently gemini servers are not working and giving some error 429 u can check here https://github.com/google-gemini/gemini-cli/issues |
+| Google Gemini | Use your own account — some server configs block certain regions sometimes gemini servers are not working and giving some error 429 u can check here https://github.com/google-gemini/gemini-cli/issues to keep tracked whit the servers status |
 | Antigravity | Saving lives from agent server overload errors |
 | OpenRouter | Would use this full-time if the bills didn't care |
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
