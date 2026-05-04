@@ -56,8 +56,7 @@ tau update
 <p align="center">
   <img src="tau_docs.PNG" alt="Tau docs" width="720">
 </p>
-https://github.com/user-attachments/assets/27f65054-307d-4a0b-9746-cbce6480c99b
-
+<video src="https://github.com/user-attachments/assets/27f65054-307d-4a0b-9746-cbce6480c99b" controls width="100%"></video>
 ---
 ## The Commands You Need to Know
 
