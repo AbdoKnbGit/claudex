@@ -217,10 +217,13 @@ function validateBlock(
           suggestion: 'Move this binding to a block with "context": "Chat"',
         })
       }
-    } else if (action === 'voice:pushToTalk') {
+    } else if (action === 'voice:pushToTalk' || action === 'hey:pushToTalk') {
       // Hold detection needs OS auto-repeat. Bare letters print into the
       // input during warmup and the activation strip is best-effort —
       // space (default) or a modifier combo like meta+k avoid that.
+      // Hey mode's default ('v') is a bare letter on purpose (the "hold V"
+      // UX matches the user's request) — same warning surfaces, same
+      // mitigation (warmup + strip via useVoiceKeybindingHandler).
       const ks = parseChord(key)[0]
       if (
         ks &&
@@ -229,12 +232,17 @@ function validateBlock(
         !ks.shift &&
         !ks.meta &&
         !ks.super &&
-        /^[a-z]$/.test(ks.key)
+        /^[a-z]$/.test(ks.key) &&
+        // 'v' bound to hey:pushToTalk is the documented default — don't
+        // warn on it. Suppressing the warning only for that pair keeps
+        // genuine misconfigurations (e.g. 'q' bound to hey:pushToTalk)
+        // visible.
+        !(action === 'hey:pushToTalk' && ks.key === 'v')
       ) {
         warnings.push({
           type: 'invalid_action',
           severity: 'warning',
-          message: `Binding "${key}" to voice:pushToTalk prints into the input during warmup; use space or a modifier combo like meta+k`,
+          message: `Binding "${key}" to ${action} prints into the input during warmup; use a modifier combo like meta+k`,
           key,
           context: contextName,
           action,

@@ -94,6 +94,7 @@ import { useTeammateViewAutoExit } from '../hooks/useTeammateViewAutoExit.js';
 import { errorMessage } from '../utils/errors.js';
 import { isHumanTurn } from '../utils/messagePredicates.js';
 import { logError } from '../utils/log.js';
+import { isHeyModeFeatureOn } from '../voice/heyModeEnabled.js';
 // Dead code elimination: conditional imports
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const useVoiceIntegration: typeof import('../hooks/useVoiceIntegration.js').useVoiceIntegration = feature('VOICE_MODE') ? require('../hooks/useVoiceIntegration.js').useVoiceIntegration : () => ({
@@ -102,6 +103,11 @@ const useVoiceIntegration: typeof import('../hooks/useVoiceIntegration.js').useV
   resetAnchor: () => {}
 });
 const VoiceKeybindingHandler: typeof import('../hooks/useVoiceIntegration.js').VoiceKeybindingHandler = feature('VOICE_MODE') ? require('../hooks/useVoiceIntegration.js').VoiceKeybindingHandler : () => null;
+const heyModeAvailable = isHeyModeFeatureOn();
+const HeyKeybindingHandler: typeof import('../hooks/useHeyIntegration.js').HeyKeybindingHandler = heyModeAvailable ? require('../hooks/useHeyIntegration.js').HeyKeybindingHandler : () => null;
+const useHeyIntegrationImpl: typeof import('../hooks/useHeyIntegration.js').useHeyIntegration = heyModeAvailable ? require('../hooks/useHeyIntegration.js').useHeyIntegration : ({ onSubmit: _o }: { onSubmit: (t: string) => void }) => ({ stripTrailing: () => 0, handleKeyEvent: () => {}, state: 'idle' as const });
+const useHeyResponseSpeakerImpl: typeof import('../hooks/useHeyResponseSpeaker.js').useHeyResponseSpeaker = heyModeAvailable ? require('../hooks/useHeyResponseSpeaker.js').useHeyResponseSpeaker : (_args: { enabled: boolean; messages: unknown[]; isLoading: boolean }) => {};
+const useHeyEnabledImpl: typeof import('../hooks/useHeyEnabled.js').useHeyEnabled = heyModeAvailable ? require('../hooks/useHeyEnabled.js').useHeyEnabled : () => false;
 // Frustration detection is ant-only (dogfooding). Conditional require so external
 // builds eliminate the module entirely (including its two O(n) useMemos that run
 // on every messages change, plus the GrowthBook fetch).
@@ -4054,6 +4060,50 @@ export function REPL({
     resetAnchor: () => {},
     interimRange: null
   };
+
+  // Hey-mode integration (hold-V conversation: local whisper STT +
+  // auto-submit + native TTS reply). Mounted alongside voice — they share
+  // recording infra but use distinct keys (space vs v) and distinct STT
+  // backends, and only fire when their respective toggles are on.
+  const hey = heyModeAvailable ?
+  // biome-ignore lint/correctness/useHookAtTopLevel: heyModeAvailable is a process-lifetime constant
+  useHeyIntegrationImpl({
+    setInputValueRaw,
+    inputValueRef,
+    insertTextRef,
+    onSubmit: (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (insertTextRef.current) {
+        insertTextRef.current.setInputWithCursor(trimmed, trimmed.length);
+      } else {
+        setInputValueRaw(trimmed);
+      }
+      // Route the transcript through the same pipeline as the inbox
+      // poller / mailbox bridge so it gets normal user-message treatment
+      // (history, slash-commands, etc.).
+      setTimeout(() => {
+        if (handleIncomingPrompt(trimmed)) {
+          if (insertTextRef.current) {
+            insertTextRef.current.setInputWithCursor('', 0);
+          } else {
+            setInputValueRaw('');
+          }
+        }
+      }, 700);
+    }
+  }) : {
+    stripTrailing: () => 0,
+    handleKeyEvent: () => {},
+    state: 'idle' as const
+  };
+
+  // biome-ignore lint/correctness/useHookAtTopLevel: heyModeAvailable is a process-lifetime constant
+  const heyEnabledForTts = heyModeAvailable ? useHeyEnabledImpl() : false;
+  // Speak completed assistant turns aloud while hey-mode is on. Listens
+  // for the isLoading→idle edge and grabs the latest assistant message.
+  // biome-ignore lint/correctness/useHookAtTopLevel: heyModeAvailable is a process-lifetime constant
+  if (heyModeAvailable) useHeyResponseSpeakerImpl({ enabled: heyEnabledForTts, messages, isLoading });
   useInboxPoller({
     enabled: isAgentSwarmsEnabled(),
     isLoading,
@@ -4442,6 +4492,7 @@ export function REPL({
         <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={terminalTitle} disabled={titleDisabled} noPrefix={showStatusInTerminalTab} />
         <GlobalKeybindingHandlers {...globalKeybindingProps} />
         {feature('VOICE_MODE') ? <VoiceKeybindingHandler voiceHandleKeyEvent={voice.handleKeyEvent} stripTrailing={voice.stripTrailing} resetAnchor={voice.resetAnchor} isActive={!toolJSX?.isLocalJSXCommand} /> : null}
+        {heyModeAvailable ? <HeyKeybindingHandler heyHandleKeyEvent={hey.handleKeyEvent} heyState={hey.state} stripTrailing={hey.stripTrailing} isActive={!toolJSX?.isLocalJSXCommand} /> : null}
         <CommandKeybindingHandlers onSubmit={onSubmit} isActive={!toolJSX?.isLocalJSXCommand} />
         {transcriptScrollRef ?
       // ScrollKeybindingHandler must mount before CancelRequestHandler so
@@ -4584,6 +4635,7 @@ export function REPL({
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={terminalTitle} disabled={titleDisabled} noPrefix={showStatusInTerminalTab} />
       <GlobalKeybindingHandlers {...globalKeybindingProps} />
       {feature('VOICE_MODE') ? <VoiceKeybindingHandler voiceHandleKeyEvent={voice.handleKeyEvent} stripTrailing={voice.stripTrailing} resetAnchor={voice.resetAnchor} isActive={!toolJSX?.isLocalJSXCommand} /> : null}
+      {heyModeAvailable ? <HeyKeybindingHandler heyHandleKeyEvent={hey.handleKeyEvent} heyState={hey.state} stripTrailing={hey.stripTrailing} isActive={!toolJSX?.isLocalJSXCommand} /> : null}
       <CommandKeybindingHandlers onSubmit={onSubmit} isActive={!toolJSX?.isLocalJSXCommand} />
       {/* ScrollKeybindingHandler must mount before CancelRequestHandler so
           ctrl+c-with-selection copies instead of cancelling the active task.
@@ -4937,7 +4989,7 @@ export function REPL({
                       {}
                       <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
-            feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />
+            feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') || heyModeAvailable ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />
                       <SessionBackgroundHint onBackgroundSession={handleBackgroundSession} isLoading={isLoading} />
                     </>}
                 {cursor &&

@@ -94,6 +94,13 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       // — null-unbinding space hits a pre-existing useKeybinding.ts trap
       // where 'unbound' swallows the event (space dead for typing).
       ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
+      // Hey-mode activation (hold-V conversation: local whisper STT +
+      // auto-submit + native TTS reply). Bare-letter binding works the
+      // same way as 'space' for voice:pushToTalk — hold-detection swallows
+      // rapid auto-repeat, single taps flow through and type 'v' normally.
+      // The hey-mode handler only fires when /hey is enabled, so V types
+      // V everywhere else.
+      v: 'hey:pushToTalk',
     },
   },
   {

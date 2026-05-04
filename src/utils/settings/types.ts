@@ -869,6 +869,12 @@ export const SettingsSchema = lazySchema(() =>
               .describe('Enable voice mode (hold-to-talk dictation)'),
           }
         : {}),
+      heyEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable hey mode (hold-V conversation: local whisper STT + auto-submit + native TTS replies)',
+        ),
       ...(feature('KAIROS')
         ? {
             assistant: z

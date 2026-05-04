@@ -18,7 +18,7 @@ const NON_CORE_PATTERNS = [
   /\.generated\./,
   /(?:^|\/)(?:dist|build|out|target|node_modules|\.next|__pycache__)\//,
   /\.(?:min\.js|min\.css|map|pyc|pyo)$/,
-  // data / docs / config extensions (not "write a test for" material)
+  // data / docs / config extensions
   /\.(?:json|ya?ml|toml|xml|ini|cfg|conf|env|lock|txt|md|mdx|rst|csv|log|svg)$/i,
   // configuration / metadata
   /(?:^|\/)\.?(?:eslintrc|prettierrc|babelrc|editorconfig|gitignore|gitattributes|dockerignore|npmrc)/,
@@ -152,7 +152,6 @@ export const getExampleCommandFromCache = memoize(() => {
     `refactor ${frequentFile}`,
     'how do I log an error?',
     `edit ${frequentFile} to...`,
-    `write a test for ${frequentFile}`,
     'create a util logging.py that...',
   ]
 

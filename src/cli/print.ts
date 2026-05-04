@@ -3561,7 +3561,7 @@ function runHeadlessStreaming(
               // installOAuthTokens: performLogout (clear stale state) →
               // store profile → saveOAuthTokensIfNeeded → clearOAuthTokenCache
               // → clearAuthRelatedCaches. After this resolves, the memoized
-              // getTauAIOAuthTokens in this process is invalidated; the
+              // getClaudeAIOAuthTokens in this process is invalidated; the
               // next API call re-reads keychain/file and works. No respawn.
               await installOAuthTokens(tokens)
               logEvent('tengu_oauth_success', {

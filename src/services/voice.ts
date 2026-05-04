@@ -17,20 +17,44 @@ import { getPlatform } from '../utils/platform.js'
 // (post-wake, post-boot). Load happens on first voice keypress — no
 // preload, because there's no way to make dlopen non-blocking and a
 // startup freeze is worse than a first-press delay.
-type AudioNapi = typeof import('audio-capture-napi')
+type AudioNapi = {
+  isNativeAudioAvailable: () => boolean
+  isNativeRecordingActive: () => boolean
+  startNativeRecording: (
+    onData: (data: Buffer) => void,
+    onEnd: () => void,
+  ) => boolean
+  stopNativeRecording: () => void
+}
+const missingAudioNapi: AudioNapi = {
+  isNativeAudioAvailable: () => false,
+  isNativeRecordingActive: () => false,
+  startNativeRecording: () => false,
+  stopNativeRecording: () => {},
+}
 let audioNapi: AudioNapi | null = null
 let audioNapiPromise: Promise<AudioNapi> | null = null
 
 function loadAudioNapi(): Promise<AudioNapi> {
   audioNapiPromise ??= (async () => {
     const t0 = Date.now()
-    const mod = await import('audio-capture-napi')
-    // vendor/audio-capture-src/index.ts defers require(...node) until the
-    // first function call — trigger it here so timing reflects real cost.
-    mod.isNativeAudioAvailable()
-    audioNapi = mod
-    logForDebugging(`[voice] audio-capture-napi loaded in ${Date.now() - t0}ms`)
-    return mod
+    try {
+      const mod = (await import('audio-capture-napi')) as AudioNapi
+      // vendor/audio-capture-src/index.ts defers require(...node) until the
+      // first function call — trigger it here so timing reflects real cost.
+      mod.isNativeAudioAvailable()
+      audioNapi = mod
+      logForDebugging(
+        `[voice] audio-capture-napi loaded in ${Date.now() - t0}ms`,
+      )
+      return mod
+    } catch (err) {
+      logForDebugging(
+        `[voice] audio-capture-napi unavailable; falling back to external recorders: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      audioNapi = missingAudioNapi
+      return missingAudioNapi
+    }
   })()
   return audioNapiPromise
 }
@@ -39,6 +63,8 @@ function loadAudioNapi(): Promise<AudioNapi> {
 
 const RECORDING_SAMPLE_RATE = 16000
 const RECORDING_CHANNELS = 1
+const AUDIO_DEVICE_ENV = 'TAU_AUDIO_DEVICE'
+const LEGACY_AUDIO_DEVICE_ENV = 'CLAUDEX_AUDIO_DEVICE'
 
 // SoX silence detection: stop after this duration of silence
 const SILENCE_DURATION_SECS = '2.0'
@@ -121,6 +147,48 @@ export function _resetArecordProbeForTesting(): void {
   arecordProbe = null
 }
 
+type FfmpegDshowProbeResult = { devices: string[]; stderr: string }
+let ffmpegDshowProbe: Promise<FfmpegDshowProbeResult> | null = null
+
+function probeFfmpegDshowAudioDevices(): Promise<FfmpegDshowProbeResult> {
+  ffmpegDshowProbe ??= new Promise(resolve => {
+    const child = spawn(
+      'ffmpeg',
+      ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    )
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+    child.once('close', () => {
+      const devices: string[] = []
+      for (const match of stderr.matchAll(/"([^"]+)"\s+\(audio\)/g)) {
+        const name = match[1]
+        if (name) devices.push(name)
+      }
+      resolve({ devices, stderr })
+    })
+    child.once('error', err => {
+      resolve({ devices: [], stderr: err.message })
+    })
+  })
+  return ffmpegDshowProbe
+}
+
+export function _resetFfmpegDshowProbeForTesting(): void {
+  ffmpegDshowProbe = null
+}
+
+async function getFfmpegDshowAudioDevice(): Promise<string | null> {
+  const override =
+    process.env[AUDIO_DEVICE_ENV] ?? process.env[LEGACY_AUDIO_DEVICE_ENV]
+  if (override) return override
+  if (process.platform !== 'win32' || !hasCommand('ffmpeg')) return null
+  const probe = await probeFfmpegDshowAudioDevices()
+  return probe.devices[0] ?? null
+}
+
 // cpal's ALSA backend writes to our process stderr when it can't find any
 // sound cards (it runs in-process — no subprocess pipe to capture it). The
 // spawn fallbacks below pipe stderr correctly, so skip native when ALSA has
@@ -198,12 +266,10 @@ export async function checkVoiceDependencies(): Promise<{
     return { available: true, missing: [], installCommand: null }
   }
 
-  // Windows has no supported fallback — native module is required
-  if (process.platform === 'win32') {
-    return {
-      available: false,
-      missing: ['Voice mode requires the native audio module (not loaded)'],
-      installCommand: null,
+  if (process.platform === 'win32' && hasCommand('ffmpeg')) {
+    const device = await getFfmpegDshowAudioDevice()
+    if (device) {
+      return { available: true, missing: [], installCommand: null }
     }
   }
 
@@ -272,12 +338,15 @@ export async function checkRecordingAvailability(): Promise<RecordingAvailabilit
     return { available: true, reason: null }
   }
 
-  // Windows has no supported fallback
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' && hasCommand('ffmpeg')) {
+    const device = await getFfmpegDshowAudioDevice()
+    if (device) {
+      return { available: true, reason: null }
+    }
     return {
       available: false,
       reason:
-        'Voice recording requires the native audio module, which could not be loaded.',
+        'Voice mode could not find a Windows microphone through ffmpeg DirectShow. Set TAU_AUDIO_DEVICE to a DirectShow audio device name if your mic is listed under a different name.',
     }
   }
 
@@ -316,6 +385,13 @@ export async function checkRecordingAvailability(): Promise<RecordingAvailabilit
       return { available: false, reason: wslNoAudioReason }
     }
     const pm = detectPackageManager()
+    if (process.platform === 'win32') {
+      return {
+        available: false,
+        reason:
+          'Voice recording requires the native audio module, ffmpeg, or SoX `rec` on PATH. Install ffmpeg or SoX for Windows, or use a build that includes audio-capture-napi.',
+      }
+    }
     return {
       available: false,
       reason: pm
@@ -372,10 +448,11 @@ export async function startRecording(
     // Native recording failed — fall through to platform fallbacks
   }
 
-  // Windows has no supported fallback
-  if (process.platform === 'win32') {
-    logForDebugging('[voice] Windows native recording unavailable, no fallback')
-    return false
+  if (process.platform === 'win32' && hasCommand('ffmpeg')) {
+    const device = await getFfmpegDshowAudioDevice()
+    if (device) {
+      return startFfmpegDshowRecording(device, onData, onEnd)
+    }
   }
 
   // On Linux, try arecord (ALSA utils) before SoX. Consult the probe so
@@ -393,6 +470,64 @@ export async function startRecording(
 
   // Fallback: SoX rec (Linux, or macOS if native module unavailable)
   return startSoxRecording(onData, onEnd, options)
+}
+
+function startFfmpegDshowRecording(
+  device: string,
+  onData: (chunk: Buffer) => void,
+  onEnd: () => void,
+): boolean {
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-f',
+    'dshow',
+    '-i',
+    `audio=${device}`,
+    '-vn',
+    '-ac',
+    String(RECORDING_CHANNELS),
+    '-ar',
+    String(RECORDING_SAMPLE_RATE),
+    '-f',
+    's16le',
+    'pipe:1',
+  ]
+
+  logForDebugging(`[voice] starting ffmpeg dshow recording: ${device}`)
+  const child = spawn('ffmpeg', args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  activeRecorder = child
+
+  child.stdout?.on('data', (chunk: Buffer) => {
+    onData(chunk)
+  })
+
+  let stderr = ''
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString()
+  })
+
+  child.on('close', code => {
+    if (activeRecorder === child) activeRecorder = null
+    if (code !== 0 && code !== null) {
+      logForDebugging(
+        `[voice] ffmpeg dshow exited ${code}: ${stderr.slice(-400).trim()}`,
+      )
+    }
+    onEnd()
+  })
+
+  child.on('error', err => {
+    logError(err)
+    if (activeRecorder === child) activeRecorder = null
+    onEnd()
+  })
+
+  return true
 }
 
 function startSoxRecording(

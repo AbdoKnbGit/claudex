@@ -106,7 +106,7 @@ type KeyedProvider = Exclude<ManageableProvider, 'ollama' | 'firstParty'>
 type AuthState = 'oauth' | 'api_key' | 'inactive'
 
 function getFirstPartyAuthState(): AuthState {
-  if (getTauAIOAuthTokens()?.accessToken) return 'oauth'
+  if (getClaudeAIOAuthTokens()?.accessToken) return 'oauth'
   if (hasAnthropicApiKeyAuth()) return 'api_key'
   return 'inactive'
 }
