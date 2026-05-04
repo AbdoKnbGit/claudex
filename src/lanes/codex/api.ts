@@ -320,6 +320,29 @@ export class CodexApiClient {
    * warm node. Generated lazily; rotated by clearChain().
    */
   private cacheSessionId: string | null = null
+  /**
+   * Per-model frozen copy of the system prompt's volatile tail
+   * (env / git status / memory / current date). The codex lane
+   * unshifts this as a `developer` input item at position 0 every
+   * turn so the input prefix stays byte-stable across turns.
+   *
+   * Why frozen: the upstream rebuilds the env block each turn with a
+   * fresh timestamp, but if those bytes drift between turns the
+   * prompt-cache prefix hash breaks. Freezing the first turn's copy
+   * means every later turn re-emits identical bytes at position 0,
+   * and the cache hits everything before the new user message.
+   *
+   * Trade-off: the model sees env data captured at session start.
+   * Acceptable because (a) env rarely changes mid-session in
+   * meaningful ways, (b) the model can run `git status` / `pwd` /
+   * `date` on demand if it actually needs fresh values, and (c)
+   * `clearChain()` (called on `/clear` and dispose paths) wipes the
+   * map so a fresh conversation captures fresh env.
+   *
+   * Keyed by model so a `/models` swap inside the same session
+   * doesn't re-use a different model's frozen anchor.
+   */
+  private frozenVolatileByModel: Map<string, string> = new Map()
 
   configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string; chatgptAccountId?: string; chatgptIdToken?: string }): void {
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
@@ -366,10 +389,31 @@ export class CodexApiClient {
   /**
    * Rotate the cache session id. Call when starting a fresh
    * conversation so stale KV-cache entries don't get routed to the
-   * new turn's prefix.
+   * new turn's prefix. Also wipes the per-model frozen volatile
+   * anchors so the next conversation captures fresh env data.
    */
   clearChain(): void {
     this.cacheSessionId = null
+    this.frozenVolatileByModel.clear()
+  }
+
+  /**
+   * Return the frozen volatile anchor for `model`. If the model has
+   * no entry yet AND `currentText` is non-empty, this seeds the map
+   * with `currentText` and returns it. On subsequent calls for the
+   * same model, the originally-seeded text is returned regardless of
+   * what `currentText` is now — that's the point: the leading
+   * developer item must keep emitting identical bytes turn-to-turn
+   * for the cache prefix to hit.
+   *
+   * Pure no-op when `currentText` is empty (no anchor needed).
+   */
+  getOrSeedFrozenVolatile(model: string, currentText: string): string {
+    if (!currentText) return ''
+    const cached = this.frozenVolatileByModel.get(model)
+    if (cached !== undefined) return cached
+    this.frozenVolatileByModel.set(model, currentText)
+    return currentText
   }
 
   /**

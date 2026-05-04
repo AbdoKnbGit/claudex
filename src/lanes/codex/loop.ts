@@ -117,30 +117,34 @@ export class CodexLane implements Lane {
     // Convert Anthropic history → Responses API input items.
     const inputItems = convertHistoryToCodex(messages, toolUseIdToCallId)
 
-    // Inject the volatile system tail as a `developer` input message
-    // right before the latest user message. Two reasons this exact slot:
-    //   1. The cache prefix runs through every item up to (but not
-    //      including) the new turn — putting volatile content at the
-    //      "fresh" boundary keeps everything before it byte-stable
-    //      across turns.
-    //   2. On the very first turn there is no prior history, so injecting
-    //      before user1 still gives the model the env/git/memory it
-    //      needs without breaking any existing cache (there isn't one
-    //      yet).
+    // Anchor a frozen copy of the volatile system tail as a
+    // `developer` input item at position 0 — same bytes every turn
+    // for the lifetime of the conversation, so the prompt-cache
+    // prefix lands on the same KV-cache-warm chunks turn after turn.
+    //
+    // Why position 0 and not "before the latest user message" (the
+    // earlier shape this code had): every turn the upstream re-sends
+    // the full conversation history starting at user1. If we inject
+    // anywhere AFTER user1, the bytes at input[0] differ between
+    // turn 1 (where input[0] was our injected dev item) and turn 2+
+    // (where input[0] is user1). The cache misses at the very first
+    // byte and reports 0 cached_tokens. Anchoring at position 0 with
+    // a frozen byte-stable payload keeps every turn's input[0]
+    // identical, so the cache hits all the way through to the
+    // newest message.
+    //
+    // The frozen text comes from CodexApiClient.getOrSeedFrozenVolatile:
+    // first turn captures the current env / git / memory; later
+    // turns get the same captured copy back. `clearChain()` wipes
+    // it so a fresh conversation captures fresh env.
     if (volatileSystemText) {
-      const insertionIndex = findLastUserMessageIndex(inputItems)
-      const volatileItem: CodexInputItem = {
-        type: 'message',
-        role: 'developer',
-        content: [{ type: 'input_text', text: volatileSystemText }],
-      }
-      if (insertionIndex >= 0) {
-        inputItems.splice(insertionIndex, 0, volatileItem)
-      } else {
-        // No user message in history (rare — agent loop sometimes calls
-        // with assistant-only history during continuations). Append so
-        // the model still sees the volatile context.
-        inputItems.push(volatileItem)
+      const frozenAnchor = codexApi.getOrSeedFrozenVolatile(model, volatileSystemText)
+      if (frozenAnchor) {
+        inputItems.unshift({
+          type: 'message',
+          role: 'developer',
+          content: [{ type: 'input_text', text: frozenAnchor }],
+        })
       }
     }
 
@@ -927,14 +931,6 @@ export function splitCodexSystemForCache(text: string): {
     stable: text.slice(0, cut).replace(/\s+$/, ''),
     volatile: text.slice(cut).replace(/^\s+/, ''),
   }
-}
-
-function findLastUserMessageIndex(items: CodexInputItem[]): number {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i]
-    if (it.type === 'message' && it.role === 'user') return i
-  }
-  return -1
 }
 
 // ─── Singleton ───────────────────────────────────────────────────

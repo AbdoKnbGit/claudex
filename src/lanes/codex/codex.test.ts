@@ -4,7 +4,7 @@
  * Run:  bun run src/lanes/codex/codex.test.ts
  */
 
-import { CodexApiError } from './api.js'
+import { CodexApiError, codexApi } from './api.js'
 import { codexLane, resolveReasoning, splitCodexSystemForCache } from './loop.js'
 import { assembleCodexSystemPrompt } from './prompt.js'
 import { getCodexRegistrationByNativeName } from './tools.js'
@@ -171,6 +171,51 @@ async function main(): Promise<void> {
     const { stable, volatile } = splitCodexSystemForCache(head)
     assert(stable === head, 'should leave head-occurring matches alone')
     assert(volatile === '', 'no volatile expected from head-region match')
+  })
+
+  // ── Frozen volatile anchor: input[0] byte-stability ──────────────
+  // The leading dev-message anchor must keep emitting identical bytes
+  // every turn for the prompt-cache prefix to land on a warm chunk.
+  // These tests pin the seed/return semantics independent of any
+  // network call.
+
+  await test('frozen volatile anchor: first call seeds and returns input', () => {
+    codexApi.clearChain()
+    const out = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-A')
+    assert(out === 'env-A', `seed result; got ${JSON.stringify(out)}`)
+  })
+
+  await test('frozen volatile anchor: second call returns the seeded copy', () => {
+    codexApi.clearChain()
+    codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-A')
+    const out = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-B-DIFFERENT')
+    assert(out === 'env-A', `should return seeded; got ${JSON.stringify(out)}`)
+  })
+
+  await test('frozen volatile anchor: per-model isolation', () => {
+    codexApi.clearChain()
+    codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-for-5.4')
+    const out = codexApi.getOrSeedFrozenVolatile('gpt-5-codex', 'env-for-codex')
+    assert(out === 'env-for-codex', `model swap should seed fresh; got ${JSON.stringify(out)}`)
+    const replay = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-for-5.4-V2')
+    assert(replay === 'env-for-5.4', `original model anchor stays put; got ${JSON.stringify(replay)}`)
+  })
+
+  await test('frozen volatile anchor: clearChain wipes the map', () => {
+    codexApi.clearChain()
+    codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-A')
+    codexApi.clearChain()
+    const out = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-B')
+    assert(out === 'env-B', `clearChain should re-seed on next call; got ${JSON.stringify(out)}`)
+  })
+
+  await test('frozen volatile anchor: empty input is a no-op (returns empty)', () => {
+    codexApi.clearChain()
+    const out = codexApi.getOrSeedFrozenVolatile('gpt-5.4', '')
+    assert(out === '', `empty input should return empty; got ${JSON.stringify(out)}`)
+    // And shouldn't have seeded — a later non-empty call should win.
+    const seeded = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'real-env')
+    assert(seeded === 'real-env', `empty seed must not block real seed; got ${JSON.stringify(seeded)}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)
