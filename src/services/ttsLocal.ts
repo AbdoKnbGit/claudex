@@ -74,8 +74,14 @@ export function checkTtsAvailable(): TtsAvailability {
       return availabilityCache
     }
     logForDebugging(
-      `[hey] Gemini TTS unavailable; falling back to local TTS: ${gemini.reason ?? 'no audio player available'}`,
+      `[hey] Gemini TTS unavailable while Gemini voice is selected: ${gemini.reason ?? 'no audio player available'}`,
     )
+    availabilityCache = {
+      available: false,
+      backend: null,
+      reason: gemini.reason ?? 'No audio player available for Gemini TTS output.',
+    }
+    return availabilityCache
   }
 
   availabilityCache = checkLocalTtsAvailable()
@@ -221,17 +227,9 @@ export async function speak(text: string, opts: SpeakOptions = {}): Promise<void
       } catch (err) {
         if (isAbortLikeError(err)) return
         logForDebugging(
-          `[hey] Gemini TTS failed; falling back to local TTS: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+          `[hey] Gemini TTS failed while Gemini voice is selected: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
           { level: 'error' },
         )
-        const fallback = checkLocalTtsAvailable()
-        if (!fallback.available) {
-          logForDebugging(
-            `[hey] local TTS fallback unavailable: ${fallback.reason ?? 'unknown'}`,
-          )
-          return
-        }
-        await speakWithBackend(trimmed, fallback.backend)
         return
       }
     }

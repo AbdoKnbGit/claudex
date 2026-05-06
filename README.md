@@ -2,19 +2,25 @@
   <img src="Logo.webp" alt="Tau logo" width="120">
 </p>
 
-# Tau
+# The True Free Claude Code
+
+[![npm version](https://img.shields.io/npm/v/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
+[![npm downloads](https://img.shields.io/npm/dm/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
+[![License](https://img.shields.io/npm/l/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
+
+<video src="https://github.com/user-attachments/assets/27f65054-307d-4a0b-9746-cbce6480c99b" controls width="100%"></video>
 
 ---
 
 ## What is Tau?
 
-Tau is an open-source, multi-provider AI coding CLI that runs a full agentic coding environment - tools, MCP servers, hooks, skills, the whole thing - with every major LLM provider, natively.
+Tau is the true free Claude Code agent. It gives you a full agentic Claude Code environment - tools, MCP servers, hooks, skills, file editing, shell execution, and session control - without locking you into one paid route.
 
-Not a proxy. Not a wrapper around someone else's wrapper. Native adapters, built from scratch, for each provider. When you use Gemini through Tau, it speaks Gemini's API directly. Same for OpenAI, DeepSeek, OpenRouter, all of them.
+It is not a proxy and not a wrapper around someone else's wrapper. Tau has native adapters for 14 providers, built to make them work directly inside your agentic Claude Code environment. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, DeepSeek, OpenRouter, AgentRouter, and the rest.
 
 You install it once. You type `/login`. You pick a provider. You work.
 
-That's it. No shell configuration. No export statements. No environment variable archaeology. No "works on my machine" moments. A first-run wizard handles credentials and saves them. Cross-platform — Windows, macOS, Linux. No brainrot config required.
+That's it: plug and play with one command and one login flow. No shell configuration. No export statements. No environment variable archaeology. A first-run wizard handles credentials and saves them. Cross-platform — Windows, macOS, Linux.
 
 ---
 
@@ -144,13 +150,14 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 | Cursor | Peak performance on Plan mode |
 | KiloCode | Lots of free models and decent to try for low-cost side tasks |
 | Kiro | Best performance/cost provider with large free credit |
+| AgentRouter | Includes $125 usage. Latency is server-side, and the API still has issues. claude_haiku is currently the only model I made work well |
 
 ---
 
 ## Features
 
 **Multi-provider, natively**
-Twelve providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
+Fourteen providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.

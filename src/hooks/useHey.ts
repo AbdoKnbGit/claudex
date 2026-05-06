@@ -257,27 +257,11 @@ async function transcribeWithConfiguredProvider(pcm: Buffer): Promise<string> {
   if (gemini.isGeminiTranscriptionEnabled()) {
     const availability = gemini.checkGeminiVoiceAvailable()
     if (availability.available) {
-      try {
-        return await gemini.transcribePcm(pcm)
-      } catch (err) {
-        const error = toError(err)
-        logForDebugging(
-          `[hey] Gemini STT failed; falling back to local whisper: ${error.stack ?? error.message}`,
-          { level: 'error' },
-        )
-        const whisper = await loadWhisperModule()
-        const whisperAvailable = whisper.checkWhisperAvailable()
-        if (!whisperAvailable.available) {
-          throw new Error(
-            `Gemini transcription failed (${error.message}) and local whisper fallback is unavailable: ${whisperAvailable.reason ?? 'unknown'}`,
-          )
-        }
-      }
-    } else {
-      logForDebugging(
-        `[hey] Gemini STT unavailable; falling back to local whisper: ${availability.reason ?? 'unknown'}`,
-      )
+      return await gemini.transcribePcm(pcm)
     }
+    throw new Error(
+      `Gemini voice is selected, but unavailable: ${availability.reason ?? 'missing Gemini voice API key'}`,
+    )
   }
 
   const whisper = await loadWhisperModule()

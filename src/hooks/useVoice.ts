@@ -1,10 +1,11 @@
-// React hook for hold-to-talk voice input using Anthropic voice_stream STT.
+// React hook for hold-to-talk voice input using Gemini STT when selected,
+// otherwise Anthropic voice_stream STT.
 //
 // Hold the keybinding to record; release to stop and submit.  Auto-repeat
 // key events reset an internal timer — when no keypress arrives within
-// RELEASE_TIMEOUT_MS the recording stops automatically.  Uses the native
-// audio module (macOS) or SoX for recording, and Anthropic's voice_stream
-// endpoint (conversation_engine) for STT.
+// RELEASE_TIMEOUT_MS the recording stops automatically. Uses the native
+// audio module (macOS) or SoX for recording, then sends audio to Gemini or
+// Anthropic's voice_stream endpoint based on the selected voice provider.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSetVoiceState } from '../context/voice.js'
@@ -13,6 +14,11 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import {
+  checkGeminiVoiceAvailable,
+  isGeminiTranscriptionEnabled,
+  transcribePcm as transcribeGeminiPcm,
+} from '../services/geminiVoice.js'
 import { getVoiceKeyterms } from '../services/voiceKeyterms.js'
 import {
   connectVoiceStream,
@@ -141,6 +147,7 @@ type VoiceModule = typeof import('../services/voice.js')
 let voiceModule: VoiceModule | null = null
 
 type VoiceState = 'idle' | 'recording' | 'processing'
+type VoiceInputBackend = 'voice_stream' | 'gemini'
 
 type UseVoiceOptions = {
   onTranscript: (text: string) => void
@@ -204,6 +211,7 @@ export function useVoice({
 }: UseVoiceOptions): UseVoiceReturn {
   const [state, setState] = useState<VoiceState>('idle')
   const stateRef = useRef<VoiceState>('idle')
+  const inputBackendRef = useRef<VoiceInputBackend>('voice_stream')
   const connectionRef = useRef<VoiceStreamConnection | null>(null)
   const accumulatedRef = useRef('')
   const onTranscriptRef = useRef(onTranscript)
@@ -244,6 +252,7 @@ export function useVoice({
   // finalize() resolves via no_data_timeout with hadAudioSignal=true, we
   // replay the buffer on a fresh WS once. Bounded: 32KB/s × ~60s max ≈ 2MB.
   const fullAudioRef = useRef<Buffer[]>([])
+  const geminiAudioRef = useRef<Buffer[]>([])
   const silentDropRetriedRef = useRef(false)
   // Bumped when the early-error retry is scheduled. Captured per
   // attemptConnect — onError swallows stale-gen events (conn 1's
@@ -281,6 +290,13 @@ export function useVoice({
     })
   }
 
+  function isConfiguredVoiceInputAvailable(): boolean {
+    if (isGeminiTranscriptionEnabled()) {
+      return checkGeminiVoiceAvailable().available
+    }
+    return isVoiceStreamAvailable()
+  }
+
   const cleanup = useCallback((): void => {
     // Stale any in-flight session (main connection isStale(), replay
     // isStale(), finishRecording continuation). Without this, disabling
@@ -312,6 +328,7 @@ export function useVoice({
     accumulatedRef.current = ''
     audioLevelsRef.current = []
     fullAudioRef.current = []
+    geminiAudioRef.current = []
     setVoiceState(prev => {
       if (prev.voiceInterimTranscript === '' && !prev.voiceAudioLevels.length)
         return prev
@@ -358,6 +375,67 @@ export function useVoice({
     const myGen = sessionGenRef.current
     const isStale = () => sessionGenRef.current !== myGen
     logForDebugging('[voice] Recording stopped')
+
+    if (inputBackendRef.current === 'gemini') {
+      const pcm = Buffer.concat(geminiAudioRef.current)
+      geminiAudioRef.current = []
+      fullAudioRef.current = []
+
+      void (async () => {
+        try {
+          let text = ''
+          if (pcm.length > 0 && hadAudioSignal) {
+            logForDebugging(
+              `[voice] Gemini transcription request pcm=${String(pcm.length)}B`,
+            )
+            text = (await transcribeGeminiPcm(pcm)).trim()
+            if (isStale()) return
+            logForDebugging(
+              `[voice] Gemini transcript assembled (${String(text.length)} chars): "${text.slice(0, 200)}"`,
+            )
+          }
+
+          logEvent('tengu_voice_recording_completed', {
+            transcriptChars: text.length + focusFlushedChars,
+            recordingDurationMs,
+            hadAudioSignal,
+            retried,
+            silentDropRetried: false,
+            wsConnected: true,
+            focusTriggered,
+            geminiTranscription: true,
+          })
+
+          if (text) {
+            onTranscriptRef.current(text)
+          } else if (focusFlushedChars === 0 && recordingDurationMs > 2000) {
+            if (!hadAudioSignal) {
+              onErrorRef.current?.(
+                'No audio detected from microphone. Check that the correct input device is selected and that Tau has microphone access.',
+              )
+            } else {
+              onErrorRef.current?.('No speech detected.')
+            }
+          }
+        } catch (err) {
+          const error = toError(err)
+          logError(error)
+          if (!isStale()) {
+            onErrorRef.current?.(`Gemini transcription failed: ${error.message}`)
+          }
+        } finally {
+          if (!isStale()) {
+            accumulatedRef.current = ''
+            setVoiceState(prev => {
+              if (prev.voiceInterimTranscript === '') return prev
+              return { ...prev, voiceInterimTranscript: '' }
+            })
+            updateState('idle')
+          }
+        }
+      })()
+      return
+    }
 
     // Send finalize and wait for the WebSocket to close before reading the
     // accumulated transcript.  The close handler promotes any unreported
@@ -653,9 +731,26 @@ export function useVoice({
     retryUsedRef.current = false
     silentDropRetriedRef.current = false
     fullAudioRef.current = []
+    geminiAudioRef.current = []
     focusFlushedCharsRef.current = 0
     everConnectedRef.current = false
     const myGen = ++sessionGenRef.current
+    const voiceInputBackend: VoiceInputBackend = isGeminiTranscriptionEnabled()
+      ? 'gemini'
+      : 'voice_stream'
+    inputBackendRef.current = voiceInputBackend
+
+    if (voiceInputBackend === 'gemini') {
+      const geminiAvailable = checkGeminiVoiceAvailable()
+      if (!geminiAvailable.available) {
+        onErrorRef.current?.(
+          `Gemini voice is selected, but unavailable: ${geminiAvailable.reason ?? 'missing Gemini voice API key'}`,
+        )
+        cleanup()
+        updateState('idle')
+        return
+      }
+    }
 
     // ── Pre-check: can we actually record audio? ──────────────
     const availability = await voiceModule.checkRecordingAvailability()
@@ -672,7 +767,7 @@ export function useVoice({
     }
 
     logForDebugging(
-      '[voice] Starting recording session, connecting voice stream',
+      `[voice] Starting recording session, backend=${voiceInputBackend}`,
     )
     // Clear any previous error
     setVoiceState(prev => {
@@ -688,7 +783,9 @@ export function useVoice({
     // Start recording IMMEDIATELY — audio is buffered until the WebSocket
     // opens, eliminating the 1-2s latency from waiting for OAuth + WS connect.
     logForDebugging(
-      '[voice] startRecording: buffering audio while WebSocket connects',
+      voiceInputBackend === 'gemini'
+        ? '[voice] startRecording: buffering audio for Gemini transcription'
+        : '[voice] startRecording: buffering audio while WebSocket connects',
     )
     audioLevelsRef.current = []
     const started = await voiceModule.startRecording(
@@ -698,13 +795,17 @@ export function useVoice({
         // Skip buffering in focus mode — replay is gated on !focusTriggered
         // so the buffer is dead weight (up to ~20MB for a 10min session).
         const owned = Buffer.from(chunk)
-        if (!focusTriggeredRef.current) {
-          fullAudioRef.current.push(owned)
-        }
-        if (connectionRef.current) {
-          connectionRef.current.send(owned)
+        if (voiceInputBackend === 'gemini') {
+          geminiAudioRef.current.push(owned)
         } else {
-          audioBuffer.push(owned)
+          if (!focusTriggeredRef.current) {
+            fullAudioRef.current.push(owned)
+          }
+          if (connectionRef.current) {
+            connectionRef.current.send(owned)
+          } else {
+            audioBuffer.push(owned)
+          }
         }
         // Update audio level histogram for the recording visualizer
         const level = computeLevel(chunk)
@@ -757,6 +858,13 @@ export function useVoice({
       systemLocaleLanguage:
         getSystemLocaleLanguage() as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
+
+    if (voiceInputBackend === 'gemini') {
+      logForDebugging(
+        '[voice] Gemini transcription selected; skipping voice_stream connection',
+      )
+      return
+    }
 
     // Retry once if the connection errors before delivering any transcript.
     // The conversation-engine proxy can reject rapid reconnects (~1/N_pods
@@ -1021,7 +1129,7 @@ export function useVoice({
   // delay of ~500ms on macOS).
   const handleKeyEvent = useCallback(
     (fallbackMs = REPEAT_FALLBACK_MS): void => {
-      if (!enabled || !isVoiceStreamAvailable()) {
+      if (!enabled || !isConfiguredVoiceInputAvailable()) {
         return
       }
 

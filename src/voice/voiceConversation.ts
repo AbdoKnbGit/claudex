@@ -84,11 +84,12 @@ export function getLegacyEnvVoiceProvider():
 }
 
 export function getSelectedVoiceProvider(): VoiceConversationProvider {
-  const configured = getInitialSettings().heyVoiceProvider
-  if (configured === 'gemini' || configured === 'local') return configured
+  if (getVoiceConversationKeySource()) return 'gemini'
   const legacy = getLegacyEnvVoiceProvider()
   if (legacy) return legacy
-  return hasStoredVoiceConversationKey() ? 'gemini' : 'local'
+  const configured = getInitialSettings().heyVoiceProvider
+  if (configured === 'gemini' || configured === 'local') return configured
+  return 'local'
 }
 
 export function setSelectedVoiceProvider(

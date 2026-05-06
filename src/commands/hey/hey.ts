@@ -69,14 +69,16 @@ export const call: LocalCommandCall = async () => {
 
   const { checkWhisperAvailable } = await import('../../services/whisperLocal.js')
   const whisper = checkWhisperAvailable()
-  if (!whisper.available && !geminiAvailable.available) {
-    const geminiHint =
-      geminiSelected && geminiAvailable.reason
-        ? `\n\nGemini voice is selected, but unavailable: ${geminiAvailable.reason}`
-        : ''
+  if (geminiSelected && !geminiAvailable.available) {
     return {
       type: 'text' as const,
-      value: `Hey mode needs whisper.cpp for local speech-to-text.${geminiHint}\n\n${whisper.reason ?? ''}`,
+      value: `Gemini voice is selected, but unavailable: ${geminiAvailable.reason ?? 'missing Gemini voice API key'}`,
+    }
+  }
+  if (!geminiSelected && !whisper.available) {
+    return {
+      type: 'text' as const,
+      value: `Hey mode needs whisper.cpp for local speech-to-text.\n\n${whisper.reason ?? ''}`,
     }
   }
 
@@ -94,9 +96,7 @@ export const call: LocalCommandCall = async () => {
     : `\nVoice replies are disabled by ${disabledEnvName ?? HEY_TEXT_ONLY_ENV}=1. Remove it to speak replies.`
   const sttNote =
     geminiAvailable.available && geminiSelected
-      ? whisper.available
-        ? '\nGemini transcription is enabled; local Whisper is available as fallback.'
-        : '\nGemini transcription is enabled; local Whisper fallback is not installed.'
+      ? '\nGemini transcription is enabled.'
       : ''
   const voiceModelId = getSelectedVoiceModel()
   const voiceModel =
@@ -105,7 +105,7 @@ export const call: LocalCommandCall = async () => {
     geminiSelected
       ? hasVoiceConversationApiKey()
         ? `\nVoice conversation model: ${voiceModel}.`
-        : '\nGemini voice is selected, but no key is saved yet. Run /login and choose Gemini Voice; local fallback will be used for now.'
+        : '\nGemini voice is selected, but no key is saved yet. Run /login and choose Gemini Voice.'
       : '\nVoice conversation is using local speech tools.'
 
   const result = updateSettingsForSource('userSettings', {

@@ -59,6 +59,8 @@ export const call: LocalCommandCall = async () => {
     '../../services/voiceStreamSTT.js'
   )
   const { checkRecordingAvailability } = await import('../../services/voice.js')
+  const geminiVoice = await import('../../services/geminiVoice.js')
+  const useGeminiTranscription = geminiVoice.isGeminiTranscriptionEnabled()
 
   // Check recording availability (microphone access)
   const recording = await checkRecordingAvailability()
@@ -70,8 +72,15 @@ export const call: LocalCommandCall = async () => {
     }
   }
 
-  // Check for API key
-  if (!isVoiceStreamAvailable()) {
+  if (useGeminiTranscription) {
+    const geminiAvailable = geminiVoice.checkGeminiVoiceAvailable()
+    if (!geminiAvailable.available) {
+      return {
+        type: 'text' as const,
+        value: `Gemini voice is selected, but unavailable: ${geminiAvailable.reason ?? 'missing Gemini voice API key'}`,
+      }
+    }
+  } else if (!isVoiceStreamAvailable()) {
     return {
       type: 'text' as const,
       value:
@@ -130,13 +139,15 @@ export const call: LocalCommandCall = async () => {
   const langChanged = cfg.voiceLangHintLastLanguage !== stt.code
   const priorCount = langChanged ? 0 : (cfg.voiceLangHintShownCount ?? 0)
   const showHint = !stt.fellBackFrom && priorCount < LANG_HINT_MAX_SHOWS
-  let langNote = ''
-  if (stt.fellBackFrom) {
+  let langNote = useGeminiTranscription
+    ? ' Gemini transcription is active.'
+    : ''
+  if (!useGeminiTranscription && stt.fellBackFrom) {
     langNote = ` Note: "${stt.fellBackFrom}" is not a supported dictation language; using English. Change it via /config.`
-  } else if (showHint) {
+  } else if (!useGeminiTranscription && showHint) {
     langNote = ` Dictation language: ${stt.code} (/config to change).`
   }
-  if (langChanged || showHint) {
+  if (!useGeminiTranscription && (langChanged || showHint)) {
     saveGlobalConfig(prev => ({
       ...prev,
       voiceLangHintShownCount: priorCount + (showHint ? 1 : 0),
