@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Tau - multi-provider AI coding CLI with OpenAI, Gemini, GLM, Groq, DeepSeek, Ollama and more.",
   "author": "AbdoKnbGit",
   "repository": {
@@ -53,7 +53,6 @@
     "@anthropic-ai/sdk": "^0.50.1",
     "@aws-sdk/client-bedrock-runtime": "^3.700.0",
     "@commander-js/extra-typings": "^12.1.0",
-    "@e2b/code-interpreter": "^2.4.2",
     "@growthbook/growthbook": "^1.4.3",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@opentelemetry/api": "^1.9.0",
@@ -87,7 +86,6 @@
     "https-proxy-agent": "^7.0.6",
     "ignore": "^7.0.3",
     "indent-string": "^5.0.0",
-    "ink": "^5.2.0",
     "jsonc-parser": "^3.3.1",
     "lodash-es": "^4.17.21",
     "lru-cache": "^11.0.2",
@@ -119,15 +117,14 @@
     "zod": "^3.25.0"
   },
   "overrides": {
-    "react": "~19.1.0",
-    "react-reconciler": "~0.32.0"
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
     "@types/bun": "^1.2.10",
     "@types/node": "^22.14.0",
     "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.1.0",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.28.0",
     "typescript": "^5.7.3"
   }
 }
