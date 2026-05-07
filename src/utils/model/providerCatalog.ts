@@ -74,6 +74,11 @@ function normalizeProviderQueryToken(
     geminivoice: VOICE_CONVERSATION_PROVIDER,
     'gemini-voice': VOICE_CONVERSATION_PROVIDER,
     gemini_voice: VOICE_CONVERSATION_PROVIDER,
+    kimi: 'moonshot',
+    moonshotai: 'moonshot',
+    'moonshot-ai': 'moonshot',
+    moonshoot: 'moonshot',
+    moonshootai: 'moonshot',
   }
   if (alias[normalized]) {
     return alias[normalized]
@@ -148,10 +153,10 @@ export async function loadProviderModels(
 
   const models = await getProvider(provider).listModels()
   recordProviderModelContextWindows(provider, models)
-  if (provider === 'cursor' || provider === 'cline' || provider === 'glm') {
+  if (provider === 'cursor' || provider === 'cline' || provider === 'glm' || provider === 'moonshot') {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
-    // Cline and GLM also return curated, provider-owned orders.
+    // Cline, GLM, and Moonshot also return curated, provider-owned orders.
     return models
   }
   if (provider === 'openrouter' || provider === 'nim') {

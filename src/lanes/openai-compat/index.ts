@@ -1,7 +1,7 @@
 /**
  * OpenAI-Compatible Lane — Entry Point
  *
- * Handles: DeepSeek, GLM, Groq, NIM, Ollama, OpenRouter, and any other
+ * Handles: DeepSeek, GLM, Moonshot, Groq, NIM, Ollama, OpenRouter, and any other
  * provider that speaks OpenAI Chat Completions format.
  *
  * Each provider is registered with its own API key and base URL.
@@ -22,6 +22,7 @@ import { registerLane } from '../dispatcher.js'
 export function initOpenAICompatLane(providers?: {
   deepseek?: { apiKey: string; baseUrl?: string }
   glm?: { apiKey: string; baseUrl?: string }
+  moonshot?: { apiKey: string; baseUrl?: string }
   groq?: { apiKey: string; baseUrl?: string }
   mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
@@ -61,6 +62,18 @@ export function initOpenAICompatLane(providers?: {
         ?? process.env.ZAI_BASE_URL
         ?? process.env.Z_AI_BASE_URL
         ?? 'https://open.bigmodel.cn/api/paas/v4',
+    )
+  }
+
+  const moonshotKey = p.moonshot?.apiKey ?? process.env.MOONSHOT_API_KEY ?? process.env.MOONSHOTAI_API_KEY
+  if (moonshotKey) {
+    openaiCompatLane.registerProvider(
+      'moonshot',
+      moonshotKey,
+      p.moonshot?.baseUrl
+        ?? process.env.MOONSHOT_BASE_URL
+        ?? process.env.MOONSHOT_API_BASE_URL
+        ?? 'https://api.moonshot.ai/v1',
     )
   }
 

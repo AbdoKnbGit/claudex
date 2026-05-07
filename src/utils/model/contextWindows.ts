@@ -34,6 +34,15 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'glm-5': 200_000,
     'glm-4.7': 200_000,
   },
+  moonshot: {
+    'kimi-k2.6': 262_144,
+    'kimi-k2.5': 262_144,
+    'kimi-k2-thinking': 262_144,
+    'kimi-k2-thinking-turbo': 262_144,
+    'kimi-k2-turbo-preview': 262_144,
+    'kimi-k2-0905-preview': 262_144,
+    'kimi-k2-0711-preview': 131_072,
+  },
 }
 
 const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
@@ -91,6 +100,13 @@ const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   'glm-5-turbo': 200_000,
   'glm-5': 200_000,
   'glm-4.7': 200_000,
+  'kimi-k2.6': 262_144,
+  'kimi-k2.5': 262_144,
+  'kimi-k2-thinking': 262_144,
+  'kimi-k2-thinking-turbo': 262_144,
+  'kimi-k2-turbo-preview': 262_144,
+  'kimi-k2-0905-preview': 262_144,
+  'kimi-k2-0711-preview': 131_072,
   'qwen3-coder-next': 256_000,
 
   // Ollama common models.
@@ -133,6 +149,13 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'glm-5-turbo': 200_000,
   'glm-5': 200_000,
   'glm-4.7': 200_000,
+  'kimi-k2.6': 262_144,
+  'kimi-k2.5': 262_144,
+  'kimi-k2-thinking': 262_144,
+  'kimi-k2-thinking-turbo': 262_144,
+  'kimi-k2-turbo-preview': 262_144,
+  'kimi-k2-0905-preview': 262_144,
+  'kimi-k2-0711-preview': 131_072,
   'llama3.3': 128_000,
   'llama3.2': 128_000,
   'llama3.1': 128_000,

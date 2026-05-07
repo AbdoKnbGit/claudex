@@ -20,6 +20,7 @@ export type ProviderId =
   | 'deepseek'
   | 'groq'
   | 'glm'
+  | 'moonshot'
   | 'mistral'
   | 'nim'
   | 'ollama'

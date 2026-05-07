@@ -26,6 +26,7 @@ import {
 } from '../../lanes/shared/antigravity_auth.js'
 import {
   getClaudeAIOAuthTokens,
+  getProviderBaseUrl,
   getProviderApiKey,
   getSubscriptionType,
 } from '../../utils/auth.js'
@@ -49,6 +50,7 @@ const DOCS = {
   openrouter: 'https://openrouter.ai/docs/api-reference/credits/get-credits',
   deepseek: 'https://api-docs.deepseek.com/api/get-user-balance/',
   glm: 'https://bigmodel.cn/finance/expensebill/list',
+  moonshot: 'https://platform.kimi.ai/docs/api/balance',
   cursor: 'https://docs.cursor.com/en/account/teams/admin-api',
   copilot: 'https://docs.github.com/en/copilot/reference/copilot-usage-metrics/copilot-usage-metrics',
 } as const
@@ -126,6 +128,7 @@ const REPORTERS: Reporter[] = [
   reportOpenRouter,
   reportDeepSeek,
   reportGLM,
+  reportMoonshot,
   reportOllama,
   reportCline,
   reportCopilot,
@@ -164,6 +167,7 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'nim': return 'nim'
     case 'deepseek': return 'deepseek'
     case 'glm': return 'glm'
+    case 'moonshot': return 'moonshot'
     case 'ollama': return 'ollama'
     case 'cline': return 'cline'
     case 'copilot': return 'copilot'
@@ -661,6 +665,78 @@ async function reportGLM(): Promise<ProviderUsageReport> {
   }
 }
 
+async function reportMoonshot(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('moonshot')
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'moonshot',
+        'not_configured',
+        'none',
+        'Moonshot balance',
+        'No Moonshot API key is configured.',
+      ),
+      docsUrl: DOCS.moonshot,
+      links: [{
+        label: 'Moonshot API keys',
+        url: 'https://platform.kimi.ai/console/api-keys',
+      }],
+    }
+  }
+
+  const baseUrl = getProviderBaseUrl('moonshot').replace(/\/+$/, '')
+  const data = await fetchJson(`${baseUrl}/users/me/balance`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+  })
+  const balance = parseMoonshotBalance(data)
+  if (!balance) {
+    return {
+      ...baseReport(
+        'moonshot',
+        'error',
+        'api_key',
+        'Moonshot balance',
+        'Moonshot returned an unrecognized balance response.',
+      ),
+      docsUrl: DOCS.moonshot,
+    }
+  }
+
+  const budget = getBudget(
+    `CLAUDEX_USAGE_MOONSHOT_BUDGET_${balance.currency}`,
+    'CLAUDEX_USAGE_MOONSHOT_BUDGET_CNY',
+    'MOONSHOT_MONTHLY_BUDGET_CNY',
+  )
+  const used = budget ? Math.max(0, budget - balance.available) : null
+  const detailParts = [
+    balance.cash !== null ? `${formatCurrency(balance.cash, balance.currency)} cash` : null,
+    balance.voucher !== null ? `${formatCurrency(balance.voucher, balance.currency)} voucher` : null,
+  ].filter((part): part is string => part !== null)
+
+  return {
+    ...baseReport(
+      'moonshot',
+      'ok',
+      'api_key',
+      'Moonshot balance',
+      `${formatCurrency(balance.available, balance.currency)} available.`,
+    ),
+    detail: 'Set CLAUDEX_USAGE_MOONSHOT_BUDGET_CNY to turn remaining balance into a percent-used bar.',
+    metrics: [{
+      label: `${balance.currency} balance`,
+      usedPercent: budget && used !== null ? clampPercent(used / budget * 100) : undefined,
+      summary: budget && used !== null
+        ? `${formatCurrency(used, balance.currency)} / ${formatCurrency(budget, balance.currency)} budget used`
+        : `${formatCurrency(balance.available, balance.currency)} available`,
+      detail: detailParts.length > 0 ? detailParts.join(', ') : undefined,
+    }],
+    docsUrl: DOCS.moonshot,
+  }
+}
+
 async function reportOllama(): Promise<ProviderUsageReport> {
   return {
     ...baseReport(
@@ -1085,6 +1161,55 @@ function parseDeepSeekBalances(data: unknown): Array<{
     if (total === null) return []
     return [{ currency, total, granted, toppedUp }]
   })
+}
+
+function parseMoonshotBalance(data: unknown): {
+  currency: string
+  available: number
+  cash: number | null
+  voucher: number | null
+} | null {
+  const root = asRecord(data)
+  const source = asRecord(root?.data) ?? root
+  if (!source) return null
+
+  const available =
+    readNumber(source.available_balance)
+    ?? readNumber(source.availableBalance)
+    ?? readNumber(source.total_balance)
+    ?? readNumber(source.totalBalance)
+    ?? readNumber(source.balance)
+    ?? findFirstNumberByKey(data, [
+      'available_balance',
+      'availableBalance',
+      'total_balance',
+      'totalBalance',
+      'balance',
+    ])
+  if (available === null) return null
+
+  const cash =
+    readNumber(source.cash_balance)
+    ?? readNumber(source.cashBalance)
+    ?? findFirstNumberByKey(data, ['cash_balance', 'cashBalance'])
+  const voucher =
+    readNumber(source.voucher_balance)
+    ?? readNumber(source.voucherBalance)
+    ?? readNumber(source.grant_balance)
+    ?? readNumber(source.grantBalance)
+    ?? findFirstNumberByKey(data, [
+      'voucher_balance',
+      'voucherBalance',
+      'grant_balance',
+      'grantBalance',
+    ])
+  const currency = (
+    readString(source.currency)
+    ?? findFirstStringByKey(data, ['currency', 'unit'])
+    ?? 'CNY'
+  ).toUpperCase()
+
+  return { currency, available, cash, voucher }
 }
 
 function copilotMetricsFromStoredPlan(blob: StoredOAuthBlob | null): UsageMetric[] {
@@ -1545,6 +1670,16 @@ function findFirstNumberByKey(value: unknown, keys: string[]): number | null {
   walk(value, (key, item) => {
     if (found !== null || !wanted.has(key)) return
     found = readNumber(item)
+  })
+  return found
+}
+
+function findFirstStringByKey(value: unknown, keys: string[]): string | null {
+  const wanted = new Set(keys)
+  let found: string | null = null
+  walk(value, (key, item) => {
+    if (found !== null || !wanted.has(key)) return
+    found = readString(item)
   })
   return found
 }

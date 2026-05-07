@@ -99,6 +99,7 @@ const MANAGEABLE_PROVIDERS = [
   'nim',
   'deepseek',
   'glm',
+  'moonshot',
   'ollama',
   // Phase 4 (v0.4.0) — 3 full-chat + 3 login-only stubs.
   'kilocode',

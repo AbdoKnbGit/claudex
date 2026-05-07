@@ -89,6 +89,12 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
     supportsOAuth: false,
   },
+  moonshot: {
+    envVar: 'MOONSHOT_API_KEY',
+    keyPrefix: 'sk-',
+    getKeyUrl: 'https://platform.kimi.ai/console/api-keys',
+    supportsOAuth: false,
+  },
   ollama: {
     envVar: 'OLLAMA_API_KEY',
     getKeyUrl: 'https://ollama.com/settings/keys',
@@ -176,6 +182,10 @@ async function _testApiKey(
         url = 'https://open.bigmodel.cn/api/paas/v4/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'moonshot':
+        url = 'https://api.moonshot.ai/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
       case 'openrouter':
         url = 'https://openrouter.ai/api/v1/models'
         headers = { Authorization: `Bearer ${key}` }
@@ -223,6 +233,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
   if (
     provider === 'deepseek' ||
     provider === 'glm' ||
+    provider === 'moonshot' ||
     provider === 'nim' ||
     provider === 'openrouter' ||
     provider === 'agentrouter' ||

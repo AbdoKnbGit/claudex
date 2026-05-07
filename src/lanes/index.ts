@@ -69,6 +69,9 @@ export function initLanes(opts?: {
   // GLM / BigModel
   glmApiKey?: string
   glmBaseUrl?: string
+  // Moonshot AI / Kimi
+  moonshotApiKey?: string
+  moonshotBaseUrl?: string
   // Groq
   groqApiKey?: string
   // Mistral
@@ -166,11 +169,12 @@ export function initLanes(opts?: {
     orgId: opts?.kilocodeOrgId ?? null,
   })
 
-  // ── OpenAI-compat lane (DeepSeek, Groq, Mistral, NIM, Ollama,
-  //    OpenRouter, iFlow, KiloCode, Copilot) ──
+  // ── OpenAI-compat lane (DeepSeek, GLM, Moonshot, Groq, Mistral,
+  //    NIM, Ollama, OpenRouter, iFlow, KiloCode, Copilot) ──
   initOpenAICompatLane({
     deepseek: opts?.deepseekApiKey ? { apiKey: opts.deepseekApiKey } : undefined,
     glm: opts?.glmApiKey ? { apiKey: opts.glmApiKey, baseUrl: opts.glmBaseUrl } : undefined,
+    moonshot: opts?.moonshotApiKey ? { apiKey: opts.moonshotApiKey, baseUrl: opts.moonshotBaseUrl } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
     mistral: opts?.mistralApiKey ? { apiKey: opts.mistralApiKey } : undefined,
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,

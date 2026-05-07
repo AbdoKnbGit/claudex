@@ -51,6 +51,7 @@ import { GroqProvider } from './groq_provider.js'
 import { NimProvider } from './nim_provider.js'
 import { DeepSeekProvider } from './deepseek_provider.js'
 import { GlmProvider } from './glm_provider.js'
+import { MoonshotProvider } from './moonshot_provider.js'
 import { OllamaProvider } from './ollama_provider.js'
 import { sanitizeProviderMessagesForNonCursorTransport } from './sanitizeProviderMessages.js'
 import { warmupCodeAssist } from './gemini_code_assist.js'
@@ -107,6 +108,8 @@ function _ensureLanesInitialized(): void {
       deepseekApiKey: getProviderApiKey('deepseek') ?? undefined,
       glmApiKey: getProviderApiKey('glm') ?? undefined,
       glmBaseUrl: getProviderBaseUrl('glm'),
+      moonshotApiKey: getProviderApiKey('moonshot') ?? undefined,
+      moonshotBaseUrl: getProviderBaseUrl('moonshot'),
       groqApiKey: getProviderApiKey('groq') ?? undefined,
       mistralApiKey: process.env.MISTRAL_API_KEY,
       nimApiKey: getProviderApiKey('nim') ?? undefined,
@@ -147,6 +150,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'antigravity': return 'gemini'
     case 'deepseek':
     case 'glm':
+    case 'moonshot':
     case 'groq':
     case 'nim':
     case 'ollama':
@@ -286,6 +290,8 @@ function createProvider(provider: APIProvider): BaseProvider {
       return new DeepSeekProvider({ apiKey, baseUrl })
     case 'glm':
       return new GlmProvider({ apiKey, baseUrl })
+    case 'moonshot':
+      return new MoonshotProvider({ apiKey, baseUrl })
     case 'ollama':
       return new OllamaProvider({ apiKey, baseUrl })
     // Phase 4 / Phase 5 OAuth-compat providers: they're expected to reach
@@ -679,6 +685,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
   switch (provider) {
     case 'deepseek':
     case 'glm':
+    case 'moonshot':
     case 'nim':
     case 'openrouter':
     case 'agentrouter':

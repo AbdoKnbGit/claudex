@@ -92,6 +92,7 @@ function _autoCorrectProvider(
     || current === 'agentrouter'
     || current === 'nim'
     || current === 'glm'
+    || current === 'moonshot'
     || current === 'ollama'
     || current === 'cline'
     || current === 'iflow'

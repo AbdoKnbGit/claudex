@@ -154,6 +154,7 @@ function detectKeyFormat(provider: string, key: string): string {
     nim: 'nvapi-',
     gemini: 'AIza',
     deepseek: 'sk-',
+    moonshot: 'sk-',
   }
   const expected = prefixes[provider]
   if (expected && key.startsWith(expected)) return 'standard'
@@ -177,6 +178,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   nim: { prefix: 'nvapi-', minLength: 20, displayName: 'NVIDIA NIM' },
   gemini: { prefix: 'AIza', minLength: 30, displayName: 'Gemini' },
   deepseek: { prefix: 'sk-', minLength: 20, displayName: 'DeepSeek' },
+  moonshot: { prefix: 'sk-', minLength: 20, displayName: 'Moonshot AI' },
 }
 
 /**
@@ -274,6 +276,12 @@ export function deleteAllProviderCredentials(provider: string): void {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
         reloadOpenAICompatProviderAuth('glm'),
+      )
+      .catch(() => {})
+  } else if (provider === 'moonshot') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth('moonshot'),
       )
       .catch(() => {})
   }

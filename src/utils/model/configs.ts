@@ -31,6 +31,10 @@ const GLM_BASE_URL = process.env.GLM_BASE_URL
   ?? process.env.Z_AI_BASE_URL
   ?? 'https://open.bigmodel.cn/api/paas/v4'
 
+const MOONSHOT_BASE_URL = process.env.MOONSHOT_BASE_URL
+  ?? process.env.MOONSHOT_API_BASE_URL
+  ?? 'https://api.moonshot.ai/v1'
+
 export interface TierModelSet {
   opus: string    // Best reasoning / most capable model
   sonnet: string  // Balanced quality/speed for everyday tasks
@@ -405,6 +409,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.GLM_MODEL_OPUS   ?? 'glm-5.1',
         sonnet: process.env.GLM_MODEL_SONNET ?? 'glm-5',
         haiku:  process.env.GLM_MODEL_HAIKU  ?? 'glm-4.7',
+      },
+    },
+  },
+
+  moonshot: {
+    displayName: 'Moonshot AI',
+    baseUrl: MOONSHOT_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'MOONSHOT_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   'kimi-k2.6',
+        sonnet: 'kimi-k2.6',
+        haiku:  'kimi-k2-turbo-preview',
+      },
+      pro: {
+        opus:   process.env.MOONSHOT_MODEL_OPUS   ?? 'kimi-k2.6',
+        sonnet: process.env.MOONSHOT_MODEL_SONNET ?? 'kimi-k2.6',
+        haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2-turbo-preview',
+      },
+      plus: {
+        opus:   process.env.MOONSHOT_MODEL_OPUS   ?? 'kimi-k2.6',
+        sonnet: process.env.MOONSHOT_MODEL_SONNET ?? 'kimi-k2.6',
+        haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2-turbo-preview',
       },
     },
   },

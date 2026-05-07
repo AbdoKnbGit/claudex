@@ -19,6 +19,7 @@ import {
  */
 const THIRD_PARTY_THINKING_MODELS: Record<string, string[]> = {
   deepseek: ['deepseek-reasoner'],
+  moonshot: ['kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-thinking-turbo'],
   nim: ['moonshotai/kimi-k2-thinking', 'kimi-k2-thinking'],
   openrouter: [
     'anthropic/claude-opus-4-6',
