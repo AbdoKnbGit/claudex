@@ -16,6 +16,12 @@ import {
   shortRequestId,
   truncateForPreview,
 } from '../../../services/mcp/channelPermissions.js'
+import { isOn as isWhatsAppOn } from '../../../services/whatsapp/lifecycle.js'
+import {
+  onWhatsAppPermissionResponse,
+  sendWhatsAppPermissionRequest,
+} from '../../../services/whatsapp/permissions.js'
+import { getActiveChatJid } from '../../../services/whatsapp/router.js'
 import { executeAsyncClassifierCheck } from '../../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName.js'
 import {
@@ -79,6 +85,12 @@ function handleInteractivePermission(
   // phone, and a stale "yes abc123" after local-resolve falls through
   // tryConsumeReply (entry gone) and gets enqueued as normal chat.
   let channelUnsubscribe: (() => void) | undefined
+  let whatsappUnsubscribe: (() => void) | undefined
+
+  function cleanupRemotePermissionRequests(): void {
+    channelUnsubscribe?.()
+    whatsappUnsubscribe?.()
+  }
 
   const permissionPromptStartTimeMs = Date.now()
   const displayInput = result.updatedInput ?? ctx.input
@@ -143,7 +155,7 @@ function handleInteractivePermission(
         })
         bridgeCallbacks.cancelRequest(bridgeRequestId)
       }
-      channelUnsubscribe?.()
+      cleanupRemotePermissionRequests()
       ctx.logCancelled()
       ctx.logDecision(
         { decision: 'reject', source: { type: 'user_abort' } },
@@ -167,7 +179,7 @@ function handleInteractivePermission(
         })
         bridgeCallbacks.cancelRequest(bridgeRequestId)
       }
-      channelUnsubscribe?.()
+      cleanupRemotePermissionRequests()
 
       resolveOnce(
         await ctx.handleUserAllow(
@@ -190,7 +202,7 @@ function handleInteractivePermission(
         })
         bridgeCallbacks.cancelRequest(bridgeRequestId)
       }
-      channelUnsubscribe?.()
+      cleanupRemotePermissionRequests()
 
       ctx.logDecision(
         {
@@ -223,7 +235,7 @@ function handleInteractivePermission(
         if (bridgeCallbacks && bridgeRequestId) {
           bridgeCallbacks.cancelRequest(bridgeRequestId)
         }
-        channelUnsubscribe?.()
+        cleanupRemotePermissionRequests()
         ctx.removeFromQueue()
         ctx.logDecision({ decision: 'accept', source: 'config' })
         resolveOnce(ctx.buildAllow(freshResult.updatedInput ?? ctx.input))
@@ -261,7 +273,7 @@ function handleInteractivePermission(
         clearClassifierChecking(ctx.toolUseID)
         clearClassifierIndicator()
         ctx.removeFromQueue()
-        channelUnsubscribe?.()
+        cleanupRemotePermissionRequests()
 
         if (response.behavior === 'allow') {
           if (response.updatedPermissions?.length) {
@@ -295,6 +307,69 @@ function handleInteractivePermission(
     )
 
     signal.addEventListener('abort', unsubscribe, { once: true })
+  }
+
+  // WhatsApp permission relay. During a WhatsApp-driven turn, mirror the
+  // local permission prompt into the active chat and consume only explicit
+  // "yes <id>" / "no <id>" replies from that same chat.
+  const whatsappJid = isWhatsAppOn() ? getActiveChatJid() : null
+  if (whatsappJid && !ctx.tool.requiresUserInteraction?.()) {
+    const whatsappRequestId = shortRequestId(ctx.toolUseID)
+    const whatsappSignal = ctx.toolUseContext.abortController.signal
+    const mapUnsub = onWhatsAppPermissionResponse(
+      whatsappRequestId,
+      whatsappJid,
+      response => {
+        if (!claim()) return
+        cleanupRemotePermissionRequests()
+        clearClassifierChecking(ctx.toolUseID)
+        clearClassifierIndicator()
+        ctx.removeFromQueue()
+        if (bridgeCallbacks && bridgeRequestId) {
+          bridgeCallbacks.cancelRequest(bridgeRequestId)
+        }
+
+        if (response.behavior === 'allow') {
+          ctx.logDecision(
+            {
+              decision: 'accept',
+              source: { type: 'user', permanent: false },
+            },
+            { permissionPromptStartTimeMs },
+          )
+          resolveOnce(ctx.buildAllow(displayInput))
+        } else {
+          ctx.logDecision(
+            {
+              decision: 'reject',
+              source: { type: 'user_reject', hasFeedback: false },
+            },
+            { permissionPromptStartTimeMs },
+          )
+          resolveOnce(ctx.cancelAndAbort('Denied via WhatsApp'))
+        }
+      },
+    )
+    whatsappUnsubscribe = () => {
+      mapUnsub()
+      whatsappSignal.removeEventListener('abort', whatsappUnsubscribe!)
+    }
+    whatsappSignal.addEventListener('abort', whatsappUnsubscribe, {
+      once: true,
+    })
+
+    void sendWhatsAppPermissionRequest({
+      jid: whatsappJid,
+      requestId: whatsappRequestId,
+      toolName: ctx.tool.name,
+      description,
+      inputPreview: truncateForPreview(displayInput),
+    }).catch(e => {
+      logForDebugging(`WhatsApp permission_request failed: ${errorMessage(e)}`, {
+        level: 'error',
+      })
+      whatsappUnsubscribe?.()
+    })
   }
 
   // Channel permission relay — races alongside the bridge block above. Send a
@@ -355,7 +430,7 @@ function handleInteractivePermission(
 
       const channelSignal = ctx.toolUseContext.abortController.signal
       // Wrap so BOTH the map delete AND the abort-listener teardown happen
-      // at every call site. The 6 channelUnsubscribe?.() sites after local/
+      // at every call site. cleanupRemotePermissionRequests() sites after local/
       // hook/classifier wins previously only deleted the map entry — the
       // dead closure stayed registered on the session-scoped abort signal
       // until the session ended. Not a functional bug (Map.delete is
@@ -364,7 +439,7 @@ function handleInteractivePermission(
         channelRequestId,
         response => {
           if (!claim()) return // Another racer won
-          channelUnsubscribe?.() // both: map delete + listener remove
+          cleanupRemotePermissionRequests() // both: map delete + listener remove
           clearClassifierChecking(ctx.toolUseID)
           clearClassifierIndicator()
           ctx.removeFromQueue()
@@ -424,7 +499,7 @@ function handleInteractivePermission(
       if (bridgeCallbacks && bridgeRequestId) {
         bridgeCallbacks.cancelRequest(bridgeRequestId)
       }
-      channelUnsubscribe?.()
+      cleanupRemotePermissionRequests()
       ctx.removeFromQueue()
       resolveOnce(hookDecision)
     })()
@@ -456,7 +531,7 @@ function handleInteractivePermission(
           if (bridgeCallbacks && bridgeRequestId) {
             bridgeCallbacks.cancelRequest(bridgeRequestId)
           }
-          channelUnsubscribe?.()
+          cleanupRemotePermissionRequests()
           clearClassifierChecking(ctx.toolUseID)
 
           const matchedRule =

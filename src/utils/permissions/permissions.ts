@@ -5,6 +5,7 @@ import {
   getToolNameForPermissionCheck,
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
+import { isWhatsAppDrivenTurn } from '../../services/whatsapp/turnState.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
@@ -121,6 +122,7 @@ function shouldBypassPermissionPrompts(
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
   return (
+    isWhatsAppDrivenTurn() ||
     getSessionBypassPermissionsMode() ||
     toolPermissionContext.mode === 'bypassPermissions' ||
     (toolPermissionContext.mode === 'plan' &&

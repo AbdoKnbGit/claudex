@@ -1,6 +1,8 @@
 import type { UUID } from 'crypto'
 import { logEvent } from 'src/services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/metadata.js'
+import { clearActiveChat } from '../services/whatsapp/router.js'
+import { beginWhatsAppDrivenTurn } from '../services/whatsapp/turnState.js'
 import { type Command, getCommandName, isCommandEnabled } from '../commands.js'
 import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
 import type { SpinnerMode } from '../components/Spinner/types.js'
@@ -166,6 +168,10 @@ export async function handlePromptSubmit(
   } = params
 
   const { setCursorOffset, clearBuffer, resetHistory } = helpers
+
+  if (params.input !== undefined) {
+    clearActiveChat()
+  }
 
   // Queue processor path: commands are pre-validated and ready to execute.
   // Skip all input validation, reference parsing, and queuing logic.
@@ -467,6 +473,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
   // executeUserInput call, so there's no prior controller to inherit.
   const abortController = createAbortController()
   setAbortController(abortController)
+  let endWhatsAppTurn: (() => void) | undefined
 
   function makeContext(): ProcessUserInputContext {
     return getToolUseContext(messages, [], abortController, mainLoopModel)
@@ -498,6 +505,9 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // ideSelection + pastedContents, rest skip attachments to avoid
     // duplicating turn-level context (IDE selection, todos, diffs).
     const commands = queuedCommands ?? []
+    if (commands.some(cmd => cmd.whatsappOrigin)) {
+      endWhatsAppTurn = beginWhatsAppDrivenTurn()
+    }
 
     // Compute the workload tag for this turn. queueProcessor can batch a
     // cron prompt with a same-tick human prompt; only tag when EVERY
@@ -704,6 +714,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // via end(), or running — cancelReservation only acts on dispatching).
     // This is the single source of truth for releasing the reservation;
     // useQueueProcessor no longer needs its own .finally().
+    endWhatsAppTurn?.()
     queryGuard.cancelReservation()
     // Safety net: clear the placeholder if processUserInput produced no
     // messages or threw — otherwise it would stay visible until the next

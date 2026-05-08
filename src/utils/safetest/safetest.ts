@@ -292,7 +292,7 @@ function parseSafetestArgs(args: string): SafetestOptions {
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i] ?? ''
 
-    if (token === '--allow-internet' || token === '--internet') {
+    if (token === '--allow-internet' || token === '--internet' || token === '--network') {
       options.allowInternet = true
       continue
     }
@@ -639,10 +639,15 @@ function deriveDefaultCommand(relativePath: string, templateKind: 'wine' | 'defa
     // direct Xvfb server keeps GUI runs working in those images.
     'ensure_display() { if [ -n "$DISPLAY" ]; then return 0; fi; if command -v xvfb-run >/dev/null 2>&1 && command -v xauth >/dev/null 2>&1; then export __SAFETEST_DISPLAY_MODE=xvfb-run; return 0; fi; if command -v Xvfb >/dev/null 2>&1; then if [ -z "$XAUTHORITY" ]; then export XAUTHORITY="$HOME/.Xauthority"; fi; [ -f "$XAUTHORITY" ] || touch "$XAUTHORITY"; Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & __SAFETEST_XVFB_PID=$!; sleep 1; export DISPLAY=:99 __SAFETEST_DISPLAY_MODE=xvfb-direct; return 0; fi; return 1; }',
     'cleanup_display() { if [ -n "$__SAFETEST_XVFB_PID" ]; then kill "$__SAFETEST_XVFB_PID" 2>/dev/null || true; unset __SAFETEST_XVFB_PID; fi; }',
-    // run_with_display: route Python/Node/Java/etc through ensure_display so
-    // GUI libraries (tkinter, PyQt, pygame, selenium, electron, …) don't crash
-    // on $DISPLAY in a headless template.
-    'run_with_display() { tool="$1"; shift; if ! command -v "$tool" >/dev/null 2>&1; then echo "required runtime not installed in this template: $tool"; return 126; fi; if ! ensure_display; then echo "headless template: install xvfb (and xauth), or pick the desktop template"; return 126; fi; rc=0; if [ "$__SAFETEST_DISPLAY_MODE" = "xvfb-run" ]; then xvfb-run -a -e /dev/stderr "$tool" "$@"; rc=$?; else "$tool" "$@"; rc=$?; cleanup_display; fi; return $rc; }',
+    // run_with_display: route Python/Node/Java/etc through ensure_display
+    // when a display CAN be set up, so GUI libraries (tkinter, PyQt, pygame,
+    // selenium, electron, …) don't crash on $DISPLAY. When no display is
+    // available (typical on the code-interpreter template), just run the
+    // tool plain — non-GUI scripts run fine, and GUI scripts surface their
+    // own "no DISPLAY" error which diagnoseStderr converts into a "switch
+    // to the desktop template" hint. Pre-empting with a hard 126 here
+    // blocked every standard Python script on the code template.
+    'run_with_display() { tool="$1"; shift; if ! command -v "$tool" >/dev/null 2>&1; then echo "required runtime not installed in this template: $tool"; return 126; fi; rc=0; if ensure_display; then if [ "$__SAFETEST_DISPLAY_MODE" = "xvfb-run" ]; then xvfb-run -a -e /dev/stderr "$tool" "$@"; rc=$?; else "$tool" "$@"; rc=$?; cleanup_display; fi; else "$tool" "$@"; rc=$?; fi; return $rc; }',
     // static_analysis: comprehensive read-only inspection. Reported as "Static
     // analysis (file not executed)" so the verdict line is honest about not
     // having run the file. Sections only show when the relevant tool exists.
@@ -1052,7 +1057,11 @@ function tokenizeArgs(input: string): string[] {
       escaped = false
       continue
     }
-    if (ch === '\\' && quote !== "'") {
+    // Backslash only escapes inside double quotes. Outside quotes (and
+    // inside single quotes) it is literal — otherwise Windows paths like
+    // `code\typescript.ts` get collapsed to `codetypescript.ts` because
+    // `\t` is consumed as an escape sequence.
+    if (ch === '\\' && quote === '"') {
       escaped = true
       continue
     }

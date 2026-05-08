@@ -20,6 +20,7 @@ import {
   getTokenUsage,
   tokenCountWithEstimation,
 } from '../../utils/tokens.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 
 type LineStats = {
   added: number
@@ -38,6 +39,13 @@ type ModelStats = {
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
 }
+
+type ResponseModelStats = {
+  model: string
+  stats: ModelStats
+}
+
+type TokenUsage = NonNullable<ReturnType<typeof getTokenUsage>>
 
 type ToolStats = {
   total: number
@@ -217,7 +225,19 @@ function emptyLine(text: string): string {
 }
 
 function modelUsageLine(name: string, usage: ModelStats): string {
-  return `${name.padEnd(24)} input: ${formatInteger(usage.inputTokens)} | output: ${formatInteger(usage.outputTokens)} | cache_hit: ${formatCacheHit(usage)}`
+  if (
+    !isOpenRouterUsageModel(name) ||
+    (usage.cacheReadInputTokens <= 0 && usage.cacheCreationInputTokens <= 0)
+  ) {
+    return `${name.padEnd(24)} input: ${formatInteger(usage.inputTokens)} | output: ${formatInteger(usage.outputTokens)} | cache_hit: ${formatCacheHit(usage)}`
+  }
+
+  const totalInput = totalInputTokensProcessed(usage)
+  const cacheWrite =
+    usage.cacheCreationInputTokens > 0
+      ? ` | cache write: ${formatInteger(usage.cacheCreationInputTokens)}`
+      : ''
+  return `${name.padEnd(24)} uncached input: ${formatInteger(usage.inputTokens)} | cache read: ${formatInteger(usage.cacheReadInputTokens)}${cacheWrite} | total input: ${formatInteger(totalInput)} | output: ${formatInteger(usage.outputTokens)} | cache_hit: ${formatCacheHit(usage)}`
 }
 
 function formatCacheHit(usage: ModelStats): string {
@@ -249,6 +269,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isSubagentToolName(name: string): boolean {
   return name === AGENT_TOOL_NAME || name === LEGACY_AGENT_TOOL_NAME
+}
+
+function isOpenRouterUsageModel(model: string): boolean {
+  return getAPIProvider() === 'openrouter' && model.includes('/')
+}
+
+function hasCacheUsage(usage: ModelStats): boolean {
+  return (
+    usage.cacheReadInputTokens > 0 ||
+    usage.cacheCreationInputTokens > 0
+  )
+}
+
+function totalInputTokensProcessed(usage: ModelStats): number {
+  return (
+    usage.inputTokens +
+    usage.cacheReadInputTokens +
+    usage.cacheCreationInputTokens
+  )
 }
 
 function messageToText(message: Message): string {
@@ -364,28 +403,76 @@ function collectModelStats(messages: Message[]): Map<string, ModelStats> {
   }
 
   const fallback = new Map<string, ModelStats>()
-  const seenResponses = new Set<string>()
-
-  for (const message of messages) {
-    if (message.type !== 'assistant') continue
-    const usage = getTokenUsage(message)
-    if (!usage) continue
-
-    const model = message.message.model || '<unknown>'
-    const responseKey = `${model}:${message.message.id}`
-    if (seenResponses.has(responseKey)) continue
-    seenResponses.add(responseKey)
-
+  for (const { model, stats } of collectResponseModelStats(messages)) {
     const existing = fallback.get(model) ?? blankModelStats()
-    existing.inputTokens += usage.input_tokens
-    existing.outputTokens += usage.output_tokens
-    existing.cacheReadInputTokens += usage.cache_read_input_tokens ?? 0
-    existing.cacheCreationInputTokens +=
-      usage.cache_creation_input_tokens ?? 0
+    existing.inputTokens += stats.inputTokens
+    existing.outputTokens += stats.outputTokens
+    existing.cacheReadInputTokens += stats.cacheReadInputTokens
+    existing.cacheCreationInputTokens += stats.cacheCreationInputTokens
     fallback.set(model, existing)
   }
 
   return fallback
+}
+
+function collectResponseModelStats(messages: Message[]): ResponseModelStats[] {
+  const responses = new Map<string, ResponseModelStats>()
+
+  messages.forEach((message, index) => {
+    if (message.type !== 'assistant') return
+    const usage = getTokenUsage(message)
+    if (!usage) return
+
+    const model = message.message.model || '<unknown>'
+    const responseKey = getResponseKey(message, model, index)
+    const stats = modelStatsFromUsage(usage)
+    const existing = responses.get(responseKey)
+    if (existing && isOpenRouterUsageModel(model) && hasCacheUsage(stats)) {
+      mergeResponseStats(existing.stats, stats)
+    } else if (!existing) {
+      responses.set(responseKey, { model, stats })
+    }
+  })
+
+  return [...responses.values()]
+}
+
+function getResponseKey(
+  message: Message,
+  model: string,
+  index: number,
+): string {
+  const assistant = message as Message & {
+    uuid?: string
+    message?: { id?: string }
+  }
+  const responseId =
+    typeof assistant.message?.id === 'string' && assistant.message.id.length > 0
+      ? assistant.message.id
+      : (assistant.uuid ?? `index:${index}`)
+  return `${model}:${responseId}`
+}
+
+function modelStatsFromUsage(usage: TokenUsage): ModelStats {
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+  }
+}
+
+function mergeResponseStats(target: ModelStats, update: ModelStats): void {
+  target.inputTokens = Math.max(target.inputTokens, update.inputTokens)
+  target.outputTokens = Math.max(target.outputTokens, update.outputTokens)
+  target.cacheReadInputTokens = Math.max(
+    target.cacheReadInputTokens,
+    update.cacheReadInputTokens,
+  )
+  target.cacheCreationInputTokens = Math.max(
+    target.cacheCreationInputTokens,
+    update.cacheCreationInputTokens,
+  )
 }
 
 function collectToolStats(messages: Message[]): ToolStats {

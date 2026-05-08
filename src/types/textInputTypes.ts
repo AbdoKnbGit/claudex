@@ -327,6 +327,12 @@ export type QueuedCommand = {
    */
   bridgeOrigin?: boolean
   /**
+   * True when the prompt came from the native WhatsApp router. Used to scope
+   * WhatsApp-only turn behavior, such as dangerous permission bypass, without
+   * changing local terminal turns while WhatsApp is connected.
+   */
+  whatsappOrigin?: boolean
+  /**
    * When true, the resulting UserMessage gets `isMeta: true` — hidden in the
    * transcript UI but visible to the model. Used by system-generated prompts
    * (proactive ticks, teammate messages, resource updates) that route through

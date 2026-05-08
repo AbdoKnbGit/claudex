@@ -169,27 +169,6 @@ Setup is one step: `/login` → **E2B Security** → pick "Auth login" (opens th
 | `security` | Static triage tools — strings, exiftool, yara, binwalk. |
 | `network` | Controlled phone-home testing (used together with `--allow-internet`). |
 
-**File types it runs out of the box:**
-
-- **Scripts that just work:** `.sh`, `.bash`, `.py`, `.pyw`, `.ipynb`, `.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.rb`, `.pl`, `.php`, `.lua`, `.jar` — auto-routed to `code` or `desktop`, including a virtual display when needed.
-- **Shell variants** (`.zsh`, `.fish`) and **PowerShell** (`.ps1`) run when the chosen template ships those interpreters; otherwise you get a clear "runtime not installed in this template" message instead of a crash.
-- **Linux native binaries** (ELF / Mach-O / executables) — chmod'd and run directly under the chosen template.
-
-**File types that get static analysis instead of execution:**
-
-- **Windows binaries** (`.exe`, `.dll`, `.msi`, `.scr`, `.com`, `.bat`, `.cmd`) — there is no public E2B template with Wine, so by default `/safetest` reports a comprehensive static analysis (file type, sha256/md5, exiftool metadata, objdump headers, imports/DLL deps, filtered strings: URLs, registry keys, common Win32 / network APIs) without ever executing the binary. To actually detonate one, you'd need to build a custom Wine template and run `/safetest wine @./<file>`.
-- **Documents and archives** (`.pdf`, `.docx`, `.xlsx`, `.zip`, `.iso`, `.apk`, etc.) — same rule: static analysis only, unless you've configured a `security` / `document` template.
-
-**Edge cases worth knowing about:**
-
-- **No login yet.** `/safetest` tells you exactly what to do (`/login` → E2B Security) instead of erroring. After login, it just works.
-- **Headless display gotchas.** GUI scripts get an automatic virtual display. The shell tries `xvfb-run` first, falls back to a raw `Xvfb :99` server when the template ships Xvfb but no `xauth`, and emits a specific hint if both are missing telling you which packages to add.
-- **Network is off by default.** Add `--allow-internet` if your script needs network access in the sandbox.
-- **The "Account Checker" / suspect-binary case.** If a file looks like a credential-abuse tool, `/safetest` won't pretend it can detonate it — you get the static report and that's it. The whole point of the sandbox is safe inspection, not normalising execution of arbitrary attack tools.
-- **Placeholder template IDs.** If `safetest.config.json` still has `<paste-the-id-from-e2b-template-build>` (or other placeholder strings) instead of a real template ID, `/safetest` refuses to start with a clear error pointing at the config file — no more "no such file or directory" mystery.
-- **File size guard.** Files above 10 MB are rejected before upload; raise it explicitly with `--max-file-bytes` when you really mean it.
-- **Disposable sandbox.** Every run creates a fresh VM and kills it at the end. Output includes the sandbox ID so you can verify it.
-
 ---
 
 ## Supported Providers
@@ -226,6 +205,9 @@ File editing, bash execution, glob, grep, web search, web fetch, MCP servers, ho
 
 **Voice conversation**
 Use `/hey` to start a voice conversation and `/bye` to end it. Tau can listen, transcribe what you said, send it as your prompt, and optionally speak replies back.
+
+**WhatsApp remote control**
+Use `/whatsapp` to link WhatsApp and remotely control Tau from your phone.
 
 **GitHub automation and repo management**
 The `/github` command brings common GitHub work into Tau through `gh`: inspect issues and pull requests, review repo state, triage labels/status, generate changelog notes, run wrap-up flows for stage/commit/push, and inspect workflow or release status before publishing changes.
