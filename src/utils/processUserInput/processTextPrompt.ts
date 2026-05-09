@@ -17,37 +17,10 @@ import {
   matchesNegativeKeyword,
 } from '../userPromptKeywords.js'
 
-function getPinReminder(): string | null {
+function getPinText(): string | null {
   const pin = getInitialSettings().pin
   if (!pin?.enabled || !pin.text) return null
-  return `<system-reminder>\n${pin.text}\n</system-reminder>`
-}
-
-function appendPinToInput(
-  input: string | Array<ContentBlockParam>,
-  reminder: string,
-): string | Array<ContentBlockParam> {
-  if (typeof input === 'string') {
-    return input ? `${input}\n\n${reminder}` : reminder
-  }
-  // Append to the LAST text block so the pin sits at the very end of the
-  // user message — closest to the model's generation point, and after any
-  // <ide_selection>/attachment context blocks that may follow user text.
-  const lastTextIdx = input
-    .map((b, i) => (b.type === 'text' ? i : -1))
-    .filter(i => i !== -1)
-    .pop()
-  if (lastTextIdx === undefined) {
-    return [...input, { type: 'text', text: reminder }]
-  }
-  const last = input[lastTextIdx]
-  if (last.type !== 'text') return input
-  const next = [...input]
-  next[lastTextIdx] = {
-    ...last,
-    text: last.text ? `${last.text}\n\n${reminder}` : reminder,
-  }
-  return next
+  return pin.text
 }
 
 export function processTextPrompt(
@@ -65,13 +38,15 @@ export function processTextPrompt(
   const promptId = randomUUID()
   setPromptId(promptId)
 
-  // Inject the pinned constraint at the end of the user message (cache-safe:
-  // system prompt and prior cached blocks are untouched). Skipped for isMeta
-  // messages so internal/system-generated prompts aren't polluted.
-  const pinReminder = isMeta ? null : getPinReminder()
-  if (pinReminder) {
-    input = appendPinToInput(input, pinReminder)
-  }
+  // Pinned constraint: appended as a SEPARATE isMeta user message so the
+  // user's typed prompt stays clean in the transcript (isMeta messages are
+  // hidden by VirtualMessageList). Plain text — no XML wrapper — to avoid
+  // tripping providers that reject angle-bracket tags in user content. Skipped
+  // for isMeta callers so internal/system-generated prompts aren't polluted.
+  const pinText = isMeta ? null : getPinText()
+  const pinMessage = pinText
+    ? createUserMessage({ content: pinText, isMeta: true })
+    : null
 
   const userPromptText =
     typeof input === 'string'
@@ -123,7 +98,11 @@ export function processTextPrompt(
     })
 
     return {
-      messages: [userMessage, ...attachmentMessages],
+      messages: [
+        userMessage,
+        ...attachmentMessages,
+        ...(pinMessage ? [pinMessage] : []),
+      ],
       shouldQuery: true,
     }
   }
@@ -136,7 +115,11 @@ export function processTextPrompt(
   })
 
   return {
-    messages: [userMessage, ...attachmentMessages],
+    messages: [
+      userMessage,
+      ...attachmentMessages,
+      ...(pinMessage ? [pinMessage] : []),
+    ],
     shouldQuery: true,
   }
 }
