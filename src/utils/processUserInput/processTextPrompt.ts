@@ -9,12 +9,46 @@ import type {
 import { logEvent } from '../../services/analytics/index.js'
 import type { PermissionMode } from '../../types/permissions.js'
 import { createUserMessage } from '../messages.js'
+import { getInitialSettings } from '../settings/settings.js'
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js'
 import { startInteractionSpan } from '../telemetry/sessionTracing.js'
 import {
   matchesKeepGoingKeyword,
   matchesNegativeKeyword,
 } from '../userPromptKeywords.js'
+
+function getPinReminder(): string | null {
+  const pin = getInitialSettings().pin
+  if (!pin?.enabled || !pin.text) return null
+  return `<system-reminder>\n${pin.text}\n</system-reminder>`
+}
+
+function appendPinToInput(
+  input: string | Array<ContentBlockParam>,
+  reminder: string,
+): string | Array<ContentBlockParam> {
+  if (typeof input === 'string') {
+    return input ? `${input}\n\n${reminder}` : reminder
+  }
+  // Append to the LAST text block so the pin sits at the very end of the
+  // user message — closest to the model's generation point, and after any
+  // <ide_selection>/attachment context blocks that may follow user text.
+  const lastTextIdx = input
+    .map((b, i) => (b.type === 'text' ? i : -1))
+    .filter(i => i !== -1)
+    .pop()
+  if (lastTextIdx === undefined) {
+    return [...input, { type: 'text', text: reminder }]
+  }
+  const last = input[lastTextIdx]
+  if (last.type !== 'text') return input
+  const next = [...input]
+  next[lastTextIdx] = {
+    ...last,
+    text: last.text ? `${last.text}\n\n${reminder}` : reminder,
+  }
+  return next
+}
 
 export function processTextPrompt(
   input: string | Array<ContentBlockParam>,
@@ -30,6 +64,14 @@ export function processTextPrompt(
 } {
   const promptId = randomUUID()
   setPromptId(promptId)
+
+  // Inject the pinned constraint at the end of the user message (cache-safe:
+  // system prompt and prior cached blocks are untouched). Skipped for isMeta
+  // messages so internal/system-generated prompts aren't polluted.
+  const pinReminder = isMeta ? null : getPinReminder()
+  if (pinReminder) {
+    input = appendPinToInput(input, pinReminder)
+  }
 
   const userPromptText =
     typeof input === 'string'

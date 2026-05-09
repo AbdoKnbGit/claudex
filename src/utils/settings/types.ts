@@ -713,6 +713,15 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Advisor model for the server-side advisor tool.'),
+      pin: z
+        .object({
+          text: z.string(),
+          enabled: z.boolean(),
+        })
+        .optional()
+        .describe(
+          'Pinned constraint appended to every user message (cache-safe; system prompt is untouched).',
+        ),
       fastMode: z
         .boolean()
         .optional()

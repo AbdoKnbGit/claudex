@@ -172,6 +172,18 @@ Setup is one step: `/login` → **E2B Security** → pick "Auth login" (opens th
 | `security` | Static triage tools — strings, exiftool, yara, binwalk. |
 | `network` | Controlled phone-home testing (used together with `--allow-internet`). |
 
+**`/pin` - Pin a constraint to every prompt**
+Save a sentence (or two) and Tau quietly appends it to the end of every message you send — a persistent reminder the model carries through the whole session without you retyping it. Use it for style rules ("reply in French"), guardrails ("never edit files outside `src/`"), or task focus ("stay on the auth refactor"). Cache-safe by design: only the dynamic tail of the user message changes, so your provider's prompt cache stays warm and the cost is a few extra tokens per turn.
+
+```
+/pin                    show the current pin and on/off state
+/pin set <text>         set the pinned text (replaces any existing)
+/pin add <text>         append another line to the pin
+/pin on                 enable injection
+/pin off                disable injection (text is kept)
+/pin clear              clear the text and disable
+```
+
 ---
 
 ## Supported Providers
