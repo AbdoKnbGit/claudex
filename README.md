@@ -8,7 +8,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
 [![License](https://img.shields.io/npm/l/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
 
-<video src="https://github.com/user-attachments/assets/27f65054-307d-4a0b-9746-cbce6480c99b" controls width="100%"></video>
+
+
+
 
 ---
 
@@ -68,7 +70,7 @@ tau update
 <p align="center">
   <img src="tau_docs.PNG" alt="Tau docs" width="720">
 </p>
-
+<video src="https://github.com/user-attachments/assets/07862fa1-5f0f-4027-97e7-9e147d74f999" controls width="100%"></video>
 ---
 ## The Commands You Need to Know
 
@@ -154,35 +156,10 @@ Upload one file to a fresh E2B VM, run it there, get a clean report back. The lo
 
 Setup is one step: `/login` → **E2B Security** → pick "Auth login" (opens the E2B dashboard in your browser) or "API key" (just paste). After that, `/safetest` is ready — no env variables, no extra config.
 
-**Templates (the sandbox image used for the run):**
-
-| Built-in (work right after login) | What it's for |
-|---|---|
-| `auto` | The default. Looks at the file extension and a quick scan of imports, then picks the right template. |
-| `base` | Minimal Linux. Bash, sh, zsh, unknown plain files. |
-| `code` | Code-interpreter (Python + Node + Jupyter). The default for normal scripts. |
-| `desktop` | E2B's official desktop image — Xvfb + a real display. Used automatically when the script imports a GUI library (tkinter, PyQt, PySide, wx, pygame, selenium, playwright, pyautogui, electron, puppeteer). |
-| `mcp` | mcp-gateway, for MCP workflow files. |
-
-| Optional (require a custom E2B template you build with `e2b template build`) | What it's for |
-|---|---|
-| `wine`, `windows`, `windows-analysis` | Detonating `.exe`, `.bat`, `.cmd` under Wine. |
-| `powershell` | `.ps1` / `.psm1` with pwsh installed. |
-| `browser` | `.html`, `.svg` for DOM behavior checks. |
-| `security` | Static triage tools — strings, exiftool, yara, binwalk. |
-| `network` | Controlled phone-home testing (used together with `--allow-internet`). |
-
 **`/pin` - Pin a constraint to every prompt**
 Save a sentence (or two) and Tau quietly appends it to the end of every message you send — a persistent reminder the model carries through the whole session without you retyping it. Use it for style rules ("reply in French"), guardrails ("never edit files outside `src/`"), or task focus ("stay on the auth refactor"). Cache-safe by design: only the dynamic tail of the user message changes, so your provider's prompt cache stays warm and the cost is a few extra tokens per turn.
 
-```
-/pin                    show the current pin and on/off state
-/pin set <text>         set the pinned text (replaces any existing)
-/pin add <text>         append another line to the pin
-/pin on                 enable injection
-/pin off                disable injection (text is kept)
-/pin clear              clear the text and disable
-```
+
 
 ---
 
