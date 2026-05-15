@@ -424,6 +424,49 @@ function main(): void {
     assert(body.messages.length === 1, `messages=${JSON.stringify(body.messages)}`)
     assert(!body.messages.some(message => message.role === 'tool'), 'orphan tool message was kept')
   })
+  test('mistral drops empty assistant placeholders after unresolved tool calls', () => {
+    const body = mkBody('devstral-latest', {
+      messages: [
+        { role: 'user', content: 'start' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [mkToolCall('toolu_missing', 'Read')],
+        },
+        { role: 'user', content: 'next' },
+      ],
+    })
+
+    TRANSFORMERS.mistral.transformRequest(body, mkCtx('devstral-latest'))
+
+    assert(body.messages.length === 2, `messages=${JSON.stringify(body.messages)}`)
+    assert(!body.messages.some(message => message.role === 'assistant'),
+      `empty assistant placeholder was kept: ${JSON.stringify(body.messages)}`)
+  })
+  test('mistral drops invalid assistant tool-call shells before shared cleanup', () => {
+    const body = mkBody('devstral-latest', {
+      messages: [
+        { role: 'user', content: 'start' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'toolu_bad',
+              type: 'function',
+              function: { name: '', arguments: '{}' },
+            },
+          ],
+        } as any,
+        { role: 'tool', tool_call_id: 'toolu_bad', content: 'loaded' },
+      ],
+    })
+
+    TRANSFORMERS.mistral.transformRequest(body, mkCtx('devstral-latest'))
+
+    assert(body.messages.length === 1, `messages=${JSON.stringify(body.messages)}`)
+    assert(body.messages[0]?.role === 'user', `first role=${body.messages[0]?.role}`)
+  })
   test('mistral does NOT support strict mode', () => {
     assert(!TRANSFORMERS.mistral.supportsStrictMode(),
       'mistral wrongly advertises strict mode')

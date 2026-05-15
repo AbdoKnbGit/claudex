@@ -135,7 +135,7 @@ function finalizePendingToolCalls(messages: OpenAIChatMessage[], pending: Pendin
 
   const seen = new Set<string>()
   const keptToolCalls = assistant.tool_calls.filter(call => {
-    if (!pending.answeredIds.has(call.id) || seen.has(call.id)) return false
+    if (!isValidMistralToolCall(call) || !pending.answeredIds.has(call.id) || seen.has(call.id)) return false
     seen.add(call.id)
     return true
   })
@@ -153,7 +153,7 @@ function dedupeToolCalls(message: OpenAIChatMessage): OpenAIChatMessage {
 
   const seen = new Set<string>()
   const toolCalls = message.tool_calls.filter(call => {
-    if (!call.id || seen.has(call.id)) return false
+    if (!isValidMistralToolCall(call) || seen.has(call.id)) return false
     seen.add(call.id)
     return true
   })
@@ -164,6 +164,29 @@ function dedupeToolCalls(message: OpenAIChatMessage): OpenAIChatMessage {
   delete next.tool_calls
   if (next.content == null) next.content = ''
   return next
+}
+
+function isValidMistralToolCall(call: NonNullable<OpenAIChatMessage['tool_calls']>[number] | undefined): boolean {
+  return !!(
+    call?.id
+    && call.function
+    && typeof call.function.name === 'string'
+    && call.function.name.length > 0
+  )
+}
+
+function hasMistralRenderableAssistantContent(message: OpenAIChatMessage): boolean {
+  if (message.role !== 'assistant') return true
+  if (message.tool_calls?.some(isValidMistralToolCall)) return true
+  if (typeof message.content === 'string') return message.content.trim().length > 0
+  if (Array.isArray(message.content)) {
+    return message.content.some(part =>
+      part
+      && typeof part === 'object'
+      && (part.type !== 'text' || (typeof part.text === 'string' && part.text.trim().length > 0)),
+    )
+  }
+  return false
 }
 
 function sanitizeMistralToolCallAdjacency(messages: OpenAIChatMessage[]): OpenAIChatMessage[] {
@@ -210,7 +233,7 @@ function sanitizeMistralToolCallAdjacency(messages: OpenAIChatMessage[]): OpenAI
   }
 
   if (pending) finalizePendingToolCalls(out, pending)
-  return out
+  return out.filter(hasMistralRenderableAssistantContent)
 }
 
 function isMistralCodingCatalogModel(model: string): boolean {
