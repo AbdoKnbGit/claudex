@@ -91,6 +91,13 @@ Live model browser. Fetches the real catalog from your provider API, lets you se
 /model kimi-k2-5            set a model directly
 ```
 
+### Web Search
+
+**`WebSearch` - Firecrawl-hosted web search**
+The `web_search` tool is hosted with Firecrawl and works across providers. Firecrawl offers 1k searches/month on free trials; just enter your API key.
+
+Setup is one step: `/login` -> **Firecrawl Search** -> paste your Firecrawl API key. After that, agents can search current web information automatically when a question needs live or recent data.
+
 ### Voice
 
 **`/hey` - Start a voice conversation**
@@ -195,6 +202,9 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.
+
+**web_search tool**
+Firecrawl provides 1k searches/month free for deep searching. Just enter your API key through `/login` -> **Firecrawl Search**.
 
 **Voice conversation**
 Use `/hey` to start a voice conversation and `/bye` to end it. Tau can listen, transcribe what you said, send it as your prompt, and optionally speak replies back.
