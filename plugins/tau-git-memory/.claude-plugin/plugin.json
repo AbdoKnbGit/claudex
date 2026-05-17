@@ -1,0 +1,34 @@
+{
+  "name": "tau-git-memory",
+  "version": "0.1.4",
+  "description": "Git-backed local memory store for Tau sessions, with branch-aware recall and manual capture.",
+  "author": {
+    "name": "AbdoKnbGit"
+  },
+  "keywords": ["memory", "git", "branch", "recall"],
+  "commands": {
+    "status": {
+      "source": "./commands/status.md",
+      "description": "Show the Git-backed Tau memory store status, branch, and known paths.",
+      "allowedTools": ["Bash"]
+    },
+    "remember": {
+      "source": "./commands/remember.md",
+      "description": "Save a tagged fact into Tau Git Memory. Usage: [--tag pinned|fallback|normal] <dot.path> <memory text>.",
+      "argumentHint": "[--tag tag] <path> <memory>",
+      "allowedTools": ["Bash"]
+    },
+    "recall": {
+      "source": "./commands/recall.md",
+      "description": "Search and recall facts from Tau Git Memory.",
+      "argumentHint": "<query>",
+      "allowedTools": ["Bash"]
+    },
+    "tree": {
+      "source": "./commands/tree.md",
+      "description": "Show the Tau Git Memory namespace and path tree as a visual schema.",
+      "argumentHint": "[namespace]",
+      "allowedTools": ["Bash"]
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "description": "Initialize the Git-backed Tau memory store and surface lightweight recall context.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/git-memory.mjs\" hook-session-start",
+            "timeout": 10,
+            "statusMessage": "loading git memory"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/git-memory.mjs\" hook-user-prompt-submit",
+            "timeout": 5,
+            "statusMessage": "checking git memory"
+          }
+        ]
+      }
+    ]
+  }
+}
