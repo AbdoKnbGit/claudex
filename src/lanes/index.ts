@@ -92,6 +92,15 @@ export function initLanes(opts?: {
   openrouterApiKey?: string
   // AgentRouter (independent OpenRouter-style gateway)
   agentrouterApiKey?: string
+  // Model Router (lxg2it)
+  modelrouterApiKey?: string
+  modelrouterBaseUrl?: string
+  // Vercel AI Gateway
+  vercelApiKey?: string
+  vercelBaseUrl?: string
+  // Requesty router
+  requestyApiKey?: string
+  requestyBaseUrl?: string
   // Qwen (DashScope)
   qwenApiKey?: string
   // OAuth-backed providers on the shared compat transport. iFlow uses a
@@ -194,6 +203,9 @@ export function initLanes(opts?: {
       : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
     agentrouter: opts?.agentrouterApiKey ? { apiKey: opts.agentrouterApiKey } : undefined,
+    modelrouter: opts?.modelrouterApiKey ? { apiKey: opts.modelrouterApiKey, baseUrl: opts.modelrouterBaseUrl } : undefined,
+    vercel: opts?.vercelApiKey ? { apiKey: opts.vercelApiKey, baseUrl: opts.vercelBaseUrl } : undefined,
+    requesty: opts?.requestyApiKey ? { apiKey: opts.requestyApiKey, baseUrl: opts.requestyBaseUrl } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
     copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,

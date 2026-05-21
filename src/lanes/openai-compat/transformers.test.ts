@@ -687,6 +687,70 @@ function main(): void {
         `${model} prompt_cache_key=${body.prompt_cache_key}`)
     }
   })
+
+  // ── Model Router ─────────────────────────────────────────────────
+  test('modelrouter pins legacy Haiku alias to exact Model Router model id', () => {
+    const body = mkBody('claude-3-5-haiku')
+    TRANSFORMERS.modelrouter.transformRequest(body, mkCtx('claude-3-5-haiku'))
+    assert(body.model === 'claude-haiku-4-5', `model=${body.model}`)
+  })
+  test('modelrouter pins GPT OSS alias to exact Bedrock model id', () => {
+    const body = mkBody('gpt-oss-120b')
+    TRANSFORMERS.modelrouter.transformRequest(body, mkCtx('gpt-oss-120b'))
+    assert(body.model === 'openai.gpt-oss-120b-1:0', `model=${body.model}`)
+  })
+  test('modelrouter strips routing hints from pinned model requests', () => {
+    const body = mkBody('gpt-oss-120b', {
+      route: 'fallback',
+      models: ['economy'],
+      transforms: ['auto'],
+      extra_body: {
+        prefer: 'cheap',
+        route: 'fallback',
+      },
+    }) as OpenAIChatRequest & { prefer?: string }
+    body.prefer = 'cheap'
+    TRANSFORMERS.modelrouter.transformRequest(body, mkCtx('gpt-oss-120b'))
+    assert(body.model === 'openai.gpt-oss-120b-1:0', `model=${body.model}`)
+    assert(body.prefer === undefined, `prefer=${body.prefer}`)
+    assert(body.route === undefined, `route=${body.route}`)
+    assert(body.models === undefined, `models=${JSON.stringify(body.models)}`)
+    assert(body.transforms === undefined, `transforms=${JSON.stringify(body.transforms)}`)
+    assert(body.extra_body?.prefer === undefined, `extra.prefer=${body.extra_body?.prefer}`)
+    assert(body.extra_body?.route === undefined, `extra.route=${body.extra_body?.route}`)
+  })
+  test('modelrouter keeps routing hints for explicit tier requests', () => {
+    const body = mkBody('standard') as OpenAIChatRequest & { prefer?: string }
+    body.prefer = 'quality'
+    TRANSFORMERS.modelrouter.transformRequest(body, mkCtx('standard'))
+    assert(body.model === 'standard', `model=${body.model}`)
+    assert(body.prefer === 'quality', `prefer=${body.prefer}`)
+  })
+  test('modelrouter cache-control mode is last-only for Anthropic pins', () => {
+    assert(
+      TRANSFORMERS.modelrouter.cacheControlMode('claude-3-5-haiku') === 'last-only',
+      'wanted last-only for legacy Haiku alias',
+    )
+    assert(
+      TRANSFORMERS.modelrouter.cacheControlMode('claude-haiku-4-5') === 'last-only',
+      'wanted last-only for Model Router Haiku pin',
+    )
+  })
+  test('modelrouter catalog includes current routing-grid model ids', () => {
+    const ids = (TRANSFORMERS.modelrouter.staticCatalog?.() ?? []).map(model => model.id)
+    for (const id of [
+      'claude-haiku-4-5',
+      'claude-sonnet-4-6',
+      'claude-opus-4-7',
+      'openai.gpt-oss-120b-1:0',
+      'qwen-3-235b-a22b-instruct-2507',
+      'nvidia.nemotron-nano-3-30b',
+      'nvidia.nemotron-super-3-120b',
+      'zai.glm-5',
+    ]) {
+      assert(ids.includes(id), `modelrouter catalog missing ${id}`)
+    }
+  })
   test('moonshot stamps prompt_cache_key from session id without cache_control markers', () => {
     const body = mkBody('kimi-k2.6')
     TRANSFORMERS.moonshot.transformRequest(body, {

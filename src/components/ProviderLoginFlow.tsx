@@ -66,10 +66,19 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://agentrouter.org/',
     supportsOAuth: false,
   },
-  groq: {
-    envVar: 'GROQ_API_KEY',
-    keyPrefix: 'gsk_',
-    getKeyUrl: 'https://console.groq.com/keys',
+  modelrouter: {
+    envVar: 'MODEL_ROUTER_API_KEY',
+    getKeyUrl: 'https://api.lxg2it.com/docs/api',
+    supportsOAuth: false,
+  },
+  vercel: {
+    envVar: 'AI_GATEWAY_API_KEY',
+    getKeyUrl: 'https://vercel.com/docs/ai-gateway',
+    supportsOAuth: false,
+  },
+  requesty: {
+    envVar: 'REQUESTY_API_KEY',
+    getKeyUrl: 'https://app.requesty.ai/api-keys',
     supportsOAuth: false,
   },
   mistral: {
@@ -180,10 +189,6 @@ async function _testApiKey(
         url = 'https://api.openai.com/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
-      case 'groq':
-        url = 'https://api.groq.com/openai/v1/models'
-        headers = { Authorization: `Bearer ${key}` }
-        break
       case 'mistral':
         url = 'https://api.mistral.ai/v1/models'
         headers = { Authorization: `Bearer ${key}` }
@@ -210,6 +215,18 @@ async function _testApiKey(
         break
       case 'agentrouter':
         url = 'https://agentrouter.org/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      case 'modelrouter':
+        url = 'https://api.lxg2it.com/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      case 'vercel':
+        url = 'https://ai-gateway.vercel.sh/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      case 'requesty':
+        url = 'https://router.requesty.ai/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
       default:
@@ -256,6 +273,9 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'nim' ||
     provider === 'openrouter' ||
     provider === 'agentrouter' ||
+    provider === 'modelrouter' ||
+    provider === 'vercel' ||
+    provider === 'requesty' ||
     provider === 'minimax' ||
     provider === 'ollama'
   ) {
@@ -544,6 +564,8 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       const envVar = meta?.envVar
       if (envVar) process.env[envVar] = key
       if (provider === 'agentrouter') process.env.AGENTROUTER_API_KEY = key
+      if (provider === 'modelrouter') process.env.MODELROUTER_API_KEY = key
+      if (provider === 'vercel') process.env.VERCEL_AI_GATEWAY_API_KEY = key
       reloadSavedApiKeyInRuntime(provider)
       if (warnings.length > 0) {
         setState({

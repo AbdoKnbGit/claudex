@@ -129,6 +129,12 @@ function _ensureLanesInitialized(): void {
       lmstudioBaseUrl: getProviderBaseUrl('lmstudio'),
       openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
       agentrouterApiKey: getProviderApiKey('agentrouter') ?? undefined,
+      modelrouterApiKey: getProviderApiKey('modelrouter') ?? undefined,
+      modelrouterBaseUrl: getProviderBaseUrl('modelrouter'),
+      vercelApiKey: getProviderApiKey('vercel') ?? undefined,
+      vercelBaseUrl: getProviderBaseUrl('vercel'),
+      requestyApiKey: getProviderApiKey('requesty') ?? undefined,
+      requestyBaseUrl: getProviderBaseUrl('requesty'),
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
@@ -171,6 +177,9 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'lmstudio':
     case 'openrouter':
     case 'agentrouter':
+    case 'modelrouter':
+    case 'vercel':
+    case 'requesty':
       return 'openai-compat'
     case 'cline':
       return 'cline'
@@ -297,6 +306,10 @@ function createProvider(provider: APIProvider): BaseProvider {
         'AgentRouter chat requires the openai-compat lane to be healthy. '
         + 'Run `/login` to authenticate, or check that AGENT_ROUTER_TOKEN or AGENTROUTER_API_KEY is set.',
       )
+    case 'modelrouter':
+    case 'vercel':
+    case 'requesty':
+      return new OpenAIProvider({ apiKey, baseUrl })
     case 'groq':
       return new GroqProvider({ apiKey })
     case 'mistral':
@@ -715,6 +728,10 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'nim':
     case 'openrouter':
     case 'agentrouter':
+    case 'modelrouter':
+    case 'vercel':
+    case 'requesty':
+    case 'groq':
     case 'ollama':
     case 'lmstudio':
       break

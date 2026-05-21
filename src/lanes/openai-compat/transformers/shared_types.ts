@@ -45,4 +45,15 @@ export interface OpenAIChatRequest {
   route?: string
   prompt_cache_key?: string
   prompt_cache_retention?: '24h'
+  providerOptions?: {
+    gateway?: {
+      caching?: 'auto'
+      [key: string]: unknown
+    }
+    [key: string]: unknown
+  }
+  requesty?: {
+    auto_cache?: boolean
+    [key: string]: unknown
+  }
 }

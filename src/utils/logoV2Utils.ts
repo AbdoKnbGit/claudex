@@ -256,7 +256,9 @@ export function getLogoDisplayData(): {
     : displayPath
   const provider = getAPIProvider()
   const billingType = isThirdPartyProvider(provider)
-    ? PROVIDER_DISPLAY_NAMES[provider]
+    ? provider === 'modelrouter'
+      ? 'API Usage Billing'
+      : PROVIDER_DISPLAY_NAMES[provider]
     : isClaudeAISubscriber()
       ? getSubscriptionName()
       : 'API Usage Billing'

@@ -54,6 +54,7 @@ import {
   E2BSecurityLogin,
   Login as AnthropicLogin,
 } from '../login/login.js'
+import { ProviderLoginFlow } from '../../components/ProviderLoginFlow.js'
 import {
   GEMINI_VOICE_KEY,
   VOICE_CONVERSATION_LABEL,
@@ -91,10 +92,9 @@ import {
  * CLIProxyAPI/Antigravity/Codex are implicit engines behind Gemini &
  * OpenAI OAuth — not listed as separate rows.
  */
-// `groq` is intentionally hidden — the free / on-demand TPM budget is
-// too tight for Tau's tool suite. `iflow` is hidden from user-facing
-// provider management after the iFlow CLI shutdown announcement on
-// April 17, 2026. No provider code was removed; auth and routing stay wired.
+// `iflow` is hidden from user-facing provider management after the iFlow
+// CLI shutdown announcement on April 17, 2026. `modelrouter` is also hidden
+// from /provider while its auth/routing code stays wired for compatibility.
 const MANAGEABLE_PROVIDERS = [
   // Anthropic surfaces here alongside the third-party providers. The
   // configure view hands Anthropic off to the shared /login OAuth flow
@@ -106,6 +106,8 @@ const MANAGEABLE_PROVIDERS = [
   'antigravity',
   'openrouter',
   'agentrouter',
+  'vercel',
+  'requesty',
   'mistral',
   'nim',
   'deepseek',
@@ -328,6 +330,7 @@ type View =
       kind: 'voice_key_input'
       error?: string
     }
+  | { kind: 'provider_login'; provider: KeyedProvider }
   | { kind: 'anthropic_login' }
   | { kind: 'e2b_login' }
   | {
@@ -349,6 +352,14 @@ type ConfigureOption =
   | { kind: 'reset_lmstudio_url' }
   | { kind: 'test_lmstudio' }
   | { kind: 'back' }
+
+function usesEmbeddedProviderLogin(provider: ManageableProvider): provider is KeyedProvider {
+  return (
+    provider === 'modelrouter' ||
+    provider === 'vercel' ||
+    provider === 'requesty'
+  )
+}
 
 function buildConfigureOptions(
   provider: ManageableProvider,
@@ -418,6 +429,10 @@ function buildConfigureOptions(
   }
 
   const options: ConfigureOption[] = []
+
+  if (usesEmbeddedProviderLogin(provider)) {
+    options.push({ kind: 'login' })
+  }
 
   // Gemini: check CLI-tier OAuth + API key (Antigravity has its own row).
   if (provider === 'gemini') {
@@ -964,6 +979,9 @@ function ProviderManager({
             if (view.provider === E2B_SECURITY_PROVIDER) {
               setView({ kind: 'e2b_login' })
             }
+            if (usesEmbeddedProviderLogin(view.provider)) {
+              setView({ kind: 'provider_login', provider: view.provider })
+            }
             return
           case 'deactivate':
             if (view.provider === 'firstParty') {
@@ -1276,6 +1294,26 @@ function ProviderManager({
 
   if (view.kind === 'e2b_login') {
     return <E2BSecurityLogin onDone={handleE2BLoginDone} />
+  }
+
+  if (view.kind === 'provider_login') {
+    const provider = view.provider
+    return (
+      <ProviderLoginFlow
+        provider={provider}
+        onDone={(success) => {
+          refresh()
+          setView({
+            kind: 'result',
+            provider,
+            tone: success ? 'success' : 'error',
+            message: success
+              ? `${getManageableProviderName(provider)} credentials saved.`
+              : `${getManageableProviderName(provider)} login cancelled.`,
+          })
+        }}
+      />
+    )
   }
 
   if (view.kind === 'result') {

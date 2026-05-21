@@ -400,6 +400,78 @@ async function captureAgentRouterRequest(
   }
 }
 
+async function captureModelRouterRequest(
+  model = 'claude-3-5-haiku',
+  usage: AgentRouterUsage = {
+    prompt_tokens: 100,
+    completion_tokens: 9,
+    total_tokens: 109,
+    cache_read_input_tokens: 75,
+    cache_creation_input_tokens: 10,
+  },
+): Promise<{
+  request: CapturedRequest
+  events: AnthropicStreamEvent[]
+}> {
+  const lane = new OpenAICompatLane()
+  lane.registerProvider('modelrouter', 'modelrouter-token', 'https://api.lxg2it.com/v1')
+
+  const oldFetch = globalThis.fetch
+  let request: CapturedRequest | null = null
+
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    request = {
+      url: String(url),
+      headers: init?.headers as Record<string, string>,
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, any>,
+    }
+    const sse = [
+      {
+        id: 'chatcmpl-modelrouter',
+        object: 'chat.completion.chunk',
+        model: request.body.model,
+        choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
+      },
+      {
+        id: 'chatcmpl-modelrouter',
+        object: 'chat.completion.chunk',
+        model: request.body.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage,
+      },
+    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n'
+    return new Response(sse, {
+      status: 200,
+      headers: {
+        'content-type': 'text/event-stream',
+        'x-model-router-model': request.body.model,
+        'x-model-router-provider': 'anthropic',
+      },
+    })
+  }) as typeof fetch
+
+  try {
+    const events: AnthropicStreamEvent[] = []
+    const stream = lane.streamAsProvider({
+      model,
+      messages: [{ role: 'user', content: 'hello' }],
+      system: 'stable system prompt',
+      tools: [],
+      max_tokens: 128,
+      signal: new AbortController().signal,
+      sessionId: 'session-fixed',
+      providerHint: 'modelrouter',
+    })
+
+    for await (const ev of stream) events.push(ev)
+    assert(request !== null, 'fetch was not called')
+    return { request, events }
+  } finally {
+    globalThis.fetch = oldFetch
+    lane.unregisterProvider('modelrouter')
+  }
+}
+
 async function main(): Promise<void> {
   console.log('openai-compat cache affinity:')
 
@@ -605,6 +677,51 @@ async function main(): Promise<void> {
     // OpenAI-style parse comes up empty) but still emits the Anthropic
     // additive fields. The fold has to win in that conflict.
     const { events } = await captureAgentRouterRequest('session-fixed', {
+      prompt_tokens: 100,
+      completion_tokens: 5,
+      total_tokens: 105,
+      prompt_tokens_details: { cached_tokens: 0 },
+      cache_read_input_tokens: 60,
+      cache_creation_input_tokens: 10,
+    })
+    const finalDelta = events.findLast(ev => ev.type === 'message_delta')
+    assert(finalDelta?.usage?.cache_read_input_tokens === 60,
+      `cache_read_input_tokens=${finalDelta?.usage?.cache_read_input_tokens}`)
+    assert(finalDelta?.usage?.cache_creation_input_tokens === 10,
+      `cache_creation_input_tokens=${finalDelta?.usage?.cache_creation_input_tokens}`)
+    assert(finalDelta?.usage?.input_tokens === 30,
+      `input_tokens=${finalDelta?.usage?.input_tokens}`)
+  })
+
+  await test('modelrouter sends exact pinned model instead of legacy alias', async () => {
+    const { request } = await captureModelRouterRequest('claude-3-5-haiku')
+    assert(request.url === 'https://api.lxg2it.com/v1/chat/completions', `url=${request.url}`)
+    assert(request.body.model === 'claude-haiku-4-5', `model=${request.body.model}`)
+    assert(request.body.prefer === undefined, `prefer=${request.body.prefer}`)
+  })
+
+  await test('modelrouter maps gpt-oss-120b to exact Bedrock pin', async () => {
+    const { request } = await captureModelRouterRequest('gpt-oss-120b')
+    assert(request.body.model === 'openai.gpt-oss-120b-1:0', `model=${request.body.model}`)
+    assert(request.body.prefer === undefined, `prefer=${request.body.prefer}`)
+  })
+
+  await test('modelrouter stamps cache_control on Anthropic pins', async () => {
+    const { request } = await captureModelRouterRequest('claude-3-5-haiku')
+    const sys = request.body.messages.find((m: any) => m.role === 'system')
+    assert(Array.isArray(sys?.content), `system content not promoted to parts: ${JSON.stringify(sys?.content)}`)
+    const lastSystemPart = sys.content[sys.content.length - 1]
+    assert(lastSystemPart?.cache_control?.type === 'ephemeral',
+      `system last part missing cache_control: ${JSON.stringify(lastSystemPart)}`)
+    const user = request.body.messages.find((m: any) => m.role === 'user')
+    assert(Array.isArray(user?.content), `user content not promoted to parts: ${JSON.stringify(user?.content)}`)
+    const lastUserPart = user.content[user.content.length - 1]
+    assert(lastUserPart?.cache_control?.type === 'ephemeral',
+      `user last part missing cache_control: ${JSON.stringify(lastUserPart)}`)
+  })
+
+  await test('modelrouter reads Anthropic-native cache usage shape', async () => {
+    const { events } = await captureModelRouterRequest('claude-3-5-haiku', {
       prompt_tokens: 100,
       completion_tokens: 5,
       total_tokens: 105,

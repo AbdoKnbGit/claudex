@@ -150,6 +150,9 @@ function detectKeyFormat(provider: string, key: string): string {
     openai: 'sk-',
     openrouter: 'sk-or-',
     agentrouter: 'sk-',
+    modelrouter: '',
+    vercel: '',
+    requesty: '',
     groq: 'gsk_',
     mistral: '',
     nim: 'nvapi-',
@@ -176,6 +179,9 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   openai: { prefix: 'sk-', minLength: 20, displayName: 'OpenAI' },
   openrouter: { prefix: 'sk-or-', minLength: 20, displayName: 'OpenRouter' },
   agentrouter: { prefix: 'sk-', minLength: 16, displayName: 'AgentRouter' },
+  modelrouter: { prefix: '', minLength: 10, displayName: 'Model Router' },
+  vercel: { prefix: '', minLength: 10, displayName: 'Vercel AI Gateway' },
+  requesty: { prefix: '', minLength: 10, displayName: 'Requesty' },
   groq: { prefix: 'gsk_', minLength: 20, displayName: 'Groq' },
   mistral: { prefix: '', minLength: 20, displayName: 'Mistral' },
   nim: { prefix: 'nvapi-', minLength: 20, displayName: 'NVIDIA NIM' },
@@ -305,6 +311,17 @@ export function deleteAllProviderCredentials(provider: string): void {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
         reloadOpenAICompatProviderAuth('minimax'),
+      )
+      .catch(() => {})
+  } else if (
+    provider === 'modelrouter' ||
+    provider === 'vercel' ||
+    provider === 'requesty' ||
+    provider === 'groq'
+  ) {
+    void import('../providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'groq'),
       )
       .catch(() => {})
   }

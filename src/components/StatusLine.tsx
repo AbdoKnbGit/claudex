@@ -33,6 +33,7 @@ import { isVimModeEnabled } from './PromptInput/utils.js';
 function _getProviderDisplayLabel(): string {
   const p = getAPIProvider()
   if (!isThirdPartyProvider(p)) return ''
+  if (p === 'modelrouter') return ''
   return PROVIDER_DISPLAY_NAMES[p]
 }
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {

@@ -5,13 +5,13 @@ import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
   | 'openai' | 'gemini' | 'antigravity'
-  | 'openrouter' | 'agentrouter' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama' | 'lmstudio'
+  | 'openrouter' | 'agentrouter' | 'modelrouter' | 'vercel' | 'requesty' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama' | 'lmstudio'
   | 'cline' | 'copilot' | 'cursor' | 'iflow' | 'kilocode' | 'kiro'
 
 const VALID_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'bedrock', 'vertex', 'foundry',
   'openai', 'gemini', 'antigravity',
-  'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
   'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
@@ -51,6 +51,9 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI))     return 'gemini'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENROUTER)) return 'openrouter'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_AGENTROUTER)) return 'agentrouter'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MODELROUTER) || isEnvTruthy(process.env.CLAUDE_CODE_USE_MODEL_ROUTER) || isEnvTruthy(process.env.CLAUDE_CODE_USE_LXG2IT)) return 'modelrouter'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL) || isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL_AI_GATEWAY)) return 'vercel'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_REQUESTY))    return 'requesty'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ))       return 'groq'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL))    return 'mistral'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM))        return 'nim'
@@ -107,6 +110,9 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   antigravity: 'Antigravity',
   openrouter: 'OpenRouter',
   agentrouter: 'AgentRouter',
+  modelrouter: 'Model Router',
+  vercel: 'Vercel AI Gateway',
+  requesty: 'Requesty',
   groq: 'Groq',
   mistral: 'Mistral',
   nim: 'NVIDIA NIM',
@@ -125,26 +131,25 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 }
 
 /** Providers available for user selection in /provider and /login */
-// `groq` is intentionally hidden from the selection UI: the free / on-demand
-// TPM budget (6k–12k tokens/min) is too tight for claudex's tool suite to
-// be useful without heavy trimming. `iflow` is also hidden from the user-facing
-// pickers after the iFlow CLI shutdown announcement on April 17, 2026. The
+// `iflow` is hidden from the user-facing pickers after its CLI shutdown announcement.
+// `modelrouter` is also hidden from /login and /models; backend support stays
+// intact for compatibility and env-driven use.
 // APIProvider union, env detection, auth flow, transformer, and routing are
-// all kept intact.
+// all kept intact for compatibility.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'vercel', 'requesty', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
   'cline', 'copilot', 'cursor', 'kilocode', 'kiro',
 ]
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
-  return ['openai', 'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  return ['openai', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
           'cline', 'copilot', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
           'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

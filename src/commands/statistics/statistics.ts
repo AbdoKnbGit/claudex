@@ -16,6 +16,7 @@ import type {
 } from '../../utils/fileHistory.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import {
+  getAssistantMessageContentLength,
   getTokenCountFromUsage,
   getTokenUsage,
   tokenCountWithEstimation,
@@ -43,6 +44,7 @@ type ModelStats = {
 type ResponseModelStats = {
   model: string
   stats: ModelStats
+  estimated?: boolean
 }
 
 type TokenUsage = NonNullable<ReturnType<typeof getTokenUsage>>
@@ -398,12 +400,15 @@ function isVisibleAssistantMessage(message: Message): boolean {
 function collectModelStats(messages: Message[]): Map<string, ModelStats> {
   const fromCostTracker = new Map<string, ModelStats>()
   for (const [model, usage] of Object.entries(getModelUsage())) {
-    fromCostTracker.set(model, {
+    const stats = {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadInputTokens: usage.cacheReadInputTokens,
       cacheCreationInputTokens: usage.cacheCreationInputTokens,
-    })
+    }
+    if (statsHaveTokens(stats)) {
+      fromCostTracker.set(model, stats)
+    }
   }
 
   if (fromCostTracker.size > 0) {
@@ -412,6 +417,7 @@ function collectModelStats(messages: Message[]): Map<string, ModelStats> {
 
   const fallback = new Map<string, ModelStats>()
   for (const { model, stats } of collectResponseModelStats(messages)) {
+    if (!statsHaveTokens(stats)) continue
     const existing = fallback.get(model) ?? blankModelStats()
     existing.inputTokens += stats.inputTokens
     existing.outputTokens += stats.outputTokens
@@ -429,20 +435,30 @@ function collectResponseModelStats(messages: Message[]): ResponseModelStats[] {
   messages.forEach((message, index) => {
     if (message.type !== 'assistant') return
     const usage = getTokenUsage(message)
-    if (!usage) return
-
     const model = message.message.model || '<unknown>'
     const responseKey = getResponseKey(message, model, index)
-    const stats = modelStatsFromUsage(usage)
+    const estimated = !usage || getTokenCountFromUsage(usage) <= 0
+    const stats = estimated
+      ? estimateModelStats(messages, index)
+      : modelStatsFromUsage(usage)
+    if (!statsHaveTokens(stats)) return
+
     const existing = responses.get(responseKey)
-    if (existing && shouldShowDetailedCacheUsage(model, stats)) {
+    if (existing && (estimated || existing.estimated)) {
+      mergeEstimatedResponseStats(existing.stats, stats)
+      existing.estimated = true
+    } else if (existing && shouldShowDetailedCacheUsage(model, stats)) {
       mergeResponseStats(existing.stats, stats)
     } else if (!existing) {
-      responses.set(responseKey, { model, stats })
+      responses.set(responseKey, { model, stats, estimated })
     }
   })
 
   return [...responses.values()]
+}
+
+function statsHaveTokens(usage: ModelStats): boolean {
+  return totalInputTokensProcessed(usage) > 0 || usage.outputTokens > 0
 }
 
 function getResponseKey(
@@ -470,9 +486,36 @@ function modelStatsFromUsage(usage: TokenUsage): ModelStats {
   }
 }
 
+function estimateModelStats(messages: Message[], index: number): ModelStats {
+  const message = messages[index]
+  const outputTokens =
+    message?.type === 'assistant'
+      ? Math.ceil(getAssistantMessageContentLength(message) / 4)
+      : 0
+  return {
+    inputTokens: Math.max(0, tokenCountWithEstimation(messages.slice(0, index))),
+    outputTokens,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  }
+}
+
 function mergeResponseStats(target: ModelStats, update: ModelStats): void {
   target.inputTokens = Math.max(target.inputTokens, update.inputTokens)
   target.outputTokens = Math.max(target.outputTokens, update.outputTokens)
+  target.cacheReadInputTokens = Math.max(
+    target.cacheReadInputTokens,
+    update.cacheReadInputTokens,
+  )
+  target.cacheCreationInputTokens = Math.max(
+    target.cacheCreationInputTokens,
+    update.cacheCreationInputTokens,
+  )
+}
+
+function mergeEstimatedResponseStats(target: ModelStats, update: ModelStats): void {
+  target.inputTokens = Math.max(target.inputTokens, update.inputTokens)
+  target.outputTokens += update.outputTokens
   target.cacheReadInputTokens = Math.max(
     target.cacheReadInputTokens,
     update.cacheReadInputTokens,

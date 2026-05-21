@@ -63,6 +63,9 @@ type ProviderType =
   | 'lmstudio'
   | 'openrouter'
   | 'agentrouter'
+  | 'modelrouter'
+  | 'vercel'
+  | 'requesty'
   | 'cline'
   | 'iflow'
   | 'kilocode'
@@ -82,6 +85,9 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('lmstudio') || b.includes('lm-studio')) return 'lmstudio'
   if (b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')) return 'ollama'
   if (b.includes('agentrouter.org')) return 'agentrouter'
+  if (b.includes('lxg2it') || b.includes('modelrouter')) return 'modelrouter'
+  if (b.includes('ai-gateway.vercel') || b.includes('vercel')) return 'vercel'
+  if (b.includes('requesty')) return 'requesty'
   if (b.includes('openrouter')) return 'openrouter'
   if (b.includes('cline.bot')) return 'cline'
   if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
@@ -140,6 +146,17 @@ interface OpenAIChatRequest {
   route?: string
   prompt_cache_key?: string
   prompt_cache_retention?: '24h'
+  providerOptions?: {
+    gateway?: {
+      caching?: 'auto'
+      [key: string]: unknown
+    }
+    [key: string]: unknown
+  }
+  requesty?: {
+    auto_cache?: boolean
+    [key: string]: unknown
+  }
   /**
    * OpenRouter-native detailed-usage flag. When set, the gateway returns
    * cache_discount and per-breakpoint hit counts on the final stream
@@ -152,6 +169,15 @@ interface OpenAIChatRequest {
 interface CompatCatalogModel extends OpenRouterCatalogModel {
   owned_by?: string
   max_context_length?: number
+  context_window?: number
+  max_tokens?: number
+  api?: string
+  type?: string
+  tags?: string[]
+  supports_caching?: boolean
+  supports_reasoning?: boolean
+  supports_tool_calling?: boolean
+  supports_vision?: boolean
   capabilities?: {
     completion_chat?: boolean
     function_calling?: boolean
@@ -561,7 +587,7 @@ export class OpenAICompatLane implements Lane {
               ?? chunk.usage.prompt_cache_hit_tokens
               ?? reportedCachedInputTokens
             cacheWriteTokens =
-              provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter'
+              provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter' || provider === 'modelrouter'
                 ? (
                     chunk.usage.prompt_tokens_details?.cache_write_tokens
                     ?? chunk.usage.cache_write_tokens
@@ -570,7 +596,7 @@ export class OpenAICompatLane implements Lane {
                 : 0
             reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens ?? reasoningTokens
 
-            // AgentRouter forwards Anthropic responses verbatim, so the
+            // Some routers forward Anthropic responses verbatim, so the
             // usage block on Claude rows often arrives in Anthropic-native
             // shape: `cache_read_input_tokens` and
             // `cache_creation_input_tokens` are additive (separate from
@@ -581,7 +607,7 @@ export class OpenAICompatLane implements Lane {
             // the cache hard — the smoking gun is the latency drop
             // without the percentage moving. Pure response read; does
             // not touch the outbound request shape.
-            if (provider === 'agentrouter') {
+            if (provider === 'agentrouter' || provider === 'modelrouter') {
               const arRead = typeof chunk.usage.cache_read_input_tokens === 'number'
                 ? chunk.usage.cache_read_input_tokens
                 : undefined
@@ -1005,16 +1031,64 @@ function toCompatCatalogModel(
     return null
   }
 
+  if (typeof model.api === 'string' && model.api.length > 0 && model.api.toLowerCase() !== 'chat') {
+    return null
+  }
+
+  if (!isTextGenerationCatalogType(model.type)) {
+    return null
+  }
+
+  const tags = normalizeCompatCatalogTags(model)
+  const provider =
+    typeof model.owned_by === 'string'
+    && model.owned_by.length > 0
+    && model.owned_by.toLowerCase() !== 'system'
+      ? model.owned_by
+      : undefined
+  const contextWindow =
+    model.context_length
+    ?? model.context_window
+    ?? model.max_context_length
+
   return {
     id: model.id,
     name: typeof model.name === 'string' && model.name.length > 0
       ? model.name
       : model.id,
-    contextWindow: model.context_length,
-    ...(typeof model.owned_by === 'string' && model.owned_by.length > 0
-      ? { provider: model.owned_by }
+    contextWindow,
+    ...(provider ? { provider } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(model.supports_tool_calling === true || model.capabilities?.function_calling === true
+      ? { supportsToolCalling: true }
       : {}),
   }
+}
+
+function isTextGenerationCatalogType(type: string | undefined): boolean {
+  if (!type) return true
+  const normalized = type.toLowerCase()
+  return normalized === 'language' || normalized === 'text' || normalized === 'chat'
+}
+
+function normalizeCompatCatalogTags(model: CompatCatalogModel): string[] {
+  const tags = new Set<string>()
+  for (const tag of model.tags ?? []) {
+    if (typeof tag === 'string' && tag.length > 0) tags.add(tag)
+  }
+  if (model.supports_tool_calling === true || model.capabilities?.function_calling === true) {
+    tags.add('tools')
+  }
+  if (model.supports_reasoning === true || tags.has('reasoning')) {
+    tags.add('reasoning')
+  }
+  if (model.supports_vision === true || model.capabilities?.vision === true || tags.has('vision')) {
+    tags.add('vision')
+  }
+  if (model.supports_caching === true || tags.has('implicit-caching') || tags.has('explicit-caching')) {
+    tags.add('caching')
+  }
+  return [...tags]
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

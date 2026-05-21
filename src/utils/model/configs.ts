@@ -47,6 +47,22 @@ const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL
   ?? process.env.LM_STUDIO_BASE_URL
   ?? 'http://localhost:1234/v1'
 
+const MODELROUTER_BASE_URL = process.env.MODELROUTER_BASE_URL
+  ?? process.env.MODEL_ROUTER_BASE_URL
+  ?? process.env.LXG2IT_BASE_URL
+  ?? 'https://api.lxg2it.com/v1'
+
+const VERCEL_AI_GATEWAY_BASE_URL = process.env.VERCEL_AI_GATEWAY_BASE_URL
+  ?? process.env.AI_GATEWAY_BASE_URL
+  ?? 'https://ai-gateway.vercel.sh/v1'
+
+const REQUESTY_BASE_URL = process.env.REQUESTY_BASE_URL
+  ?? 'https://router.requesty.ai/v1'
+
+const MODELROUTER_DEFAULT_OPUS = 'claude-opus-4-7'
+const MODELROUTER_DEFAULT_SONNET = 'claude-sonnet-4-6'
+const MODELROUTER_DEFAULT_HAIKU = 'claude-haiku-4-5'
+
 export interface TierModelSet {
   opus: string    // Best reasoning / most capable model
   sonnet: string  // Balanced quality/speed for everyday tasks
@@ -340,6 +356,87 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.AR_MODEL_OPUS   ?? 'claude-opus-4-6',
         sonnet: process.env.AR_MODEL_SONNET ?? 'claude-opus-4-6',
         haiku:  process.env.AR_MODEL_HAIKU  ?? 'claude-haiku-4-5-20251001',
+      },
+    },
+  },
+
+  modelrouter: {
+    displayName: 'Model Router',
+    baseUrl: MODELROUTER_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'MODEL_ROUTER_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.MODELROUTER_MODEL_OPUS_FREE   ?? process.env.LXG2IT_MODEL_OPUS_FREE   ?? MODELROUTER_DEFAULT_OPUS,
+        sonnet: process.env.MODELROUTER_MODEL_SONNET_FREE ?? process.env.LXG2IT_MODEL_SONNET_FREE ?? MODELROUTER_DEFAULT_SONNET,
+        haiku:  process.env.MODELROUTER_MODEL_HAIKU_FREE  ?? process.env.LXG2IT_MODEL_HAIKU_FREE  ?? MODELROUTER_DEFAULT_HAIKU,
+      },
+      pro: {
+        opus:   process.env.MODELROUTER_MODEL_OPUS   ?? process.env.LXG2IT_MODEL_OPUS   ?? MODELROUTER_DEFAULT_OPUS,
+        sonnet: process.env.MODELROUTER_MODEL_SONNET ?? process.env.LXG2IT_MODEL_SONNET ?? MODELROUTER_DEFAULT_SONNET,
+        haiku:  process.env.MODELROUTER_MODEL_HAIKU  ?? process.env.LXG2IT_MODEL_HAIKU  ?? MODELROUTER_DEFAULT_HAIKU,
+      },
+      plus: {
+        opus:   process.env.MODELROUTER_MODEL_OPUS   ?? process.env.LXG2IT_MODEL_OPUS   ?? MODELROUTER_DEFAULT_OPUS,
+        sonnet: process.env.MODELROUTER_MODEL_SONNET ?? process.env.LXG2IT_MODEL_SONNET ?? MODELROUTER_DEFAULT_SONNET,
+        haiku:  process.env.MODELROUTER_MODEL_HAIKU  ?? process.env.LXG2IT_MODEL_HAIKU  ?? MODELROUTER_DEFAULT_HAIKU,
+      },
+    },
+  },
+
+  vercel: {
+    displayName: 'Vercel AI Gateway',
+    baseUrl: VERCEL_AI_GATEWAY_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'AI_GATEWAY_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.VERCEL_MODEL_OPUS_FREE   ?? process.env.AI_GATEWAY_MODEL_OPUS_FREE   ?? 'anthropic/claude-sonnet-4-6',
+        sonnet: process.env.VERCEL_MODEL_SONNET_FREE ?? process.env.AI_GATEWAY_MODEL_SONNET_FREE ?? 'anthropic/claude-sonnet-4-6',
+        haiku:  process.env.VERCEL_MODEL_HAIKU_FREE  ?? process.env.AI_GATEWAY_MODEL_HAIKU_FREE  ?? 'anthropic/claude-haiku-4-5',
+      },
+      pro: {
+        opus:   process.env.VERCEL_MODEL_OPUS   ?? process.env.AI_GATEWAY_MODEL_OPUS   ?? 'anthropic/claude-opus-4-7',
+        sonnet: process.env.VERCEL_MODEL_SONNET ?? process.env.AI_GATEWAY_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
+        haiku:  process.env.VERCEL_MODEL_HAIKU  ?? process.env.AI_GATEWAY_MODEL_HAIKU  ?? 'anthropic/claude-haiku-4-5',
+      },
+      plus: {
+        opus:   process.env.VERCEL_MODEL_OPUS   ?? process.env.AI_GATEWAY_MODEL_OPUS   ?? 'anthropic/claude-opus-4-7',
+        sonnet: process.env.VERCEL_MODEL_SONNET ?? process.env.AI_GATEWAY_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
+        haiku:  process.env.VERCEL_MODEL_HAIKU  ?? process.env.AI_GATEWAY_MODEL_HAIKU  ?? 'anthropic/claude-haiku-4-5',
+      },
+    },
+  },
+
+  requesty: {
+    displayName: 'Requesty',
+    baseUrl: REQUESTY_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'REQUESTY_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.REQUESTY_MODEL_OPUS_FREE   ?? 'anthropic/claude-sonnet-4-6',
+        sonnet: process.env.REQUESTY_MODEL_SONNET_FREE ?? 'anthropic/claude-sonnet-4-6',
+        haiku:  process.env.REQUESTY_MODEL_HAIKU_FREE  ?? 'anthropic/claude-haiku-4-5',
+      },
+      pro: {
+        opus:   process.env.REQUESTY_MODEL_OPUS   ?? 'anthropic/claude-opus-4-7',
+        sonnet: process.env.REQUESTY_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
+        haiku:  process.env.REQUESTY_MODEL_HAIKU  ?? 'anthropic/claude-haiku-4-5',
+      },
+      plus: {
+        opus:   process.env.REQUESTY_MODEL_OPUS   ?? 'anthropic/claude-opus-4-7',
+        sonnet: process.env.REQUESTY_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
+        haiku:  process.env.REQUESTY_MODEL_HAIKU  ?? 'anthropic/claude-haiku-4-5',
       },
     },
   },

@@ -50,6 +50,9 @@ const DOCS = {
   anthropic: 'https://platform.claude.com/docs/en/build-with-claude/usage-cost-api',
   openai: 'https://platform.openai.com/docs/api-reference/usage/costs',
   openrouter: 'https://openrouter.ai/docs/api-reference/credits/get-credits',
+  modelrouter: 'https://api.lxg2it.com/docs/api',
+  vercel: 'https://vercel.com/docs/ai-gateway/capabilities/usage',
+  requesty: 'https://docs.requesty.ai/api-reference/endpoint/manage-org-get',
   deepseek: 'https://api-docs.deepseek.com/api/get-user-balance/',
   mistral: 'https://docs.mistral.ai/api/endpoint/beta/observability/chat_completion_events',
   glm: 'https://bigmodel.cn/finance/expensebill/list',
@@ -130,6 +133,8 @@ const REPORTERS: Reporter[] = [
   reportGemini,
   reportAntigravity,
   reportOpenRouter,
+  reportVercel,
+  reportRequesty,
   reportDeepSeek,
   reportMistral,
   reportGLM,
@@ -169,7 +174,9 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'gemini': return 'gemini'
     case 'antigravity': return 'antigravity'
     case 'openrouter': return 'openrouter'
-    case 'groq': return 'groq'
+    case 'modelrouter': return 'modelrouter'
+    case 'vercel': return 'vercel'
+    case 'requesty': return 'requesty'
     case 'nim': return 'nim'
     case 'deepseek': return 'deepseek'
     case 'mistral': return 'mistral'
@@ -568,6 +575,222 @@ async function reportOpenRouter(): Promise<ProviderUsageReport> {
       summary: `${formatCurrency(credits.used, 'USD')} / ${formatCurrency(credits.total, 'USD')} used`,
     }],
     docsUrl: DOCS.openrouter,
+  }
+}
+
+async function reportModelRouter(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('modelrouter')
+  const links: UsageLink[] = [{
+    label: 'Model Router profile',
+    url: 'https://api.lxg2it.com/profile',
+  }]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'modelrouter',
+        'not_configured',
+        'none',
+        'Model Router account credits',
+        'No Model Router API key is configured.',
+      ),
+      docsUrl: DOCS.modelrouter,
+      links,
+    }
+  }
+
+  const baseUrl = compatBaseUrl('modelrouter')
+  try {
+    await fetchJson(`${baseUrl}/models`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+    })
+  } catch (error) {
+    return {
+      ...baseReport(
+        'modelrouter',
+        'error',
+        'api_key',
+        'Model Router API key',
+        'Model Router connectivity check failed.',
+      ),
+      detail: messageFromError(error),
+      docsUrl: DOCS.modelrouter,
+      links,
+    }
+  }
+
+  return {
+    ...baseReport(
+      'modelrouter',
+      'connected',
+      'api_key',
+      'Model Router API key',
+      'Model Router API key is configured and live model access is reachable.',
+    ),
+    detail: 'No public API-key usage or credits endpoint is documented for Model Router; account credits are available in the browser profile.',
+    docsUrl: DOCS.modelrouter,
+    links,
+  }
+}
+
+async function reportVercel(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('vercel')
+  const links: UsageLink[] = [{
+    label: 'AI Gateway dashboard',
+    url: 'https://vercel.com/dashboard/ai-gateway',
+  }]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'vercel',
+        'not_configured',
+        'none',
+        'Vercel AI Gateway credits API',
+        'No Vercel AI Gateway API key is configured.',
+      ),
+      docsUrl: DOCS.vercel,
+      links,
+    }
+  }
+
+  const baseUrl = compatBaseUrl('vercel')
+  const data = await fetchJson(`${baseUrl}/credits`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+  })
+  const credits = parseVercelCredits(data)
+  if (!credits) {
+    return {
+      ...baseReport(
+        'vercel',
+        'error',
+        'api_key',
+        'Vercel AI Gateway credits API',
+        'Vercel returned an unrecognized credits response.',
+      ),
+      docsUrl: DOCS.vercel,
+      links,
+    }
+  }
+
+  const total = credits.balance + credits.used
+  return {
+    ...baseReport(
+      'vercel',
+      'ok',
+      'api_key',
+      'Vercel AI Gateway credits API',
+      `${formatCurrency(credits.balance, 'USD')} remaining, ${formatCurrency(credits.used, 'USD')} used.`,
+    ),
+    metrics: [{
+      label: 'AI Gateway Credits',
+      usedPercent: total > 0 ? clampPercent(credits.used / total * 100) : undefined,
+      summary: `${formatCurrency(credits.used, 'USD')} / ${formatCurrency(total, 'USD')} used`,
+    }],
+    docsUrl: DOCS.vercel,
+    links,
+  }
+}
+
+async function reportRequesty(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('requesty')
+  const links: UsageLink[] = [{
+    label: 'Requesty analytics',
+    url: 'https://app.requesty.ai/analytics',
+  }]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'requesty',
+        'not_configured',
+        'none',
+        'Requesty Management API',
+        'No Requesty API key is configured.',
+      ),
+      docsUrl: DOCS.requesty,
+      links,
+    }
+  }
+
+  const orgData = await fetchJson('https://api-v2.requesty.ai/v1/manage/org', {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+  })
+  const org = parseRequestyOrg(orgData)
+  if (!org) {
+    return {
+      ...baseReport(
+        'requesty',
+        'error',
+        'api_key',
+        'Requesty Management API',
+        'Requesty returned an unrecognized organization response.',
+      ),
+      docsUrl: DOCS.requesty,
+      links,
+    }
+  }
+
+  const metrics: UsageMetric[] = [{
+    label: 'Organization balance',
+    summary: `${formatCurrency(org.balance, 'USD')} remaining`,
+  }]
+  const details: string[] = [`Organization: ${org.name}.`]
+
+  try {
+    const usageUrl = new URL('https://api-v2.requesty.ai/v1/manage/org/usage')
+    usageUrl.searchParams.set('start', monthStartIso())
+    usageUrl.searchParams.set('end', new Date().toISOString())
+    usageUrl.searchParams.set('resolution', 'month')
+    const usageData = await fetchJson(usageUrl.toString(), {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+    })
+    const usage = parseRequestyUsage(usageData)
+    if (usage) {
+      const budget = getBudget('CLAUDEX_USAGE_REQUESTY_BUDGET_USD', 'REQUESTY_MONTHLY_BUDGET_USD')
+      metrics.push({
+        label: 'Month-to-date spend',
+        usedPercent: budget ? clampPercent(usage.cost / budget * 100) : undefined,
+        summary: budget
+          ? `${formatCurrency(usage.cost, 'USD')} / ${formatCurrency(budget, 'USD')} budget used`
+          : `${formatCurrency(usage.cost, 'USD')} spent`,
+        detail: [
+          usage.requests !== null ? `${formatNumber(usage.requests)} requests` : null,
+          usage.tokens !== null ? `${formatNumber(usage.tokens)} tokens` : null,
+        ].filter((part): part is string => part !== null).join(', ') || undefined,
+      })
+      details.push('Usage is month-to-date from the organization usage endpoint.')
+    } else {
+      details.push('Organization usage endpoint returned no parseable spend totals.')
+    }
+  } catch (usageError) {
+    details.push(`Organization usage unavailable: ${messageFromError(usageError)}.`)
+  }
+
+  return {
+    ...baseReport(
+      'requesty',
+      'ok',
+      'api_key',
+      'Requesty Management API',
+      `${formatCurrency(org.balance, 'USD')} organization balance.`,
+    ),
+    detail: details.join(' '),
+    metrics,
+    docsUrl: DOCS.requesty,
+    links,
   }
 }
 
@@ -1289,6 +1512,93 @@ function parseOpenRouterCredits(data: unknown): { total: number; used: number; r
   }
 }
 
+function parseVercelCredits(data: unknown): { balance: number; used: number } | null {
+  const root = asRecord(data)
+  const source = asRecord(root?.data) ?? root
+  if (!source) return null
+  const balance = readNumber(source.balance)
+  const used =
+    readNumber(source.total_used)
+    ?? readNumber(source.totalUsed)
+    ?? readNumber(source.total_usage)
+    ?? readNumber(source.usage)
+  if (balance === null || used === null) return null
+  return { balance, used }
+}
+
+function parseRequestyOrg(data: unknown): { name: string; balance: number } | null {
+  const root = asRecord(data)
+  const source = asRecord(root?.data) ?? root
+  if (!source) return null
+  const balance = readNumber(source.balance)
+  if (balance === null) return null
+  return {
+    name: readString(source.name) ?? 'Requesty organization',
+    balance,
+  }
+}
+
+function parseRequestyUsage(data: unknown): {
+  cost: number
+  tokens: number | null
+  requests: number | null
+} | null {
+  const root = asRecord(data)
+  const usage = asRecord(root?.usage)
+  if (!usage) return null
+
+  let sawAny = false
+  let cost = 0
+  let tokens = 0
+  let requests = 0
+  let sawTokens = false
+  let sawRequests = false
+
+  for (const value of Object.values(usage)) {
+    const row = asRecord(value)
+    if (!row) continue
+    const rowCost =
+      readNumber(row.cost)
+      ?? readNumber(row.total_cost)
+      ?? readNumber(row.totalCost)
+      ?? readNumber(row.spend)
+      ?? readNumber(row.total_spend)
+      ?? readNumber(row.totalSpend)
+    if (rowCost !== null) {
+      sawAny = true
+      cost += rowCost
+    }
+
+    const rowTokens =
+      readNumber(row.total_tokens)
+      ?? readNumber(row.totalTokens)
+      ?? readNumber(row.tokens)
+      ?? readNumber(row.token_count)
+      ?? readNumber(row.tokenCount)
+    if (rowTokens !== null) {
+      sawTokens = true
+      tokens += rowTokens
+    }
+
+    const rowRequests =
+      readNumber(row.requests)
+      ?? readNumber(row.request_count)
+      ?? readNumber(row.requestCount)
+      ?? readNumber(row.count)
+    if (rowRequests !== null) {
+      sawRequests = true
+      requests += rowRequests
+    }
+  }
+
+  if (!sawAny && !sawTokens && !sawRequests) return null
+  return {
+    cost,
+    tokens: sawTokens ? tokens : null,
+    requests: sawRequests ? requests : null,
+  }
+}
+
 function parseDeepSeekBalances(data: unknown): Array<{
   currency: string
   total: number
@@ -1944,12 +2254,23 @@ async function fetchAntigravityAvailableModels(
 }
 
 async function fetchJson(url: string, init: RequestInit = {}): Promise<unknown> {
+  const { data } = await fetchJsonWithHeaders(url, init)
+  return data
+}
+
+async function fetchJsonWithHeaders(url: string, init: RequestInit = {}): Promise<{
+  data: unknown
+  headers: Headers
+}> {
   const response = await fetchWithTimeout(url, init)
   const text = await response.text()
   if (!response.ok) {
     throw new Error(`${response.status}: ${truncate(text)}`)
   }
-  return parseJson(text)
+  return {
+    data: parseJson(text),
+    headers: response.headers,
+  }
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
@@ -2036,6 +2357,11 @@ function getBudget(...names: string[]): number | null {
   if (!value) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function compatBaseUrl(provider: APIProvider): string {
+  const base = getProviderBaseUrl(provider).replace(/\/+$/, '')
+  return base.endsWith('/v1') ? base : `${base}/v1`
 }
 
 function clampPercent(value: number): number {

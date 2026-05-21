@@ -87,6 +87,16 @@ function normalizeProviderQueryToken(
     lm: 'lmstudio',
     lmstudio: 'lmstudio',
     'lm-studio': 'lmstudio',
+    modelrouter: 'modelrouter',
+    model_router: 'modelrouter',
+    'model-router': 'modelrouter',
+    lxg2it: 'modelrouter',
+    lxg: 'modelrouter',
+    'vercel-ai': 'vercel',
+    'vercel-ai-gateway': 'vercel',
+    'ai-gateway': 'vercel',
+    requestyai: 'requesty',
+    'requesty-ai': 'requesty',
   }
   if (alias[normalized]) {
     return alias[normalized]
@@ -175,7 +185,7 @@ export async function loadProviderModels(
     // provider-owned orders.
     return models
   }
-  if (provider === 'openrouter' || provider === 'nim') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty') {
     return sortProviderModels(
       models.map(model => enrichUpstreamProviderModel(provider, model)),
     )
@@ -372,7 +382,7 @@ export async function loadProviderModelSections(
 
   const models = await loadProviderModels(provider)
 
-  if (provider === 'openrouter' || provider === 'nim') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty') {
     return buildUpstreamProviderSections(provider, models)
   }
 
@@ -743,6 +753,6 @@ function toProviderSectionedModel(model: ModelInfo): SectionedModelInfo {
   const tags = pickKnownModelTags(model)
   return {
     ...model,
-    ...(tags ? { tags } : {}),
+    tags: tags ?? [],
   }
 }

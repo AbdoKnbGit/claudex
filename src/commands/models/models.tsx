@@ -226,7 +226,7 @@ function showHelp(
     `  ${chalk.cyan('/models')}                      Open provider + model picker`,
     `  ${chalk.cyan('/models qwen')}                 Search the active provider`,
     `  ${chalk.cyan('/models openrouter:qwen')}      Search OpenRouter models`,
-    `  ${chalk.cyan('/models groq')}                 Show Groq models`,
+    `  ${chalk.cyan('/models vercel:claude')}        Search Vercel AI Gateway models`,
     '',
     chalk.dim('The browser fetches live models when the selected provider supports it.'),
     chalk.dim('If a provider is not configured yet, run /provider or /login for Anthropic.'),

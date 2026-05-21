@@ -57,7 +57,6 @@ const FEATURED_PROVIDERS: APIProvider[] = [
   'deepseek',
   'moonshot',
   'minimax',
-  'groq',
   'nim',
 ]
 

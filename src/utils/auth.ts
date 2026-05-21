@@ -1750,6 +1750,9 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   antigravity: ['oauth'],
   openrouter:  ['api_key'],
   agentrouter: ['api_key'],
+  modelrouter: ['api_key'],
+  vercel:      ['api_key'],
+  requesty:    ['api_key'],
   groq:        ['api_key'],
   mistral:     ['api_key'],
   nim:         ['api_key'],
@@ -1822,6 +1825,9 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'openai':      return process.env.OPENAI_API_KEY ?? _loadStoredKey('openai')
     case 'openrouter':  return process.env.OPENROUTER_API_KEY ?? _loadStoredKey('openrouter')
     case 'agentrouter': return process.env.AGENT_ROUTER_TOKEN ?? process.env.AGENTROUTER_API_KEY ?? _loadStoredKey('agentrouter')
+    case 'modelrouter': return process.env.MODEL_ROUTER_API_KEY ?? process.env.MODELROUTER_API_KEY ?? process.env.LXG2IT_API_KEY ?? _loadStoredKey('modelrouter')
+    case 'vercel':      return process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? _loadStoredKey('vercel')
+    case 'requesty':    return process.env.REQUESTY_API_KEY ?? _loadStoredKey('requesty')
     case 'groq':        return process.env.GROQ_API_KEY ?? _loadStoredKey('groq')
     case 'mistral':     return process.env.MISTRAL_API_KEY ?? _loadStoredKey('mistral')
     case 'nim':         return process.env.NIM_API_KEY ?? _loadStoredKey('nim')
@@ -1939,6 +1945,9 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'openai':      return process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'
     case 'openrouter':  return 'https://openrouter.ai/api/v1'
     case 'agentrouter': return process.env.AGENTROUTER_BASE_URL ?? 'https://agentrouter.org/v1'
+    case 'modelrouter': return process.env.MODELROUTER_BASE_URL ?? process.env.MODEL_ROUTER_BASE_URL ?? process.env.LXG2IT_BASE_URL ?? 'https://api.lxg2it.com/v1'
+    case 'vercel':      return process.env.VERCEL_AI_GATEWAY_BASE_URL ?? process.env.AI_GATEWAY_BASE_URL ?? 'https://ai-gateway.vercel.sh/v1'
+    case 'requesty':    return process.env.REQUESTY_BASE_URL ?? 'https://router.requesty.ai/v1'
     case 'groq':        return 'https://api.groq.com/openai/v1'
     case 'mistral':     return process.env.MISTRAL_BASE_URL ?? process.env.MISTRAL_API_BASE_URL ?? 'https://api.mistral.ai/v1'
     case 'nim':         return process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1'
@@ -1969,6 +1978,12 @@ export function isUsingThirdPartyLLM(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENROUTER) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_AGENTROUTER) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MODELROUTER) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MODEL_ROUTER) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_LXG2IT) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL_AI_GATEWAY) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_REQUESTY) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM) ||
@@ -2028,6 +2043,9 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'openai':      return 'OPENAI_API_KEY'
     case 'openrouter':  return 'OPENROUTER_API_KEY'
     case 'agentrouter': return 'AGENT_ROUTER_TOKEN or AGENTROUTER_API_KEY'
+    case 'modelrouter': return 'MODEL_ROUTER_API_KEY or LXG2IT_API_KEY'
+    case 'vercel':      return 'AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY'
+    case 'requesty':    return 'REQUESTY_API_KEY'
     case 'groq':        return 'GROQ_API_KEY'
     case 'mistral':     return 'MISTRAL_API_KEY'
     case 'nim':         return 'NIM_API_KEY'
@@ -2055,6 +2073,9 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     openai:      { prefix: 'sk-', minLen: 20 },
     openrouter:  { prefix: 'sk-or-', minLen: 20 },
     agentrouter: { minLen: 16 },
+    modelrouter: { minLen: 10 },
+    vercel:      { minLen: 10 },
+    requesty:    { minLen: 10 },
     groq:        { prefix: 'gsk_', minLen: 20 },
     mistral:     { minLen: 20 },
     nim:         { prefix: 'nvapi-', minLen: 20 },

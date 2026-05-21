@@ -31,6 +31,9 @@ export function initOpenAICompatLane(providers?: {
   lmstudio?: { apiKey?: string; baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
   agentrouter?: { apiKey: string; baseUrl?: string }
+  modelrouter?: { apiKey: string; baseUrl?: string }
+  vercel?: { apiKey: string; baseUrl?: string }
+  requesty?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
@@ -91,14 +94,8 @@ export function initOpenAICompatLane(providers?: {
     )
   }
 
-  // Groq is intentionally gated off — the free / on-demand TPM cap
-  // (6k–12k per model) is too tight for claudex's tool suite to be
-  // useful. Flip GROQ_ENABLED to true to bring it back; the transformer,
-  // routing, and tool-filter logic (src/lanes/openai-compat/transformers/groq.ts)
-  // are all still wired and ready.
-  const GROQ_ENABLED = false
   const groqKey = p.groq?.apiKey ?? process.env.GROQ_API_KEY
-  if (GROQ_ENABLED && groqKey) {
+  if (groqKey) {
     openaiCompatLane.registerProvider(
       'groq', groqKey,
       p.groq?.baseUrl ?? 'https://api.groq.com/openai/v1',
@@ -152,6 +149,45 @@ export function initOpenAICompatLane(providers?: {
     openaiCompatLane.registerProvider(
       'agentrouter', agentRouterKey,
       p.agentrouter?.baseUrl ?? 'https://agentrouter.org/v1',
+    )
+  }
+
+  const modelRouterKey = p.modelrouter?.apiKey
+    ?? process.env.MODEL_ROUTER_API_KEY
+    ?? process.env.MODELROUTER_API_KEY
+    ?? process.env.LXG2IT_API_KEY
+  if (modelRouterKey) {
+    openaiCompatLane.registerProvider(
+      'modelrouter', modelRouterKey,
+      p.modelrouter?.baseUrl
+        ?? process.env.MODELROUTER_BASE_URL
+        ?? process.env.MODEL_ROUTER_BASE_URL
+        ?? process.env.LXG2IT_BASE_URL
+        ?? 'https://api.lxg2it.com/v1',
+    )
+  }
+
+  const vercelKey = p.vercel?.apiKey
+    ?? process.env.AI_GATEWAY_API_KEY
+    ?? process.env.VERCEL_AI_GATEWAY_API_KEY
+    ?? process.env.VERCEL_OIDC_TOKEN
+  if (vercelKey) {
+    openaiCompatLane.registerProvider(
+      'vercel', vercelKey,
+      p.vercel?.baseUrl
+        ?? process.env.VERCEL_AI_GATEWAY_BASE_URL
+        ?? process.env.AI_GATEWAY_BASE_URL
+        ?? 'https://ai-gateway.vercel.sh/v1',
+    )
+  }
+
+  const requestyKey = p.requesty?.apiKey ?? process.env.REQUESTY_API_KEY
+  if (requestyKey) {
+    openaiCompatLane.registerProvider(
+      'requesty', requestyKey,
+      p.requesty?.baseUrl
+        ?? process.env.REQUESTY_BASE_URL
+        ?? 'https://router.requesty.ai/v1',
     )
   }
 
